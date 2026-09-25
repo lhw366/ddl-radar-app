@@ -278,6 +278,7 @@ body.tech-deco #bgLayer::after{ /* 科技主题网格纹理 */
 
 /* 徽章色（按象限） */
 .b-q1{ background:rgba(255,94,126,.16); color:#ff4d6d; }
+.b-rep{ background:var(--accent-soft); color:var(--accent); }
 .b-q2{ background:rgba(255,159,67,.16); color:#f08c1f; }
 .b-q3{ background:rgba(56,132,255,.15); color:#3b82f6; }
 .b-q4{ background:rgba(140,140,150,.16); color:#8a8f9e; }

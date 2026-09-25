@@ -182,10 +182,11 @@
 
       <h3 class="sec-title">ℹ️ 关于</h3>
       <div class="card pad about">
-        <b>DDL雷达</b> v1.1 原型<br>
+        <b>DDL雷达</b> <span id="verText">v1.4.0</span><br>
         为 OPPO Find X5 Pro / ColorOS 设计 · 兼容所有现代安卓浏览器<br>
         本页面是可交互原型：数据存在本机，可装到桌面当 App 用。<br>
         <small>素材与数据致谢：microsoft/fluentui-emoji (MIT) · lunar-javascript · holiday-cn · ZCOOL KuaiLe 字体</small>
+        <button id="updateBtn" class="btn full">🔄 检查更新</button>
       </div>
       <div style="height:20px"></div>
     </section>
@@ -236,6 +237,17 @@
     </div>
     <label class="f-label" id="fDueLabel">截止时间</label>
     <input id="fDue" type="datetime-local" class="f-input">
+
+    <label class="f-label">🔁 重复（长期规划：背单词、健身、周报打卡）</label>
+    <div class="seg" id="fRepeat">
+      <button data-r="none" class="on">不重复</button>
+      <button data-r="daily">每天</button>
+      <button data-r="weekly">每周</button>
+      <button data-r="ndays">每隔N天</button>
+    </div>
+    <div id="fRepNRow" class="hidden" style="display:flex;gap:8px;align-items:center;margin-top:7px;font-size:12.5px;color:var(--text-dim)">
+      每隔 <input id="fRepN" type="number" min="2" max="365" value="3" class="f-input" style="width:76px;text-align:center;padding:6px"> 天自动重生
+    </div>
 
     <label class="f-label">⏰ 提醒策略 <small>(截止当天到点前分段提示)</small></label>
     <div class="tier-chips" id="fTier">

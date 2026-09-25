@@ -8,9 +8,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Stamp build version into www
+        run: |
+          V=$(cat VERSION | tr -d '[:space:]')
+          printf '{"code":%s,"version":"%s","apk":"https://github.com/lhw366/ddl-radar-app/releases/download/v%s/app-debug.apk"}\n' "${{ github.run_number }}" "$V" "${{ github.run_number }}" > www/version.json
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -34,6 +41,24 @@ jobs:
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk \
+            --title "DDL雷达 $(cat VERSION | tr -d '[:space:]') · build ${{ github.run_number }}" \
+            --notes "自动构建 · 覆盖安装即可，数据保留" --repo lhw366/ddl-radar-app \
+          || gh release upload "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk --repo lhw366/ddl-radar-app --clobber
+
+      - name: Commit version.json for update check
+        run: |
+          cp www/version.json version.json
+          git config user.name "ci-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add version.json
+          git commit -m "chore: version.json for build ${{ github.run_number }} [skip ci]"
+          git push
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

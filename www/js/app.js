@@ -25,6 +25,15 @@ function fmtLeft(ms) {
   if (m > 0) return `${m} 分 ${s} 秒`;
   return `${s} 秒`;
 }
+/* 英雄卡专用：永远精确到秒 */
+function fmtLeftPrecise(ms) {
+  if (ms <= 0) return '已到时间';
+  const d = Math.floor(ms / 86400000), h = Math.floor(ms % 86400000 / 3600000),
+        m = Math.floor(ms % 3600000 / 60000), s = Math.floor(ms % 60000 / 1000);
+  if (d > 0) return `${d} 天 ${pad(h)}:${pad(m)}:${pad(s)}`;
+  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+  return `${m} 分 ${pad(s)} 秒`;
+}
 function dtLocalValue(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -110,14 +119,14 @@ document.addEventListener('visibilitychange', () => {
 /* ---------------- 秒级倒计时 ---------------- */
 function tickCountdown() {
   const now = Date.now();
-  // 英雄卡大数字每秒跳动
+  // 英雄卡大数字每秒跳动（永远精确到秒）
   const hero = $('heroCard');
   if (hero && !hero.classList.contains('hidden') && hero.dataset.tid) {
     const t = S.tasks.find((x) => x.id === hero.dataset.tid);
     if (t && !t.done && t.dueAt) {
       const left = t.dueAt - now;
       const c = $('heroCount');
-      c.textContent = left > 0 ? fmtLeft(left) : '已过期';
+      c.textContent = left > 0 ? fmtLeftPrecise(left) : '已过期';
       c.classList.toggle('urgent', left > 0 && left < 3600000);
       const span = Math.max(t.dueAt - (t.createdAt || t.dueAt - 86400000), 1);
       $('heroBar').firstElementChild.style.width = Math.min(Math.max((1 - left / span) * 100, 2), 100) + '%';
@@ -318,6 +327,24 @@ function switchView(v) {
 /* ---------------- 任务渲染 ---------------- */
 const QUAD_NAME = { q1: '重要且紧急', q2: '重要不紧急', q3: '紧急不重要', q4: '不重要不紧急' };
 
+/* 打卡类任务完成后，按重复规则自动生成下一次 */
+function spawnNext(t) {
+  if (!t.repeat || !t.dueAt) return null;
+  const stepDays = t.repeat.type === 'daily' ? 1 : t.repeat.type === 'weekly' ? 7 : Math.max(2, t.repeat.n || 2);
+  let due = t.dueAt + stepDays * 86400000;
+  while (due <= Date.now()) due += stepDays * 86400000;
+  const nt = Object.assign({}, t, {
+    id: uid(), done: false, doneAt: null,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    startAt: t.startAt ? t.startAt + stepDays * 86400000 : null,
+    dueAt: due,
+    repeat: { type: t.repeat.type, n: t.repeat.n }
+  });
+  S.tasks.push(nt);
+  return nt;
+}
+const REPEAT_TXT = { daily: '每天', weekly: '每周', ndays: '' };
+
 function taskCard(t) {
   const el = document.createElement('div');
   el.className = 'card task' + (t.done ? ' done' : '');
@@ -335,6 +362,7 @@ function taskCard(t) {
       <span class="t-check ${t.done ? 'on' : ''}">✓</span>
       <span class="t-name">${escapeHtml(t.name)}</span>
       <span class="t-badge b-${t.quadrant}">${QUAD_NAME[t.quadrant]}</span>
+      ${t.repeat ? `<span class="t-badge b-rep">🔁 ${t.repeat.type === 'ndays' ? '每隔' + t.repeat.n + '天' : REPEAT_TXT[t.repeat.type]}</span>` : ''}
     </div>
     <div class="t-meta">
       <span>🕐 ${timeTxt}</span>
@@ -346,7 +374,11 @@ function taskCard(t) {
   el.querySelector('.t-check').addEventListener('click', (e) => {
     e.stopPropagation();
     t.done = !t.done; t.doneAt = t.done ? Date.now() : null; save();
-    if (t.done) { toast('🎉 干得漂亮！', `『${escapeHtml(t.name)}』完成`); beep(); }
+    if (t.done) {
+      const nt = spawnNext(t);
+      toast('🎉 干得漂亮！', nt ? `🔁 下一次已自动排到 ${fmtDT(nt.dueAt)}` : `『${escapeHtml(t.name)}』完成`);
+      beep();
+    }
     renderAll();
   });
   const toggle = el.querySelector('.t-toggle');
@@ -479,6 +511,7 @@ function renderMatrix() {
 let editingId = null;
 let curQuad = 'q1', curType = 'point', curTiers = { 120: true, 60: true, 30: true, 5: true };
 let curCustom = [];
+let curRepeat = 'none';
 
 function openEditor(id) {
   editingId = id || null;
@@ -493,6 +526,8 @@ function openEditor(id) {
   curType = t && t.isRange ? 'range' : 'point';
   curTiers = t && t.tiers ? Object.assign({ 120: true, 60: true, 30: true, 5: true }, t.tiers) : { 120: true, 60: true, 30: true, 5: true };
   curCustom = t && t.custom ? JSON.parse(JSON.stringify(t.custom)) : [];
+  curRepeat = t && t.repeat ? t.repeat.type : 'none';
+  $('fRepN').value = t && t.repeat && t.repeat.type === 'ndays' && t.repeat.n ? t.repeat.n : 3;
   $('fDaily').checked = t ? t.daily !== false : true;
   $('fDailyDef').textContent = S.settings.dailyTime;
   $('fDelete').classList.toggle('hidden', !t);
@@ -505,6 +540,8 @@ function syncEditorUI() {
   document.querySelectorAll('#fTimeType button').forEach((b) => b.classList.toggle('on', b.dataset.t === curType));
   $('fStartRow').classList.toggle('hidden', curType !== 'range');
   $('fDueLabel').innerHTML = curType === 'range' ? '结束时间 <small>(提醒按此时间倒推)</small>' : '截止时间';
+  document.querySelectorAll('#fRepeat button').forEach((b) => b.classList.toggle('on', b.dataset.r === curRepeat));
+  $('fRepNRow').classList.toggle('hidden', curRepeat !== 'ndays');
   document.querySelectorAll('#fTier button').forEach((b) => b.classList.toggle('on', !!curTiers[b.dataset.min]));
   const rows = curCustom.map((r, i) => `
     <div class="crem-row">
@@ -540,6 +577,7 @@ function saveEditor() {
   const data = {
     name, detail: $('fDetail').value.trim(), quadrant: curQuad,
     isRange, startAt, dueAt,
+    repeat: curRepeat === 'none' ? null : { type: curRepeat, n: curRepeat === 'ndays' ? Math.max(2, +$('fRepN').value || 3) : 0 },
     tiers: curTiers, custom: curCustom, daily: $('fDaily').checked,
     updatedAt: Date.now()
   };
@@ -725,6 +763,35 @@ function refreshNotifyBtn() {
 }
 
 /* ---------------- 设置页 ---------------- */
+/* ---------------- 版本更新 ---------------- */
+const APP_VERSION = '1.4.0';
+const REPO = 'lhw366/ddl-radar-app';
+function openExternal(url) {
+  try {
+    if (window.Capacitor && Capacitor.Plugins.App) { Capacitor.Plugins.App.openUrl({ url }); return; }
+  } catch (e) { /* 网页端走 window.open */ }
+  window.open(url, '_blank');
+}
+async function fetchRemoteVersion() {
+  // 首选 GitHub API（最新无缓存），失败退 jsdelivr 的 version.json（快但有 CDN 缓存延迟）
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      const code = parseInt((j.tag_name || '').replace(/^v/, ''), 10) || 0;
+      const asset = (j.assets || []).find((a) => a.name.endsWith('.apk'));
+      if (code > 0 && asset) return { code, version: j.tag_name, apk: asset.browser_download_url };
+    }
+  } catch (e) { /* fallback */ }
+  for (const base of ['https://cdn.jsdelivr.net/gh/', 'https://fastly.jsdelivr.net/gh/']) {
+    try {
+      const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); if (j.code) return j; }
+    } catch (e) { /* next mirror */ }
+  }
+  return null;
+}
+
 function bindSettings() {
   document.querySelectorAll('#setRemindMode button').forEach((b) =>
     b.addEventListener('click', () => {
@@ -758,6 +825,29 @@ function bindSettings() {
     }
   });
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
+
+  $('verText').textContent = 'v' + APP_VERSION;
+  $('updateBtn').addEventListener('click', async () => {
+    const b = $('updateBtn');
+    if (b.dataset.url) { openExternal(b.dataset.url); return; }
+    b.disabled = true; b.textContent = '🔄 检查中…';
+    const local = await (async () => {
+      try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) return (await r.json()).code || 0; } catch (e) {}
+      return 0;
+    })();
+    const rem = await fetchRemoteVersion();
+    b.disabled = false;
+    if (!rem) { b.textContent = '🔄 检查更新'; toast('⚠️ 检查失败', '连不上 GitHub，稍后再试'); return; }
+    if ((rem.code || 0) > local) {
+      b.textContent = '⬇️ 下载新版本 ' + (rem.version || '');
+      b.classList.add('primary');
+      b.dataset.url = rem.apk || rem.url || '';
+      toast('🚀 发现新版本', (rem.version || '') + ' · 再点一次按钮，浏览器会下载新 APK');
+    } else {
+      b.textContent = '✅ 已是最新 v' + APP_VERSION;
+      setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
+    }
+  });
   $('exactAlarmBtn').addEventListener('click', async () => {
     if (!window.NativeNotify) return;
     const opened = await NativeNotify.openExactAlarm();
@@ -913,6 +1003,8 @@ function init() {
     b.addEventListener('click', () => { curQuad = b.dataset.q; syncEditorUI(); }));
   document.querySelectorAll('#fTimeType button').forEach((b) =>
     b.addEventListener('click', () => { curType = b.dataset.t; syncEditorUI(); }));
+  document.querySelectorAll('#fRepeat button').forEach((b) =>
+    b.addEventListener('click', () => { curRepeat = b.dataset.r; syncEditorUI(); }));
   document.querySelectorAll('#fTier button').forEach((b) =>
     b.addEventListener('click', () => {
       const m = b.dataset.min; curTiers[m] = !curTiers[m]; syncEditorUI();
