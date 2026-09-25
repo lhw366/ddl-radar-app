@@ -36,6 +36,14 @@
       for (var i = 0; i < defs.length; i++) {
         try { await ln.createChannel(defs[i]); } catch (e) { /* 已存在 */ }
       }
+      // 通道创建结果校验：缺失时调度将不带 channelId（走默认通道），避免通知静默失败
+      try {
+        var list = await ln.listChannels();
+        var ok = {};
+        (list.channels || []).forEach(function (c) { ok[c.id] = true; });
+        defs.forEach(function (d) { if (!ok[d.id]) d._missing = true; });
+        this._channelOk = defs;
+      } catch (e) { this._channelOk = null; }
       await this.ensurePermissions();
       await this.sync(window.S);
       // 插件带开机恢复接收器；这里再兜底刷一次
@@ -78,6 +86,34 @@
       return false;
     },
 
+    // 10 秒后发一条系统通知，用于验证提醒链路
+    test: async function () {
+      var ln = LN();
+      if (!ln) return false;
+      var mode = (window.S && S.settings.remindMode) || 'full';
+      if (mode === 'silent') {
+        setTimeout(function () {
+          if (window.toast) toast('🧪 测试提醒', '静默模式：只显示应用内横幅，无系统通知', 'urgent');
+        }, 10000);
+        return true;
+      }
+      try {
+        await ln.schedule({
+          notifications: [{
+            id: 990000001,
+            title: '🧪 测试提醒',
+            body: '看到这条系统通知 = 提醒链路正常 ✓',
+            schedule: { at: new Date(Date.now() + 10000), allowWhileIdle: true },
+            channelId: 'ddlr_' + mode
+          }]
+        });
+        return true;
+      } catch (e) {
+        console.warn('[DDL雷达] 测试提醒失败', e);
+        return false;
+      }
+    },
+
     // 任务/设置变化后重排系统提醒（带签名去抖）
     sync: async function (S) {
       if (!this.available() || !S) return;
@@ -107,7 +143,8 @@
                 title: r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
                 schedule: { at: new Date(r.at), allowWhileIdle: true },
-                channelId: 'ddlr_' + mode
+                channelId: (this._channelOk || []).filter(function (c) { return !c._missing; }).map(function (c) { return c.id; }).indexOf('ddlr_' + mode) >= 0
+                  ? 'ddlr_' + mode : undefined
               });
             }
           }

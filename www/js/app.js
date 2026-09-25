@@ -47,6 +47,7 @@ try {
   const raw = localStorage.getItem(LS_KEY);
   if (raw) S = Object.assign(S, JSON.parse(raw));
 } catch (e) { console.warn('状态读取失败', e); }
+if (S.settings.toastCompact === undefined) S.settings.toastCompact = true;
 
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { console.warn('存储失败', e); }
@@ -84,7 +85,7 @@ function vibe() {
 /* ---------------- Toast 横幅 ---------------- */
 function toast(title, body, kind) {
   const el = document.createElement('div');
-  el.className = 'toast' + (kind ? ' tt-' + kind : '');
+  el.className = 'toast' + (kind ? ' tt-' + kind : '') + (S.settings.toastCompact ? ' compact' : '');
   el.innerHTML = `<div class="tt-title">${title}</div>${body ? `<div class="tt-body">${body}</div>` : ''}`;
   $('toastWrap').appendChild(el);
   const kill = () => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); };
@@ -100,8 +101,39 @@ function toast(title, body, kind) {
   }
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) document.title = 'DDL雷达 · 不再错过任何死线';
+  if (!document.hidden) {
+    document.title = 'DDL雷达 · 不再错过任何死线';
+    // 切回前台立刻补查提醒（后台标签页的定时器会被浏览器节流）
+    tickReminders();
+    if (window.NativeNotify) NativeNotify.sync(S);
+  }
 });
+
+/* ---------------- 秒级倒计时 ---------------- */
+function tickCountdown() {
+  const now = Date.now();
+  // 英雄卡大数字每秒跳动
+  const hero = $('heroCard');
+  if (hero && !hero.classList.contains('hidden') && hero.dataset.tid) {
+    const t = S.tasks.find((x) => x.id === hero.dataset.tid);
+    if (t && !t.done && t.dueAt) {
+      const left = t.dueAt - now;
+      const c = $('heroCount');
+      c.textContent = left > 0 ? fmtLeft(left) : '已过期';
+      c.classList.toggle('urgent', left > 0 && left < 3600000);
+      const span = Math.max(t.dueAt - (t.createdAt || t.dueAt - 86400000), 1);
+      $('heroBar').firstElementChild.style.width = Math.min(Math.max((1 - left / span) * 100, 2), 100) + '%';
+    }
+  }
+  // 列表卡片上的剩余时间（10 秒粒度即可）
+  if (now - (tickCountdown._lastMeta || 0) < 10000) return;
+  tickCountdown._lastMeta = now;
+  document.querySelectorAll('[data-due]').forEach((el) => {
+    const dl = +el.dataset.due - now;
+    el.textContent = dl <= 0 ? '已过期'
+      : (dl < 86400000 ? `⏳ ${fmtLeft(dl)}后截止` : `⏳ 还剩 ${Math.ceil(dl / 86400000)} 天`);
+  });
+}
 
 /* ---------------- 主题 & 壁纸 ---------------- */
 const THEMES = [
@@ -207,7 +239,7 @@ function taskCard(t) {
     </div>
     <div class="t-meta">
       <span>🕐 ${timeTxt}</span>
-      ${leftTxt ? `<span>${leftTxt}</span>` : ''}
+      ${leftTxt ? `<span data-due="${t.dueAt}">${leftTxt}</span>` : ''}
       ${hasDetail ? `<span class="t-toggle">细节 <span class="t-arrow">▶</span></span>` : ''}
     </div>
     ${hasDetail ? `<div class="t-detail">${escapeHtml(t.detail)}</div>` : ''}`;
@@ -245,6 +277,7 @@ function renderHome() {
   const next = future[0] || open.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
   if (next) {
     $('heroCard').classList.remove('hidden'); $('heroEmpty').classList.add('hidden');
+    $('heroCard').dataset.tid = next.id;
     $('heroName').textContent = next.name;
     const left = next.dueAt - now;
     $('heroCount').textContent = left > 0 ? fmtLeft(left) : '已过期';
@@ -540,9 +573,10 @@ function tickReminders() {
     for (const r of planReminders(t)) {
       if (S.fired.includes(r.key)) continue;
       if (r.at > now) continue;
-      if (now - r.at > 10 * 60000) { S.fired.push(r.key); continue; } // 错过太久，静默标记
+      if (now - r.at > 15 * 60000) { S.fired.push(r.key); continue; } // 超过15分钟才静默
       S.fired.push(r.key);
-      toast(r.title, r.body, r.kind);
+      const late = now - r.at > 60000;
+      toast(r.title + (late ? ' · 错过补弹' : ''), r.body, r.kind);
       beep(); vibe();
       if (S.fired.length > 600) S.fired = S.fired.slice(-400);
       save();
@@ -611,6 +645,23 @@ function bindSettings() {
   $('setSound').addEventListener('change', () => { S.settings.sound = $('setSound').checked; save(); });
   $('setVib').checked = S.settings.vibrate;
   $('setVib').addEventListener('change', () => { S.settings.vibrate = $('setVib').checked; save(); });
+  $('setCompact').checked = S.settings.toastCompact !== false;
+  $('setCompact').addEventListener('change', () => {
+    S.settings.toastCompact = $('setCompact').checked; save();
+    toast(S.settings.toastCompact ? '📴 顶部一行模式已开' : '📇 卡片模式已开', '之后弹出的提醒横幅将使用新样式');
+  });
+  $('testRemBtn').addEventListener('click', async () => {
+    if (window.NativeNotify && NativeNotify.available()) {
+      const ok = await NativeNotify.test();
+      toast('🧪 已排定测试', ok ? '10 秒后会收到系统通知（留意屏幕顶部横幅/震动）' : '⚠️ 排定失败，请检查通知权限');
+    } else {
+      toast('🧪 已排定测试', '10 秒后应用内提醒（此环境无系统级通知）');
+      setTimeout(() => {
+        toast('🧪 测试提醒', '看到这条说明应用内链路正常', 'urgent');
+        beep(); vibe();
+      }, 10000);
+    }
+  });
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
   $('exactAlarmBtn').addEventListener('click', async () => {
     if (!window.NativeNotify) return;
@@ -798,10 +849,15 @@ function init() {
 
   renderAll();
   tickReminders();
+  tickCountdown();
 
-  // 心跳：提醒检查 20s / 顶栏与倒计时 30s / 闲逛提醒 60s
-  setInterval(tickReminders, 20000);
+  // 心跳：提醒检查 5s / 顶栏与列表 30s / 倒计时秒表 1s / 闲逛提醒 60s
+  setInterval(tickReminders, 5000);
   setInterval(() => { renderTop(); if (curView === 'home') renderHome(); }, 30000);
+  setInterval(tickCountdown, 1000);
   setInterval(idleNudge, 60000);
+  if (window.NativeNotify && NativeNotify.available()) {
+    setInterval(() => NativeNotify.sync(S), 60000); // APK 兜底重排系统提醒
+  }
 }
 document.addEventListener('DOMContentLoaded', init);
