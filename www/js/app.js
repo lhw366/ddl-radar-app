@@ -40,7 +40,7 @@ let S = {
     theme: 'cat', bgImage: null, bgDim: 35,
     dailyTime: '12:00',
     remindMode: 'full', // full=响铃+震动 / vib=仅震动 / ring=仅响铃 / silent=仅应用内横幅
-    tiered: true, sound: true, vibrate: true
+    tiered: true, toastCompact: true
   }
 };
 try {
@@ -59,7 +59,6 @@ function save() {
 let audioCtx = null;
 function remindMode() { return S.settings.remindMode || 'full'; }
 function beep() {
-  if (!S.settings.sound) return;
   if (remindMode() === 'vib' || remindMode() === 'silent') return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -77,7 +76,6 @@ function beep() {
   } catch (e) { /* 无声环境忽略 */ }
 }
 function vibe() {
-  if (!S.settings.vibrate) return;
   if (remindMode() === 'ring' || remindMode() === 'silent') return;
   if (navigator.vibrate) navigator.vibrate([180, 90, 180]);
 }
@@ -742,10 +740,6 @@ function bindSettings() {
   });
   $('setTiered').checked = S.settings.tiered;
   $('setTiered').addEventListener('change', () => { S.settings.tiered = $('setTiered').checked; save(); });
-  $('setSound').checked = S.settings.sound;
-  $('setSound').addEventListener('change', () => { S.settings.sound = $('setSound').checked; save(); });
-  $('setVib').checked = S.settings.vibrate;
-  $('setVib').addEventListener('change', () => { S.settings.vibrate = $('setVib').checked; save(); });
   $('setCompact').checked = S.settings.toastCompact !== false;
   $('setCompact').addEventListener('change', () => {
     S.settings.toastCompact = $('setCompact').checked; save();
@@ -840,8 +834,7 @@ function bindSettingsValues() {
   syncRemindModeUI();
   $('setDailyTime').value = S.settings.dailyTime;
   $('setTiered').checked = S.settings.tiered;
-  $('setSound').checked = S.settings.sound;
-  $('setVib').checked = S.settings.vibrate;
+  $('setCompact').checked = S.settings.toastCompact !== false;
   $('bgDimRange').value = S.settings.bgDim;
   $('bgDimVal').textContent = S.settings.bgDim + '%';
 }
