@@ -1,0 +1,15 @@
+{
+  "name": "DDL雷达",
+  "short_name": "DDL雷达",
+  "description": "盯紧每一个 deadline：分段提醒、四象限、农历节假日日历、可换肤",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffe3ec",
+  "theme_color": "#ff5e7e",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

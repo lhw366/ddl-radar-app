@@ -1,0 +1,11 @@
+{
+  "appId": "com.ddlradar.app",
+  "appName": "DDL雷达",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
