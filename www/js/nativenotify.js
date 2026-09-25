@@ -58,7 +58,15 @@
         var p = await ln.checkPermissions();
         if (p.display !== 'granted') { await ln.requestPermissions(); }
       } catch (e) { /* ignore */ }
-      await this.refreshExact();
+      var exact = await this.refreshExact();
+      // 精确闹钟未授权 → 每次启动提醒一次（退 App 后通知可能延迟/丢失）
+      if (exact === false && window.S && !window.S.settings.exactWarned) {
+        window.S.settings.exactWarned = true;
+        if (window.save) window.save();
+        if (window.toast) {
+          window.toast('⏰ 建议开启精确闹钟', '否则退 App 后提醒可能延迟或丢失：去「我的」页点黄色按钮', 'tt-urgent');
+        }
+      }
     },
 
     refreshExact: async function () {
@@ -86,7 +94,7 @@
       return false;
     },
 
-    // 10 秒后发一条系统通知，用于验证提醒链路
+    // 10 秒后发一条系统通知，用于验证提醒链路（含退 App 场景）
     test: async function () {
       var ln = LN();
       if (!ln) return false;
@@ -102,14 +110,18 @@
           notifications: [{
             id: 990000001,
             title: '🧪 测试提醒',
-            body: '看到这条系统通知 = 提醒链路正常 ✓',
+            body: '看到这条 = 提醒链路通 ✓（退 App 也能弹）',
             schedule: { at: new Date(Date.now() + 10000), allowWhileIdle: true },
             channelId: 'ddlr_' + mode
           }]
         });
+        if (window.toast) {
+          window.toast('🧪 已排定测试', '现在退出 App 试试：10 秒后锁屏/桌面应弹出系统通知并震动');
+        }
         return true;
       } catch (e) {
         console.warn('[DDL雷达] 测试提醒失败', e);
+        if (window.toast) window.toast('⚠️ 排定失败', '请检查通知权限与精确闹钟权限');
         return false;
       }
     },
