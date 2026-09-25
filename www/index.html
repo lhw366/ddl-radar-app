@@ -145,7 +145,14 @@
 
       <h3 class="sec-title">🔔 提醒偏好</h3>
       <div class="card pad">
-        <div class="set-line">
+        <label class="f-label" style="margin-top:0">提醒方式（全局，APK 系统提醒同样生效）</label>
+        <div class="quad-chips" id="setRemindMode">
+          <button data-m="full" class="on">🔊 响铃+震动</button>
+          <button data-m="vib">📳 仅震动</button>
+          <button data-m="ring">🔔 仅响铃</button>
+          <button data-m="silent">🔇 仅应用内横幅</button>
+        </div>
+        <div class="set-line" style="margin-top:10px">
           <div>远期 DDL 每日提醒时间</div>
           <input type="time" id="setDailyTime" value="12:00">
         </div>
@@ -159,6 +166,7 @@
           <label class="switch"><input type="checkbox" id="setVib" checked><i></i></label>
         </div>
         <button id="notifyBtn" class="btn full">🔔 申请系统通知权限（状态：未知）</button>
+        <button id="exactAlarmBtn" class="btn full hidden">⏰ 开启系统精确闹钟权限（锁屏必响，强烈建议）</button>
         <div class="tip">正式安卓版将使用系统级闹钟通道，ColorOS 请允许「自启动 + 无限制后台」以保证提醒必达</div>
       </div>
 
@@ -284,6 +292,7 @@
 <script src="assets/lunar.js"></script>
 <script src="assets/holiday-data.js"></script>
 <script src="js/calendar.js"></script>
+<script src="js/nativenotify.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

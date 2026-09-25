@@ -39,6 +39,7 @@ let S = {
   settings: {
     theme: 'cat', bgImage: null, bgDim: 35,
     dailyTime: '12:00',
+    remindMode: 'full', // full=响铃+震动 / vib=仅震动 / ring=仅响铃 / silent=仅应用内横幅
     tiered: true, sound: true, vibrate: true
   }
 };
@@ -49,12 +50,16 @@ try {
 
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { console.warn('存储失败', e); }
+  // APK 内同步重排系统级精确提醒
+  if (window.NativeNotify) NativeNotify.sync(S);
 }
 
 /* ---------------- 提示音 / 震动 ---------------- */
 let audioCtx = null;
+function remindMode() { return S.settings.remindMode || 'full'; }
 function beep() {
   if (!S.settings.sound) return;
+  if (remindMode() === 'vib' || remindMode() === 'silent') return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -70,7 +75,11 @@ function beep() {
     });
   } catch (e) { /* 无声环境忽略 */ }
 }
-function vibe() { if (S.settings.vibrate && navigator.vibrate) navigator.vibrate([180, 90, 180]); }
+function vibe() {
+  if (!S.settings.vibrate) return;
+  if (remindMode() === 'ring' || remindMode() === 'silent') return;
+  if (navigator.vibrate) navigator.vibrate([180, 90, 180]);
+}
 
 /* ---------------- Toast 横幅 ---------------- */
 function toast(title, body, kind) {
@@ -570,10 +579,28 @@ function refreshNotifyBtn() {
   const p = Notification.permission;
   b.textContent = p === 'granted' ? '✅ 系统通知已开启' :
     p === 'denied' ? '🚫 通知被拒绝（请到系统设置里放开）' : '🔔 申请系统通知权限（状态：未开启）';
+
+  const eb = $('exactAlarmBtn');
+  if (window.NativeNotify && NativeNotify.available()) {
+    NativeNotify.refreshExact().then((on) => {
+      eb.classList.toggle('hidden', on !== false);
+      if (on === false) eb.textContent = '⏰ 开启系统精确闹钟权限（锁屏必响，强烈建议）';
+    });
+  } else {
+    eb.classList.add('hidden');
+  }
 }
 
 /* ---------------- 设置页 ---------------- */
 function bindSettings() {
+  document.querySelectorAll('#setRemindMode button').forEach((b) =>
+    b.addEventListener('click', () => {
+      S.settings.remindMode = b.dataset.m;
+      save(); syncRemindModeUI();
+      toast('🔕 提醒方式已切换', '🔊 响铃+震动 / 📳 仅震动 / 🔔 仅响铃 / 🔇 仅横幅'.split(' / ')[['full','vib','ring','silent'].indexOf(b.dataset.m)]);
+    }));
+  syncRemindModeUI();
+
   $('setDailyTime').value = S.settings.dailyTime;
   $('setDailyTime').addEventListener('change', () => {
     S.settings.dailyTime = $('setDailyTime').value || '12:00'; save(); renderAll();
@@ -585,6 +612,12 @@ function bindSettings() {
   $('setVib').checked = S.settings.vibrate;
   $('setVib').addEventListener('change', () => { S.settings.vibrate = $('setVib').checked; save(); });
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
+  $('exactAlarmBtn').addEventListener('click', async () => {
+    if (!window.NativeNotify) return;
+    const opened = await NativeNotify.openExactAlarm();
+    if (!opened) toast('ℹ️ 请手动开启', '系统设置 → 应用 → DDL雷达 → 闹钟和提醒');
+    setTimeout(refreshNotifyBtn, 1200);
+  });
 
   $('bgDimRange').value = S.settings.bgDim;
   $('bgDimVal').textContent = S.settings.bgDim + '%';
@@ -640,7 +673,14 @@ function handleImport(f) {
   };
   rd.readAsText(f);
 }
+function syncRemindModeUI() {
+  const m = S.settings.remindMode || 'full';
+  document.querySelectorAll('#setRemindMode button').forEach((b) =>
+    b.classList.toggle('on', b.dataset.m === m));
+}
+
 function bindSettingsValues() {
+  syncRemindModeUI();
   $('setDailyTime').value = S.settings.dailyTime;
   $('setTiered').checked = S.settings.tiered;
   $('setSound').checked = S.settings.sound;
@@ -678,6 +718,7 @@ function init() {
   applyTheme();
   bindSettings();
   refreshNotifyBtn();
+  if (window.NativeNotify && NativeNotify.available()) NativeNotify.init(S);
 
   // 隐藏文件选择器
   const bgFile = document.createElement('input');
