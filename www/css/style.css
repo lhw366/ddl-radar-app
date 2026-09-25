@@ -73,6 +73,24 @@ body.theme-tech{
   --shadow: 0 8px 30px rgba(0,0,0,.45);
   --chip-on: linear-gradient(135deg,#4de3c1,#7c5cff);
 }
+/* ---------- 主题 5：照片配色（上传照片自动生成，运行时注入变量） ---------- */
+body.theme-custom{
+  --bg-grad: linear-gradient(160deg,#f4f4f8 0%,#e9e9f2 100%);
+  --overlay: 20,20,30;
+  --card: rgba(255,255,255,.85);
+  --card-strong: rgba(255,255,255,.96);
+  --card-border: rgba(120,120,140,.2);
+  --text: #2f3040;
+  --text-dim: #8d8da5;
+  --accent: #5b7cfa;
+  --accent-2: #8f6cf6;
+  --accent-soft: rgba(91,124,250,.13);
+  --danger: #e05252;
+  --ok: #2fa96e;
+  --tab-bg: rgba(255,255,255,.85);
+  --shadow: 0 8px 24px rgba(60,60,90,.16);
+  --chip-on: linear-gradient(135deg,#5b7cfa,#8f6cf6);
+}
 /* ---------- 主题 4：云朵白（简洁清爽） ---------- */
 body.theme-cloud{
   --bg-grad: linear-gradient(170deg,#f7f8fd 0%,#eef1fa 55%,#e9edf8 100%);

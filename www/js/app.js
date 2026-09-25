@@ -144,11 +144,109 @@ const THEMES = [
 ];
 function applyTheme() {
   const t = S.settings.theme;
+  document.body.removeAttribute('style'); // 清掉上一主题注入的照片配色变量
   document.body.className = 'theme-' + t + (t === 'tech' ? ' tech-deco' : '');
-  const th = THEMES.find((x) => x.id === t) || THEMES[0];
-  document.querySelector('meta[name=theme-color]').content = t === 'tech' ? '#0b1020' : (t === 'cat' ? '#fdf6e9' : (t === 'cloud' ? '#f7f8fd' : '#ffe3ec'));
+  if (t === 'custom' && S.settings.customPalette) applyCustomPalette();
+  const th = THEMES.find((x) => x.id === t) || (t === 'custom' ? { emoji: '📷' } : THEMES[0]);
+  document.querySelector('meta[name=theme-color]').content = t === 'tech' ? '#0b1020' : (t === 'cat' ? '#fdf6e9' : (t === 'cloud' ? '#f7f8fd' : (t === 'custom' ? (S.settings.customPalette ? S.settings.customPalette.bg1 : '#f4f4f8') : '#ffe3ec')));
   renderThemeGrids();
   applyBg();
+}
+function hsl2hex(h, s, l) {
+  h /= 360; s /= 100; l /= 100;
+  const f = (n) => { const k = (n + h * 12) % 12; const a = s * Math.min(l, 1 - l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+  return '#' + [f(0), f(8), f(4)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+function applyCustomPalette() {
+  const p = S.settings.customPalette;
+  if (!p) return;
+  const bs = document.body.style;
+  bs.setProperty('--bg-grad', `linear-gradient(165deg, ${p.bg1} 0%, ${p.bg2} 100%)`);
+  bs.setProperty('--accent', p.accent);
+  bs.setProperty('--accent-2', p.accent2);
+  bs.setProperty('--accent-soft', p.accent + '22');
+  bs.setProperty('--card', p.card);
+  bs.setProperty('--card-strong', p.cardStrong);
+  bs.setProperty('--card-border', p.cardBorder);
+  bs.setProperty('--text', p.text);
+  bs.setProperty('--text-dim', p.textDim);
+  bs.setProperty('--tab-bg', p.tabBg);
+  bs.setProperty('--shadow', p.shadow);
+  bs.setProperty('--chip-on', `linear-gradient(135deg, ${p.accent}, ${p.accent2})`);
+}
+/* 从照片提取配色：主色相簇 → 强调色，明度 → 深浅模式，主中性色 → 背景渐变 */
+function extractPalette(cv) {
+  const w = 44, h = 44;
+  const c2 = document.createElement('canvas');
+  c2.width = w; c2.height = h;
+  const cx = c2.getContext('2d');
+  cx.drawImage(cv, 0, 0, w, h);
+  const d = cx.getImageData(0, 0, w, h).data;
+  const hueW = new Array(36).fill(0);
+  const neutral = {};
+  let lum = 0, satSum = 0, px = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+    px++;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const l = (mx + mn) / 2;
+    lum += l;
+    let s = 0;
+    if (mx !== mn) s = (mx - mn) / (1 - Math.abs(2 * l - 1) || 1e-6);
+    satSum += s;
+    let hh = 0;
+    if (mx !== mn) {
+      const df = mx - mn;
+      if (mx === r) hh = ((g - b) / df + 6) % 6;
+      else if (mx === g) hh = (b - r) / df + 2;
+      else hh = (r - g) / df + 4;
+      hh *= 60;
+    }
+    if (s > 0.22 && l > 0.14 && l < 0.92) hueW[Math.floor(hh / 10) % 36] += s;
+    else {
+      const key = [Math.round(r * 4), Math.round(g * 4), Math.round(b * 4)].join(',');
+      neutral[key] = neutral[key] || { n: 0, r: d[i], g: d[i + 1], b: d[i + 2] };
+      neutral[key].n++;
+    }
+  }
+  const avgLum = lum / px, avgSat = satSum / px;
+  let h1 = -1, h2 = -1;
+  {
+    const order = hueW.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
+    h1 = order[0][1] * 10 + 5;
+    for (const [v, i] of order.slice(1)) { // 第二主色：与第一主色相距至少 40°
+      const diff = Math.min(Math.abs(i * 10 + 5 - h1), 360 - Math.abs(i * 10 + 5 - h1));
+      if (v > 0 && diff > 40) { h2 = i * 10 + 5; break; }
+    }
+    if (h2 < 0) h2 = (h1 + 145) % 360;
+  }
+  if (avgSat < 0.09) { h1 = 28; h2 = 150; } // 照片几乎无彩色时给默认点缀色
+  const dark = avgLum < 0.42;
+  // 主中性色 → 背景
+  let bg1, bg2, card, cardStrong, tabBg, text, textDim;
+  const neutralColors = Object.values(neutral).sort((a, b) => b.n - a.n);
+  const nb = neutralColors[0] || { r: 245, g: 243, b: 238 };
+  const mix = (c, t2, k) => Math.round(c + (t2 - c) * k);
+  if (dark) {
+    bg1 = `rgb(${mix(nb.r, 10, 0.55)},${mix(nb.g, 12, 0.55)},${mix(nb.b, 18, 0.55)})`;
+    bg2 = `rgb(${Math.round(nb.r * 0.35)},${Math.round(nb.g * 0.35)},${Math.round(nb.b * 0.4)})`;
+    card = 'rgba(28,30,40,.78)'; cardStrong = 'rgba(34,36,48,.96)';
+    tabBg = 'rgba(22,24,34,.9)'; text = '#eef0f6'; textDim = '#9aa0b5';
+  } else {
+    bg1 = `rgb(${mix(nb.r, 255, 0.55)},${mix(nb.g, 252, 0.55)},${mix(nb.b, 246, 0.55)})`;
+    bg2 = `rgb(${Math.round(nb.r * 0.82 + 40)},${Math.round(nb.g * 0.82 + 40)},${Math.round(nb.b * 0.82 + 42)})`;
+    card = 'rgba(255,255,255,.86)'; cardStrong = 'rgba(255,255,255,.97)';
+    tabBg = 'rgba(255,255,255,.9)'; text = '#33334a'; textDim = '#8b8ba3';
+  }
+  const accent = hsl2hex(h1, dark ? 58 : 62, dark ? 58 : 48);
+  const accent2 = hsl2hex(h2, dark ? 60 : 64, dark ? 62 : 54);
+  return {
+    bg1, bg2, accent, accent2, dark,
+    card, cardStrong, tabBg, text,
+    textDim, cardBorder: dark ? 'rgba(255,255,255,.12)' : 'rgba(90,90,120,.16)',
+    shadow: dark ? '0 8px 24px rgba(0,0,0,.5)' : '0 8px 24px rgba(60,60,90,.18)'
+  };
 }
 function applyBg() {
   const bg = $('bgLayer'), dim = $('bgDim');
@@ -162,7 +260,10 @@ function applyBg() {
   if (dim) dim.style.opacity = '';
 }
 function renderThemeGrids() {
-  const html = THEMES.map((t) =>
+  const list = S.settings.customPalette
+    ? THEMES.concat([{ id: 'custom', name: '照片配色', emoji: '📷', sw: `linear-gradient(135deg, ${S.settings.customPalette.bg1}, ${S.settings.customPalette.accent}, ${S.settings.customPalette.accent2})` }])
+    : THEMES;
+  const html = list.map((t) =>
     `<button class="theme-card ${S.settings.theme === t.id ? 'on' : ''}" data-t="${t.id}">
       <div class="theme-swatch" style="background:${t.sw}">${t.emoji}</div>
       <div class="theme-name">${t.name}</div></button>`).join('');
@@ -706,8 +807,13 @@ function handleBgFile(f) {
     cv.width = Math.round(img.width * r); cv.height = Math.round(img.height * r);
     cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
     S.settings.bgImage = cv.toDataURL('image/jpeg', 0.86);
-    save(); applyBg();
-    toast('🖼️ 壁纸已换', '可以在下方调整遮罩浓度');
+    // 照片取色 → 自动生成整套 UI 配色（背景/强调色/卡片/文字深浅）
+    try {
+      S.settings.customPalette = extractPalette(cv);
+      S.settings.theme = 'custom';
+    } catch (e) { console.warn('取色失败', e); }
+    save(); applyTheme();
+    toast('🖼️ 壁纸已换 + 🎨 已生成照片配色', '整套 UI（强调色/卡片/文字深浅）已按照片自动调整，可去「皮肤」里切换或微调遮罩');
   };
   img.src = URL.createObjectURL(f);
 }
