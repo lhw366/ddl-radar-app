@@ -36,20 +36,29 @@
       ];
       var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
       this._channelOk = [];
-      for (var i = 0; i < defs.length; i++) {
-        var d = defs[i];
-        try {
-          if (ddp) {
-            await ddp.ensureChannel(d);
-            this._channelOk.push({ id: d.id });
-          } else {
-            await ln.createChannel({
-              id: d.id, name: d.name, importance: 4,
-              sound: d.sound || undefined, visibility: 1
-            });
-            this._channelOk.push({ id: d.id });
-          }
-        } catch (e) { /* 单个通道失败不阻断 */ }
+      // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
+      var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
+      var chSigStored = null;
+      try { chSigStored = localStorage.getItem('ddlr_chsig'); } catch (e) {}
+      if (chSig === chSigStored) {
+        defs.forEach(function (d) { this._channelOk.push({ id: d.id }); }, this);
+      } else {
+        for (var i = 0; i < defs.length; i++) {
+          var d = defs[i];
+          try {
+            if (ddp) {
+              await ddp.ensureChannel(d);
+              this._channelOk.push({ id: d.id });
+            } else {
+              await ln.createChannel({
+                id: d.id, name: d.name, importance: 4,
+                sound: d.sound || undefined, visibility: 1
+              });
+              this._channelOk.push({ id: d.id });
+            }
+          } catch (e) { /* 单个通道失败不阻断 */ }
+        }
+        try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
       }
       await this.ensurePermissions();
       await this.sync(window.S);
@@ -131,6 +140,10 @@
         out.channels = ['ddlr_full', 'ddlr_vib', 'ddlr_ring'].filter(function (x) { return ids.indexOf(x) >= 0; }).length;
       } catch (e) { out.channels = 0; }
       try { var pend = await ln.getPending(); out.pending = (pend.notifications || []).length; } catch (e) { out.pending = -1; }
+      var ddp2 = window.Capacitor && Capacitor.Plugins.DdlNotify;
+      if (ddp2) {
+        try { var b = await ddp2.batteryStatus(); out.battery = !!b.ignoring; out.sdk = b.sdk; } catch (e) { out.battery = null; }
+      }
       return out;
     },
 

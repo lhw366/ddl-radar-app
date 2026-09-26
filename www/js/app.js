@@ -808,9 +808,11 @@ async function renderDiag() {
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.exact === true, '精确闹钟（退后台必达的关键）', d.exact ? '' : 'exact');
+  html += diagRow(d.battery === true, '电池优化豁免（ColorOS 保活关键）', d.battery ? '' : 'battery');
   html += diagRow((d.channels || 0) >= 3, '提醒通道已创建（' + (d.channels || 0) + '/3）', d.channels >= 3 ? '' : 'reinit');
   html += diagRow((d.pending || 0) > 0, '已排定系统提醒 ' + d.pending + ' 条', (d.pending || 0) > 0 ? '' : 'notask');
   html += diagRow(null, 'ColorOS 电池白名单（需手动）：设置 → 电池 → DDL雷达');
+  if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
@@ -818,6 +820,10 @@ async function renderDiag() {
     if (f === 'exact') {
       const opened = await NativeNotify.openExactAlarm();
       if (!opened) toast('ℹ️ 手动开启', '系统设置 → 应用 → DDL雷达 → 闹钟和提醒');
+    }
+    if (f === 'battery') {
+      try { await Capacitor.Plugins.DdlNotify.requestIgnoreBattery(); } catch (e) { /* 忽略 */ }
+      setTimeout(renderDiag, 1500);
     }
     if (f === 'reinit') { await NativeNotify.init(); }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }

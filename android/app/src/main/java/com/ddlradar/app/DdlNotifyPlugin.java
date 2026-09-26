@@ -117,4 +117,33 @@ public class DdlNotifyPlugin extends Plugin {
             call.reject("list failed: " + e.getMessage());
         }
     }
+
+    @PluginMethod
+    public void batteryStatus(PluginCall call) {
+        android.os.PowerManager pm = (android.os.PowerManager) getContext()
+                .getSystemService(Context.POWER_SERVICE);
+        boolean ignoring = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+        JSObject ret = new JSObject()
+                .put("ignoring", ignoring)
+                .put("sdk", Build.VERSION.SDK_INT);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestIgnoreBattery(PluginCall call) {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getContext()
+                    .getSystemService(Context.POWER_SERVICE);
+            String pkg = getContext().getPackageName();
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(pkg)) {
+                Intent i = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + pkg));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+            }
+            call.resolve(new JSObject().put("done", true));
+        } catch (Exception e) {
+            call.reject("request failed: " + e.getMessage());
+        }
+    }
 }
