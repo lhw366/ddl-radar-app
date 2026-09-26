@@ -132,9 +132,7 @@ function tickCountdown() {
       $('heroBar').firstElementChild.style.width = Math.min(Math.max((1 - left / span) * 100, 2), 100) + '%';
     }
   }
-  // 列表卡片上的剩余时间（10 秒粒度即可）
-  if (now - (tickCountdown._lastMeta || 0) < 10000) return;
-  tickCountdown._lastMeta = now;
+  // 列表卡片上的剩余时间（同样秒级跳动）
   document.querySelectorAll('[data-due]').forEach((el) => {
     const dl = +el.dataset.due - now;
     el.textContent = dl <= 0 ? '已过期'

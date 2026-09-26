@@ -16,10 +16,23 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        ddl {
+            storeFile file('ddlradar.keystore')
+            storeType 'PKCS12'
+            storePassword 'ddlr2026'
+            keyAlias 'ddlr'
+            keyPassword 'ddlr2026'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.ddl
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.ddl
         }
     }
 }
