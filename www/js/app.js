@@ -829,7 +829,25 @@ function bindSettings() {
   $('verText').textContent = 'v' + APP_VERSION;
   $('updateBtn').addEventListener('click', async () => {
     const b = $('updateBtn');
-    if (b.dataset.url) { openExternal(b.dataset.url); return; }
+    if (b.dataset.url) {
+      const url = b.dataset.url;
+      // APK 内：下载到应用目录后直接拉起系统安装确认（无需跳浏览器）
+      if (window.Capacitor && Capacitor.Plugins.ApkInstaller) {
+        b.disabled = true; b.textContent = '⬇️ 正在下载更新包…';
+        try {
+          await Capacitor.Plugins.ApkInstaller.installApk({ url });
+          b.textContent = '📦 请在弹出的界面点「安装」';
+          b.disabled = false;
+          toast('📦 更新包已就绪', '系统安装界面已弹出，点「安装」即可完成更新');
+        } catch (e) {
+          b.disabled = false; b.textContent = '⬇️ 下载新版本';
+          toast('⚠️ 下载失败', (e && e.message) || '请稍后再试');
+        }
+        return;
+      }
+      openExternal(url);
+      return;
+    }
     b.disabled = true; b.textContent = '🔄 检查中…';
     const local = await (async () => {
       try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) return (await r.json()).code || 0; } catch (e) {}
