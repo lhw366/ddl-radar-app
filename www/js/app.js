@@ -790,6 +790,41 @@ async function fetchRemoteVersion() {
   return null;
 }
 
+/* ---------------- 提醒诊断面板 ---------------- */
+function diagRow(ok, text, fix) {
+  const icon = ok === null || ok === undefined ? '➖' : ok ? '✅' : '❌';
+  const btn = fix ? `<button class="btn-ghost-sm" data-fix="${fix}" style="margin-left:auto">去修复</button>` : '';
+  return `<div class="diag-row">${icon} <span style="flex:1">${text}</span>${btn}</div>`;
+}
+async function renderDiag() {
+  const box = $('diagList');
+  if (!box) return;
+  if (!(window.NativeNotify && NativeNotify.available())) {
+    box.innerHTML = diagRow(null, '网页版环境：无系统级提醒，完整体验请安装 APK');
+    return;
+  }
+  box.innerHTML = '<div>🔍 诊断中…</div>';
+  const d = await NativeNotify.diag();
+  let html = '';
+  html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
+  html += diagRow(d.exact === true, '精确闹钟（退后台必达的关键）', d.exact ? '' : 'exact');
+  html += diagRow((d.channels || 0) >= 3, '提醒通道已创建（' + (d.channels || 0) + '/3）', d.channels >= 3 ? '' : 'reinit');
+  html += diagRow((d.pending || 0) > 0, '已排定系统提醒 ' + d.pending + ' 条', (d.pending || 0) > 0 ? '' : 'notask');
+  html += diagRow(null, 'ColorOS 电池白名单（需手动）：设置 → 电池 → DDL雷达');
+  box.innerHTML = html;
+  box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
+    const f = b.dataset.fix;
+    if (f === 'notify') { askNotify(); setTimeout(refreshNotifyBtn, 500); }
+    if (f === 'exact') {
+      const opened = await NativeNotify.openExactAlarm();
+      if (!opened) toast('ℹ️ 手动开启', '系统设置 → 应用 → DDL雷达 → 闹钟和提醒');
+    }
+    if (f === 'reinit') { await NativeNotify.init(); }
+    if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
+    setTimeout(renderDiag, 900);
+  }));
+}
+
 function bindSettings() {
   document.querySelectorAll('#setRemindMode button').forEach((b) =>
     b.addEventListener('click', () => {
@@ -825,6 +860,7 @@ function bindSettings() {
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
 
   $('verText').textContent = 'v' + APP_VERSION;
+  $('diagBtn').addEventListener('click', renderDiag);
   $('updateBtn').addEventListener('click', async () => {
     const b = $('updateBtn');
     if (b.dataset.url) {
@@ -974,7 +1010,9 @@ function init() {
   applyTheme();
   bindSettings();
   refreshNotifyBtn();
-  if (window.NativeNotify && NativeNotify.available()) NativeNotify.init(S);
+  if (window.NativeNotify && NativeNotify.available()) {
+    NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); });
+  }
 
   // 隐藏文件选择器
   const bgFile = document.createElement('input');

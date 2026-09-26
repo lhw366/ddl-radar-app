@@ -395,6 +395,10 @@ body.theme-cat .cal-cell.rest .d-num{ color:#e05a6d; }
 }
 .about{ font-size:12px; line-height:1.8; color:var(--text-dim); }
 .about b{ color:var(--text); }
+/* 诊断面板 */
+.diag-row{ display:flex; align-items:center; gap:8px; padding:7px 2px; border-bottom:1px dashed var(--card-border); text-align:left; }
+.diag-row:last-child{ border-bottom:none; }
+.diag-row .btn-ghost-sm{ padding:4px 10px; font-size:11px; flex-shrink:0; }
 
 /* ================= 标签栏 & FAB ================= */
 #tabbar{

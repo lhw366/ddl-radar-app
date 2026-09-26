@@ -27,23 +27,30 @@
     init: async function () {
       if (!this.available()) return;
       var ln = LN();
-      // 提醒方式通道（Android 通道一经创建不可改，每种方式一个固定通道）
+      // 提醒方式通道：插件 createChannel 不支持 vibration（审计确认），
+      // 用自建 DdlNotify 原生插件正确创建（删除重建保证设置生效）
       var defs = [
-        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 5, visibility: 1, sound: 'ddlr_chime.wav', vibration: true },
-        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 5, visibility: 1, vibration: true },
-        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 5, visibility: 1, sound: 'ddlr_chime.wav' }
+        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
+        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
       ];
+      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
+      this._channelOk = [];
       for (var i = 0; i < defs.length; i++) {
-        try { await ln.createChannel(defs[i]); } catch (e) { /* 已存在 */ }
+        var d = defs[i];
+        try {
+          if (ddp) {
+            await ddp.ensureChannel(d);
+            this._channelOk.push({ id: d.id });
+          } else {
+            await ln.createChannel({
+              id: d.id, name: d.name, importance: 4,
+              sound: d.sound || undefined, visibility: 1
+            });
+            this._channelOk.push({ id: d.id });
+          }
+        } catch (e) { /* 单个通道失败不阻断 */ }
       }
-      // 通道创建结果校验：缺失时调度将不带 channelId（走默认通道），避免通知静默失败
-      try {
-        var list = await ln.listChannels();
-        var ok = {};
-        (list.channels || []).forEach(function (c) { ok[c.id] = true; });
-        defs.forEach(function (d) { if (!ok[d.id]) d._missing = true; });
-        this._channelOk = defs;
-      } catch (e) { this._channelOk = null; }
       await this.ensurePermissions();
       await this.sync(window.S);
       // 插件带开机恢复接收器；这里再兜底刷一次
@@ -70,28 +77,61 @@
     },
 
     refreshExact: async function () {
-      var ln = LN();
       this._exactOn = null;
+      // 首选自建插件的精确布尔值；退回官方插件（注意其字段是 exact_alarm: 'granted'/'denied'）
+      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
       try {
-        if (typeof ln.checkExactNotificationSetting === 'function') {
-          var s = await ln.checkExactNotificationSetting();
-          this._exactOn = s && (s.exactNotificationSetting === 'ENABLED' || s.exactNotificationSetting === 'ENABLED_V2' || s.exactNotificationSetting === 'GRANTED');
-        } else {
-          this._exactOn = true; // 插件较旧无此 API，视为可用
+        if (ddp) {
+          var r = await ddp.exactStatus();
+          this._exactOn = !!r.granted;
+          return this._exactOn;
         }
-      } catch (e) { /* ignore */ }
-      return this._exactOn;
+      } catch (e) { /* fallback */ }
+      try {
+        var ln = LN();
+        if (ln && typeof ln.checkExactNotificationSetting === 'function') {
+          var s = await ln.checkExactNotificationSetting();
+          this._exactOn = s && s.exact_alarm === 'granted';
+          return this._exactOn;
+        }
+      } catch (e) { /* fallback */ }
+      this._exactOn = true;
+      return true;
     },
 
     openExactAlarm: async function () {
+      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
+      try {
+        if (ddp) {
+          var r = await ddp.openExactSettings();
+          if (r && r.opened) return true;
+        }
+      } catch (e) { /* fallback */ }
       var ln = LN();
       try {
-        if (typeof ln.changeExactNotificationSetting === 'function') {
+        if (ln && typeof ln.changeExactNotificationSetting === 'function') {
           await ln.changeExactNotificationSetting();
           return true;
         }
       } catch (e) { /* ignore */ }
       return false;
+    },
+
+    // 诊断：各链路状态（通知权限/精确闹钟/通道/已排定条数）
+    diag: async function () {
+      var out = { native: this.available() };
+      if (!out.native) return out;
+      var ln = LN();
+      try { var p = await ln.checkPermissions(); out.notify = p.display === 'granted'; } catch (e) { out.notify = null; }
+      out.exact = await this.refreshExact();
+      try {
+        var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
+        var l = ddp ? await ddp.listChannelIds() : await ln.listChannels();
+        var ids = l.ids || (l.channels || []).map(function (c) { return c.id; });
+        out.channels = ['ddlr_full', 'ddlr_vib', 'ddlr_ring'].filter(function (x) { return ids.indexOf(x) >= 0; }).length;
+      } catch (e) { out.channels = 0; }
+      try { var pend = await ln.getPending(); out.pending = (pend.notifications || []).length; } catch (e) { out.pending = -1; }
+      return out;
     },
 
     // 10 秒后发一条系统通知，用于验证提醒链路（含退 App 场景）
@@ -155,8 +195,7 @@
                 title: r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
                 schedule: { at: new Date(r.at), allowWhileIdle: true },
-                channelId: (this._channelOk || []).filter(function (c) { return !c._missing; }).map(function (c) { return c.id; }).indexOf('ddlr_' + mode) >= 0
-                  ? 'ddlr_' + mode : undefined
+                channelId: 'ddlr_' + mode
               });
             }
           }
