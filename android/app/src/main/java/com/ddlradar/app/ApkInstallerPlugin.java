@@ -57,6 +57,7 @@ public class ApkInstallerPlugin extends Plugin {
             File apk = new File(dir, "ddl-radar-update.apk");
 
             Exception lastErr = null;
+            StringBuilder tried = new StringBuilder();
             for (String u : urls) {
                 try {
                     long bytes = downloadTo(u, apk);
@@ -66,10 +67,15 @@ public class ApkInstallerPlugin extends Plugin {
                     return;
                 } catch (Exception e) {
                     lastErr = e;
+                    String host = u.split("/", 4).length > 3 ? u.split("/", 4)[2] : u;
+                    tried.append(host).append(": ")
+                            .append(e.getMessage() == null ? "failed" : e.getMessage()).append("; ");
                 }
             }
-            rejectOnUi("所有线路下载失败：" +
-                    (lastErr == null || lastErr.getMessage() == null ? "unknown" : lastErr.getMessage()));
+            String detail = tried.toString();
+            if (detail.length() > 180) detail = detail.substring(0, 180) + "…";
+            rejectOnUi("已试 " + urls.size() + " 条线路：" + detail
+                    + "（最后错误：" + (lastErr == null ? "unknown" : lastErr.getMessage()) + "）");
         }, "apk-download").start();
     }
 

@@ -752,9 +752,9 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.8.3';
+const APP_VERSION = '1.8.4';
 const REPO = 'lhw366/ddl-radar-app';
-let pendingUpdateMirrors = []; // 下载线路：jsdelivr 镜像优先，github 直连兜底
+let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
   try { return AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined; } catch (e) { return undefined; }
 }
@@ -765,31 +765,40 @@ function openExternal(url) {
   window.open(url, '_blank');
 }
 async function fetchRemoteVersion() {
-  // 国内优先 jsdelivr 镜像（快，@main 可能滞后几分钟），8 秒超时快速切换；GitHub API 兜底
-  for (const base of ['https://cdn.jsdelivr.net/gh/', 'https://fastly.jsdelivr.net/gh/']) {
-    try {
-      const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store', signal: fetchTimeout(8000) });
-      if (r.ok) { const j = await r.json(); if (j.code) return withMirrors(j); }
-    } catch (e) { /* next mirror */ }
-  }
-  try {
+  /* 5 路并发查版本、取最大 code：jsdelivr 各边缘的 @main 缓存可能滞后几小时
+     （实测 fastly 曾落后 4 个构建导致误判「已是最新」），单一路源不可信 */
+  const bases = ['https://gcore.jsdelivr.net/gh/', 'https://testingcf.jsdelivr.net/gh/',
+    'https://cdn.jsdelivr.net/gh/', 'https://fastly.jsdelivr.net/gh/', 'https://cdn.jsdmirror.com/gh/'];
+  const jobs = bases.map(async (base) => {
+    const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store', signal: fetchTimeout(8000) });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    return j.code ? j : null;
+  });
+  jobs.push((async () => {
     const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { cache: 'no-store', signal: fetchTimeout(8000) });
-    if (r.ok) {
-      const j = await r.json();
-      const code = parseInt((j.tag_name || '').replace(/^v/, ''), 10) || 0;
-      const asset = (j.assets || []).find((a) => a.name.endsWith('.apk'));
-      if (code > 0 && asset) return withMirrors({ code, version: j.tag_name, apk: asset.browser_download_url });
-    }
-  } catch (e) { /* give up */ }
-  return null;
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    const code = parseInt((j.tag_name || '').replace(/^v/, ''), 10) || 0;
+    const asset = (j.assets || []).find((a) => a.name.endsWith('.apk'));
+    return (code > 0 && asset) ? { code, version: j.tag_name, apk: asset.browser_download_url } : null;
+  })());
+  const results = await Promise.allSettled(jobs);
+  let best = null;
+  for (const res of results) {
+    if (res.status !== 'fulfilled' || !res.value) continue;
+    if (!best || (res.value.code || 0) > (best.code || 0)) best = res.value;
+  }
+  return best ? withMirrors(best) : null;
 }
-/* APK 下载线路（按国内可达性排序，设备端逐条尝试直到成功）：
-   ① jsdelivr 的 gcore/testingcf 边缘不拦 .apk 扩展名（实测 200 直出真包，文件名可直接安装）
-   ② cdn/fastly 边缘用 .bin 绕过拦截 ③ ghproxy 系代理转发 release 直链 ④ github 直连兜底 */
+/* APK 下载线路（设备端逐条尝试直到成功）：
+   ① jsdelivr gcore/testingcf 边缘不拦 .apk（直出可安装文件名）② 国内反代 jsdmirror
+   ③ cdn/fastly 边缘用 .bin 绕扩展名拦截 ④ ghproxy 系代理转发 release 直链 ⑤ github 直连 */
 function withMirrors(j) {
   const m = [
     `https://gcore.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
     `https://testingcf.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
+    `https://cdn.jsdmirror.com/gh/${REPO}@main/apk-latest/app-debug.apk`,
     `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`,
     `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`
   ];

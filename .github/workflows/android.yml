@@ -65,6 +65,13 @@ jobs:
           git commit -m "chore: version.json + latest apk for build ${{ github.run_number }} [skip ci]"
           git push
 
+      # jsdelivr 各边缘对 @main 的缓存可能滞后数小时（实测 fastly 落后 4 个构建），
+      # 每次构建后主动刷新，防止 App 检查更新拿到过期版本号误判「已是最新」
+      - name: Purge jsdelivr cache
+        run: |
+          curl -s -X POST https://purge.jsdelivr.net/ -H "Content-Type: application/json" \
+            -d '{"path":["/gh/lhw366/ddl-radar-app@main/version.json","/gh/lhw366/ddl-radar-app@main/apk-latest/app-debug.apk","/gh/lhw366/ddl-radar-app@main/apk-latest/ddl-radar.bin"]}' || true
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
