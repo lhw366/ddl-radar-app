@@ -79,6 +79,7 @@ public class DdlAlarmPlugin extends Plugin {
                 }
             }
             AlarmScheduler.save(ctx, wanted);
+            AlarmService.start(ctx); // 守护服务刷新「下一条」显示（并确保常驻）
 
             JSObject ret = new JSObject();
             ret.put("added", added);
@@ -102,6 +103,7 @@ public class DdlAlarmPlugin extends Plugin {
                     o.optString("title", null), o.optString("body", null),
                     o.optString("channel", null));
             upsert(ctx, o);
+            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("scheduleOne failed: " + e.getMessage());
@@ -117,6 +119,7 @@ public class DdlAlarmPlugin extends Plugin {
             long id = ((Number) idv).longValue();
             AlarmScheduler.cancel(ctx, id);
             AlarmScheduler.remove(ctx, id);
+            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancel failed: " + e.getMessage());
@@ -133,6 +136,7 @@ public class DdlAlarmPlugin extends Plugin {
                 if (s != null) AlarmScheduler.cancel(ctx, s.optLong("id"));
             }
             AlarmScheduler.save(ctx, new JSONArray());
+            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancelAll failed: " + e.getMessage());

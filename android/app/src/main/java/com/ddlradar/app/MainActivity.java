@@ -11,5 +11,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DdlNotifyPlugin.class);
         registerPlugin(DdlAlarmPlugin.class);
         super.onCreate(savedInstanceState);
+        // 提醒守护前台服务随 App 启动常驻：进程不被冻结，后台闹钟投递才可靠
+        AlarmService.start(this);
     }
 }

@@ -11,78 +11,170 @@ import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 
 /**
- * 提醒前台服务：系统闹钟的主备双通道直接以前台服务身份拉起本服务
- * （PendingIntent.getForegroundService，绕开 ColorOS 对后台应用的
- * 进程冻结与广播拦截——广播到冻结进程可能被扣下，前台服务拉起必须放行）。
+ * 提醒守护前台服务——真闹钟 App 的核心保活设计。
  *
- * startForeground 直接挂提醒横幅（通道已静音，声音/震动由本服务直执行），
- * 播完自动退出前台。Android 8.0 以下无此 API，由 AlarmReceiver 委托 startService。
+ * 为什么需要它：ColorOS 会在 App 切后台后冻结进程，把系统闹钟的投递扣下
+ * （前台全绿、后台不响的根因）。闹钟 App 的解法是进程从启动起就常驻一个
+ * 前台服务，让进程永不被冻结——进程活着，setAlarmClock 主备双通道的投递
+ * 就和前台时完全一样，必然送达。
+ *
+ * 职责：
+ * - 常驻低优先级通知「提醒守护中 · 下一条 HH:MM」（守护通道，静音）
+ * - 闹钟到点（主备双通道 onStartCommand）在活进程内直响：留痕/去重/铃声/震动/
+ *   横幅/清存储（声音震动直执行，不依赖通知权限与 ROM 展示规则）
+ * - START_STICKY：被杀后系统自动重建；开机/覆盖安装由 BootReceiver 拉起
+ *
+ * 注意：状态栏的「提醒守护中」通知是保活机制的一部分，请勿在通知设置里关闭。
  */
 public class AlarmService extends Service {
 
+    static final String GUARD_CHANNEL = "ddlr_guard";
+    static final int FG_ID = 19900214;
+
     private MediaPlayer player;
     private PowerManager.WakeLock wl;
-    private final Handler ui = new Handler(Looper.getMainLooper());
+
+    static void start(Context ctx) {
+        Intent i = new Intent(ctx, AlarmService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(i);
+        } else {
+            ctx.startService(i);
+        }
+    }
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        goForeground();
+    }
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        int id = intent == null ? -1 : intent.getIntExtra("id", -1);
-        String title = intent == null ? null : intent.getStringExtra("title");
-        String body = intent == null ? null : intent.getStringExtra("body");
-        String channelId = intent == null ? null : intent.getStringExtra("channelId");
-        if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
-        long at = intent == null ? 0 : intent.getLongExtra("at", 0);
+        goForeground();
+        if (intent != null && intent.getIntExtra("id", -1) != -1) {
+            fireReminder(intent);
+        } else {
+            refreshGuard(); // 保活启动/告警列表变化：刷新「下一条」显示
+        }
+        return START_STICKY;
+    }
+
+    /* ---------------- 守护前台通知 ---------------- */
+
+    private void goForeground() {
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && nm.getNotificationChannel(GUARD_CHANNEL) == null) {
+            NotificationChannel ch = new NotificationChannel(GUARD_CHANNEL,
+                    "提醒守护（静音常驻）", NotificationManager.IMPORTANCE_LOW);
+            ch.setSound(null, null);
+            ch.enableVibration(false);
+            ch.setShowBadge(false);
+            nm.createNotificationChannel(ch);
+        }
+        Notification n = guardNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        } else {
+            startForeground(FG_ID, n);
+        }
+    }
+
+    private Notification guardNotification() {
+        long nextAt = 0, now = System.currentTimeMillis();
+        org.json.JSONArray arr = AlarmScheduler.load(this);
+        for (int i = 0; i < arr.length(); i++) {
+            org.json.JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            long at = o.optLong("at", 0);
+            if (at > now && (nextAt == 0 || at < nextAt)) nextAt = at;
+        }
+        String text = nextAt == 0 ? "暂无待提醒事项，添加后会自动守护"
+                : "下一条：" + fmtShort(nextAt);
+        Notification.Builder b;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            b = new Notification.Builder(this, GUARD_CHANNEL);
+        } else {
+            b = new Notification.Builder(this).setPriority(Notification.PRIORITY_LOW);
+        }
+        PendingIntent pi = null;
+        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (open != null) {
+            pi = PendingIntent.getActivity(this, 0, open,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
+        return b.setContentTitle("DDL雷达 · 提醒守护中")
+                .setContentText(text)
+                .setSmallIcon(getApplicationInfo().icon)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(pi)
+                .build();
+    }
+
+    private void refreshGuard() {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(FG_ID, guardNotification());
+        } catch (Exception e) { /* ignore */ }
+    }
+
+    /* ---------------- 闹钟到点：在活进程内直响 ---------------- */
+
+    private void fireReminder(Intent intent) {
+        int id = intent.getIntExtra("id", -1);
+        long at = intent.getLongExtra("at", 0);
         long now = System.currentTimeMillis();
 
-        // FGS 必须立刻挂通知：直接用提醒横幅本体（高优通道=屏幕横幅，通道静音不双响）
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        Notification banner = buildBanner(id, title, body, channelId);
-        if (banner != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(Math.max(1, id), banner, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(Math.max(1, id), banner);
-            }
-        } else {
-            startForeground(Math.max(1, id), minimalNotification());
-        }
-
-        // 主备双通道去重：同一提醒 60s 内只响一次
+        // 主备双通道去重：同一提醒 60s 内只响一次（备份通道晚 3s 到达会被跳过）
         long[] lf = AlarmScheduler.lastFire(this);
         boolean dup = lf[0] == id && now - lf[1] < 60000;
-        if (id == -1 || dup) {
-            if (!dup) AlarmScheduler.remove(this, Math.max(0, id));
-            finish(startId);
-            return START_NOT_STICKY;
+        if (dup) {
+            AlarmScheduler.remove(this, id);
+            refreshGuard();
+            return;
         }
         AlarmScheduler.markFired(this, id, (at > 0 && now - at > 2500) ? "exact" : "clock");
 
+        String title = intent.getStringExtra("title");
+        String body = intent.getStringExtra("body");
+        String channelId = intent.getStringExtra("channelId");
+        if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
+
         // 声音/震动直执行（按提醒方式：full 两者、vib 只震、ring 只响）
-        acquireWakeLock();
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ddlr:alarmSound");
+                wl.acquire(9000);
+            }
+        } catch (Exception e) { /* ignore */ }
         if (!"ddlr_vib".equals(channelId)) playChime();
         if (!"ddlr_ring".equals(channelId)) vibrate();
 
+        // 提醒横幅（高优通道，静音，锁屏可见）
+        postBanner(id, title, body, channelId);
+
         AlarmScheduler.remove(this, id);
-        finish(startId);
-        return START_NOT_STICKY;
+        refreshGuard();
     }
 
-    /** 提醒横幅（同时作为 FGS 通知）；通道缺失时兜底重建 */
-    private Notification buildBanner(int id, String title, String body, String channelId) {
+    private void postBanner(int id, String title, String body, String channelId) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return null;
+        if (nm == null) return;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                     && nm.getNotificationChannel(channelId) == null) {
@@ -108,7 +200,7 @@ public class AlarmService extends Service {
                 pi = PendingIntent.getActivity(this, id, open,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             }
-            return b
+            Notification n = b
                     .setContentTitle(title == null ? "DDL雷达" : title)
                     .setContentText(body == null ? "" : body)
                     .setSmallIcon(getApplicationInfo().icon)
@@ -118,41 +210,10 @@ public class AlarmService extends Service {
                     .setWhen(System.currentTimeMillis())
                     .setContentIntent(pi)
                     .build();
-        } catch (Exception e) {
-            return null;
-        }
+            nm.notify(id, n);
+        } catch (Exception e) { /* 横幅失败不影响已执行的铃声/震动 */ }
     }
 
-    private Notification minimalNotification() {
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null && nm.getNotificationChannel("ddlr_svc") == null) {
-                NotificationChannel ch = new NotificationChannel("ddlr_svc",
-                        "提醒守护（静音）", NotificationManager.IMPORTANCE_MIN);
-                ch.setSound(null, null);
-                ch.enableVibration(false);
-                nm.createNotificationChannel(ch);
-            }
-            b = new Notification.Builder(this, "ddlr_svc");
-        } else {
-            b = new Notification.Builder(this).setPriority(Notification.PRIORITY_MIN);
-        }
-        return b.setContentTitle("DDL雷达").setContentText("提醒服务运行中")
-                .setSmallIcon(getApplicationInfo().icon).build();
-    }
-
-    private void acquireWakeLock() {
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ddlr:alarmSound");
-                wl.acquire(9000);
-            }
-        } catch (Exception e) { /* ignore */ }
-    }
-
-    /** 铃声：闹钟音源（USAGE_ALARM），播完回调收尾 */
     private void playChime() {
         try {
             AudioAttributes attrs = new AudioAttributes.Builder()
@@ -197,19 +258,20 @@ public class AlarmService extends Service {
         } catch (Exception e) { /* ignore */ }
     }
 
-    /** 声音起播后延迟退出前台（给 MediaPlayer 起播留时间防进程秒杀截断铃声）；
-     *  stopForeground(false) 把横幅留在通知栏由用户点按/划掉 */
-    private void finish(final int startId) {
-        ui.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (player != null) {
-                    try { player.stop(); } catch (Exception ignore) {}
-                }
-                if (wl != null) { try { wl.release(); } catch (Exception ignore) {} }
-                stopForeground(false);
-                stopSelf(startId);
-            }
-        }, 6000);
+    private static String fmtShort(long ts) {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(ts);
+        int m = c.get(java.util.Calendar.MONTH) + 1;
+        int d = c.get(java.util.Calendar.DAY_OF_MONTH);
+        int hh = c.get(java.util.Calendar.HOUR_OF_DAY);
+        int mm = c.get(java.util.Calendar.MINUTE);
+        return (m + "月" + d + "日 " + (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm);
+    }
+
+    @Override
+    public void onDestroy() {
+        if (player != null) { try { player.release(); } catch (Exception ignore) {} }
+        if (wl != null) { try { wl.release(); } catch (Exception ignore) {} }
+        super.onDestroy();
     }
 }

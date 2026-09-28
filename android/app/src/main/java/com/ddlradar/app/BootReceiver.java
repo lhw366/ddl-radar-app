@@ -20,6 +20,7 @@ public class BootReceiver extends BroadcastReceiver {
                 || Intent.ACTION_TIME_CHANGED.equals(action)
                 || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
             AlarmScheduler.reapplyAll(context);
+            AlarmService.start(context); // 守护服务随开机/更新恢复常驻
         }
     }
 }
