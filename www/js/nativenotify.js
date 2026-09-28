@@ -45,10 +45,12 @@
     ensureChannels: async function () {
       var ddp = DDP();
       if (!ddp) return;
+      // 通道全部静音：铃声/震动由原生接收器直执行（不依赖通知权限与 ROM 展示规则），
+      // 通道只承载视觉横幅——避免双响，也绕开厂商对通知声/震动的压制
       var defs = [
-        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
-        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
+        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: false, sound: '' },
+        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: false, sound: '' },
+        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: '' }
       ];
       // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
       var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
@@ -91,6 +93,7 @@
         out.sysNextAt = p.sysNextAt || 0;
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
+        out.lastFireVia = p.lastFireVia || '';
         out.sdk = p.sdk || null;
       } catch (e) { out.pending = -1; out.nextAt = 0; }
       try {
@@ -138,9 +141,24 @@
         if (ok) {
           if (window.toast) {
             var head = granted ? '✅ 已排定，10 秒后应响'
-              : '✅ 已排定 · ⚠️ 通知权限未开（横幅弹不出，但 10 秒后仍会响铃/震动兜底）';
-            window.toast(head, '验证中：退 App 也行。若 10 秒后毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
+              : '✅ 已排定 · 10 秒后应响铃/震动（横幅需通知权限）';
+            window.toast(head, '验证中：退 App 也行。若毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
           }
+          // +13s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
+          setTimeout(function () {
+            if (document.hidden) return; // 退到后台的验证场景以实际通知为准
+            ddl.pending().then(function (p) {
+              var gone = !(p.items || []).some(function (i) { return i.id === 990000001; });
+              var fired = p.lastFireId === 990000001 && p.lastFireAt >= at - 2000;
+              if (fired && gone && window.toast) {
+                var viaTxt = p.lastFireVia === 'exact' ? '经精确闹钟备份' : '经系统闹钟';
+                window.toast('🔔 测试闹钟已触发（' + viaTxt + '）',
+                  '刚才应已响铃/震动。若什么都没感觉到，请把「运行诊断」截图反馈', 'urgent');
+              } else if (!gone && window.toast) {
+                window.toast('⚠️ 闹钟到点未触发', '系统未派发广播：请把「运行诊断」截图反馈', 'tt-urgent');
+              }
+            }).catch(function () {});
+          }, 13000);
         } else if (window.toast) {
           window.toast('⚠️ 排定未生效', '点「运行诊断」查看系统闹钟状态', 'tt-urgent');
         }

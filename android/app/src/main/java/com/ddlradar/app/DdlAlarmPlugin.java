@@ -28,6 +28,9 @@ import java.util.HashMap;
 @CapacitorPlugin(name = "DdlAlarm")
 public class DdlAlarmPlugin extends Plugin {
 
+    /** 闹钟注册规格版本：变更后 first apply 全量重排（v2 = 双机制注册 + 接收器直执行声震） */
+    private static final int SCHED_VER = 2;
+
     @PluginMethod
     public void apply(PluginCall call) {
         try {
@@ -168,6 +171,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("sysNextAt", sysNextAt);
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
+            ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
             ret.put("sdk", Build.VERSION.SDK_INT);
             call.resolve(ret);
         } catch (Exception e) {
@@ -201,6 +205,7 @@ public class DdlAlarmPlugin extends Plugin {
             JSONObject o = new JSONObject();
             o.put("id", ((Number) idv).longValue());
             o.put("at", ((Number) atv).longValue());
+            o.put("v", SCHED_VER);
             o.put("title", in.optString("title", ""));
             o.put("body", in.optString("body", ""));
             String ch = in.optString("channel", "");
@@ -212,9 +217,10 @@ public class DdlAlarmPlugin extends Plugin {
         }
     }
 
-    /** 同 id 下比对触发时刻与文案；任一变化都重排（更新 PendingIntent extras） */
+    /** 同 id 下比对规格版本、触发时刻与文案；任一变化都重排（更新 PendingIntent extras） */
     private boolean sameSpec(JSONObject a, JSONObject b) {
-        return a.optLong("at") == b.optLong("at")
+        return a.optInt("v", 1) == b.optInt("v", 1)
+                && a.optLong("at") == b.optLong("at")
                 && a.optString("title", "").equals(b.optString("title", ""))
                 && a.optString("body", "").equals(b.optString("body", ""))
                 && a.optString("channel", "").equals(b.optString("channel", ""));

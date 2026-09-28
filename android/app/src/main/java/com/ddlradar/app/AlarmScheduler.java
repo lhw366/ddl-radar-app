@@ -5,6 +5,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.Build;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -55,13 +56,14 @@ public final class AlarmScheduler {
         if (changed) save(ctx, keep);
     }
 
-    /** 闹钟实际触发留痕（接收器最先调用，后续任何失败都不影响此记录） */
-    public static void markFired(Context ctx, long id) {
+    /** 闹钟实际触发留痕（接收器去重后调用，后续任何失败都不影响此记录） */
+    public static void markFired(Context ctx, long id, String via) {
         try {
             SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             sp.edit()
                     .putLong("lastFireId", id)
                     .putLong("lastFireAt", System.currentTimeMillis())
+                    .putString("lastFireVia", via == null ? "" : via)
                     .apply();
         } catch (Exception e) { /* 诊断数据，失败忽略 */ }
     }
@@ -76,7 +78,22 @@ public final class AlarmScheduler {
         }
     }
 
-    /** 注册一条系统闹钟（setAlarmClock）；重复调用同一 id 会替换 */
+    /** 最近一次触发走的派发通道："clock"（系统闹钟）/ "exact"（精确闹钟备份） */
+    public static String lastFireVia(Context ctx) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            return sp.getString("lastFireVia", "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * 注册一条系统闹钟，双机制同发（同一 PendingIntent，接收器 60s 窗口去重）：
+     * 主：setAlarmClock（状态栏闹钟图标、免授权、Doze 准时）；
+     * 备：setExactAndAllowWhileIdle 在 +3s 再发一次——个别 ROM 对闹钟时钟通道
+     * 的派发存在怪异拦截，两条独立通道指向同一接收器，只要一条到达即提醒。
+     */
     public static void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
@@ -90,22 +107,30 @@ public final class AlarmScheduler {
             show = PendingIntent.getActivity(ctx, (int) id, open,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         }
+        PendingIntent op = operation(ctx, id, at, title, body, channelId);
 
         try {
-            am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show),
-                    operation(ctx, id, title, body, channelId));
+            am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show), op);
         } catch (SecurityException e) {
             // 理论上不可达（setAlarmClock 免授权 + USE_EXACT_ALARM 双保险）；
             // 万一被厂商 ROM 拦截则退化为普通闹钟，提醒仍可达只是 Doze 下可能略偏
-            am.set(AlarmManager.RTC_WAKEUP, at, operation(ctx, id, title, body, channelId));
+            am.set(AlarmManager.RTC_WAKEUP, at, op);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 3000, op);
+                }
+            } catch (SecurityException e) { /* 主通道在即可 */ }
         }
     }
 
-    /** 取消一条闹钟（只注销闹钟，不改持久化列表——由调用方整表协调；filterEquals 不比对 extras） */
+    /** 取消一条闹钟（只注销闹钟，不改持久化列表——由调用方整表协调；filterEquals 不比对 extras，
+     *  主备两条闹钟共用同一 PendingIntent 身份，一次 cancel 同时注销） */
     public static void cancel(Context ctx, long id) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
-        am.cancel(operation(ctx, id, null, null, null));
+        am.cancel(operation(ctx, id, 0, null, null, null));
     }
 
     /** 开机/改时间/替换安装后恢复所有未来闹钟，返回最近的触发时刻（无则 0） */
@@ -129,10 +154,11 @@ public final class AlarmScheduler {
         return nextAt;
     }
 
-    private static PendingIntent operation(Context ctx, long id,
+    private static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId) {
         Intent i = new Intent(ctx, AlarmReceiver.class);
         i.putExtra("id", (int) id);
+        i.putExtra("at", at);
         if (title != null) i.putExtra("title", title);
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);

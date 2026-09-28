@@ -9,7 +9,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
-import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -18,13 +17,12 @@ import android.os.Vibrator;
 import android.os.VibratorManager;
 
 /**
- * 系统闹钟触发接收器：由 AlarmManager.setAlarmClock() 唤醒。
- * setAlarmClock 是系统时钟应用专用 API：免精确闹钟授权、
- * Doze 深度休眠下保证准时、退后台/杀进程/重启均保证触发。
+ * 系统闹钟触发接收器：由 AlarmManager 的主备双通道唤醒
+ * （主：setAlarmClock，备：setExactAndAllowWhileIdle +3s，60s 窗口去重）。
  *
- * 声音与震动由通知通道携带（DdlNotify.ensureChannel 按提醒方式创建）；
- * 若通知会被系统静默丢弃（通知权限被拒 / 通道被关），改为接收器内
- * 直接播放铃声 + 震动兜底（真实闹钟行为），保证「一定有动静」。
+ * 声音与震动由接收器直接执行（USAGE_ALARM 铃声 + 系统震动服务），
+ * 不依赖通知权限、通道声音或 ROM 的通知展示规则——保证「一定有动静」；
+ * 通知横幅为纯视觉补充（通道已静音），权限允许时投递。
  */
 public class AlarmReceiver extends BroadcastReceiver {
 
@@ -32,22 +30,33 @@ public class AlarmReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         int id = intent.getIntExtra("id", -1);
         if (id == -1) return;
-        // 触发留痕最先写：证明广播确实到达（诊断「闹钟没触发」vs「通知没弹出」）
-        AlarmScheduler.markFired(context, id);
+        long now = System.currentTimeMillis();
+
+        // 主备双通道去重：同一提醒 60s 内只响一次（备份通道晚 3s 到达会被跳过）
+        long[] lf = AlarmScheduler.lastFire(context);
+        if (lf[0] == id && now - lf[1] < 60000) {
+            AlarmScheduler.remove(context, id);
+            return;
+        }
+        long at = intent.getLongExtra("at", 0);
+        AlarmScheduler.markFired(context, id,
+                (at > 0 && now - at > 2500) ? "exact" : "clock");
 
         String title = intent.getStringExtra("title");
         String body = intent.getStringExtra("body");
         String channelId = intent.getStringExtra("channelId");
         if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
 
+        // 铃声/震动无条件直执行（按提醒方式：full 两者、vib 只震、ring 只响）
+        if (!"ddlr_vib".equals(channelId)) playChime(context);
+        if (!"ddlr_ring".equals(channelId)) vibrate(context);
+
+        // 通知横幅（纯视觉）：通知权限允许时投递；通道被清理则兜底重建（静音通道）
         NotificationManager nm =
                 (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-
-        boolean blocked;
-        if (nm == null) {
-            blocked = true;
-        } else {
-            // 通道被系统/清数据清理时兜底重建默认通道，保证提醒能弹出
+        boolean canNotify = nm != null
+                && (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || nm.areNotificationsEnabled());
+        if (canNotify) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                     && nm.getNotificationChannel(channelId) == null) {
                 channelId = "ddlr_full";
@@ -55,64 +64,48 @@ public class AlarmReceiver extends BroadcastReceiver {
                     nm.createNotificationChannel(defaultChannel(context));
                 }
             }
-            blocked = false;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                blocked = !nm.areNotificationsEnabled();
-            }
-            if (!blocked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel ch = nm.getNotificationChannel(channelId);
-                blocked = ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE;
-            }
+            try {
+                Notification.Builder b;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    b = new Notification.Builder(context, channelId);
+                } else {
+                    b = new Notification.Builder(context).setPriority(Notification.PRIORITY_MAX);
+                }
+
+                PendingIntent pi = null;
+                Intent open = context.getPackageManager()
+                        .getLaunchIntentForPackage(context.getPackageName());
+                if (open != null) {
+                    pi = PendingIntent.getActivity(context, id, open,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                }
+
+                Notification n = b
+                        .setContentTitle(title == null ? "DDL雷达" : title)
+                        .setContentText(body == null ? "" : body)
+                        .setSmallIcon(context.getApplicationInfo().icon)
+                        .setAutoCancel(true)
+                        .setCategory(Notification.CATEGORY_ALARM)
+                        .setVisibility(Notification.VISIBILITY_PUBLIC)
+                        .setWhen(now)
+                        .setContentIntent(pi)
+                        .build();
+                nm.notify(id, n);
+            } catch (Exception e) { /* 横幅失败不影响已执行的铃声/震动 */ }
         }
 
-        // 通知会被系统静默丢弃 → 直接响铃/震动（按提醒方式：full 两者、vib 只震、ring 只响）
-        if (blocked) {
-            if (!"ddlr_vib".equals(channelId)) playChime(context);
-            if (!"ddlr_ring".equals(channelId)) vibrate(context);
-            AlarmScheduler.remove(context, id);
-            return;
-        }
-
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            b = new Notification.Builder(context, channelId);
-        } else {
-            b = new Notification.Builder(context)
-                    .setPriority(Notification.PRIORITY_MAX)
-                    .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
-        }
-
-        PendingIntent pi = null;
-        Intent open = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-        if (open != null) {
-            pi = PendingIntent.getActivity(context, id, open,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        }
-
-        Notification n = b
-                .setContentTitle(title == null ? "DDL雷达" : title)
-                .setContentText(body == null ? "" : body)
-                .setSmallIcon(context.getApplicationInfo().icon)
-                .setAutoCancel(true)
-                .setCategory(Notification.CATEGORY_ALARM)
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setWhen(System.currentTimeMillis())
-                .setContentIntent(pi)
-                .build();
-
-        nm.notify(id, n);
         // 触发完成：从持久化列表移除，保持「已排定」诊断数真实
         AlarmScheduler.remove(context, id);
     }
 
-    /** 兜底铃声：闹钟音源（USAGE_ALARM），自持短 WakeLock 保证播完 */
+    /** 铃声：闹钟音源（USAGE_ALARM），自持短 WakeLock 保证播完 */
     private void playChime(Context context) {
         MediaPlayer mp = null;
         PowerManager.WakeLock wl = null;
         try {
             PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
-                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ddlr:alarmFallback");
+                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ddlr:alarmSound");
                 wl.acquire(5000);
             }
             AudioAttributes attrs = new AudioAttributes.Builder()
@@ -138,7 +131,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    /** 兜底震动：由系统震动服务执行，进程死掉也完整走完波形 */
+    /** 震动：由系统震动服务执行，进程死掉也完整走完波形 */
     private void vibrate(Context context) {
         try {
             Vibrator v;
@@ -159,23 +152,14 @@ public class AlarmReceiver extends BroadcastReceiver {
         } catch (Exception e) { /* ignore */ }
     }
 
+    /** 兜底重建的默认通道：静音（声音/震动由接收器直执行，通道只承载横幅） */
     private NotificationChannel defaultChannel(Context context) {
         NotificationChannel ch = new NotificationChannel(
                 "ddlr_full", "提醒 · 响铃+震动", NotificationManager.IMPORTANCE_HIGH);
         ch.setShowBadge(true);
         ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        ch.enableVibration(true);
-        ch.setVibrationPattern(new long[]{0, 200, 120, 200});
-        try {
-            Uri sound = Uri.parse("android.resource://" + context.getPackageName()
-                    + "/raw/ddlr_chime");
-            ch.setSound(sound, new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build());
-        } catch (Exception e) {
-            ch.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), null);
-        }
+        ch.enableVibration(false);
+        ch.setSound(null, null);
         return ch;
     }
 }
