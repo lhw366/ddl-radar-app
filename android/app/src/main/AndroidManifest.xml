@@ -28,8 +28,13 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- 系统闹钟触发 → 弹提醒通知 -->
+        <!-- 系统闹钟触发 → 前台服务弹提醒（O+ 直拉 FGS；pre-O 经广播委托） -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
+
+        <service
+            android:name=".AlarmService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- 开机/改时间/覆盖安装后恢复闹钟（AlarmManager 闹钟不跨重启） -->
         <receiver android:name=".BootReceiver" android:exported="false">
@@ -53,4 +58,6 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 </manifest>

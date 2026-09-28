@@ -89,6 +89,21 @@ public class DdlNotifyPlugin extends Plugin {
         call.resolve(new JSObject().put("granted", granted));
     }
 
+    /** 打开系统应用详情页（ColorOS 后台保活引导：自启动/耗电管理在此页内） */
+    @PluginMethod
+    public void openAppDetails(PluginCall call) {
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getContext().getPackageName()));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            call.reject("open failed: " + e.getMessage());
+        }
+    }
+
     @PluginMethod
     public void listChannelIds(PluginCall call) {
         try {

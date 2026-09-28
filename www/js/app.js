@@ -752,7 +752,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.8.4';
+const APP_VERSION = '1.8.5';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -839,12 +839,16 @@ async function renderDiag() {
     html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
   }
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) + (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' : '（经系统闹钟）') : '还没有触发记录（闹钟触发一次后出现）');
+  html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：设置 → 应用 → DDL雷达 → 允许自启动 + 耗电管理 → 允许后台运行', 'appinfo');
   html += diagRow(null, '退后台必达由系统级闹钟（setAlarmClock）保证：免授权、Doze 准时、重启/更新后自动恢复');
   if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
     if (f === 'notify') { askNotify(); setTimeout(refreshNotifyBtn, 500); }
+    if (f === 'appinfo') {
+      try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
+    }
     if (f === 'reinit') { await NativeNotify.init(); }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
     setTimeout(renderDiag, 900);

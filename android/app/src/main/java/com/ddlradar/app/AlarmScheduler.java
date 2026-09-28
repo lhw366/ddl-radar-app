@@ -156,12 +156,18 @@ public final class AlarmScheduler {
 
     private static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId) {
-        Intent i = new Intent(ctx, AlarmReceiver.class);
+        Intent i = new Intent(ctx, AlarmService.class);
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
         if (title != null) i.putExtra("title", title);
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);
+        // O+ 直接以「前台服务」身份拉起：ColorOS 冻结后台进程时会扣广播，
+        // 但闹钟触发的 FGS 拉起必须放行（真闹钟 App 的标准做法）；pre-O 走广播委托
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return PendingIntent.getForegroundService(ctx, (int) id, i,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
         return PendingIntent.getBroadcast(ctx, (int) id, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
