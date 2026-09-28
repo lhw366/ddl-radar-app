@@ -791,17 +791,18 @@ async function fetchRemoteVersion() {
   }
   return best ? withMirrors(best) : null;
 }
-/* APK 下载线路（设备端逐条尝试直到成功）：
-   ① jsdelivr gcore/testingcf 边缘不拦 .apk（直出可安装文件名）② 国内反代 jsdmirror
-   ③ cdn/fastly 边缘用 .bin 绕扩展名拦截 ④ ghproxy 系代理转发 release 直链 ⑤ github 直连 */
+/* APK 下载线路（设备端逐条尝试直到成功）。文件名带构建号：每个构建都是新文件，
+   CDN 不可能命中过期缓存（曾实测各边缘对同名文件缓存滞后 1~4 个构建、互不相同，
+   导致装到旧包/误判已是最新）。gcore/testingcf/jsdmirror 不拦 .apk；cdn 需 .bin */
 function withMirrors(j) {
-  const m = [
-    `https://gcore.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
-    `https://testingcf.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
-    `https://cdn.jsdmirror.com/gh/${REPO}@main/apk-latest/app-debug.apk`,
-    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`,
-    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`
-  ];
+  const code = j.code || 0;
+  const m = [];
+  if (code > 0) {
+    m.push(`https://gcore.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
+    m.push(`https://testingcf.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
+    m.push(`https://cdn.jsdmirror.com/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
+    m.push(`https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.bin`);
+  }
   if (j.apk) {
     m.push(`https://ghfast.top/${j.apk}`);
     m.push(`https://gh-proxy.com/${j.apk}`);
@@ -895,17 +896,28 @@ function bindSettings() {
     const b = $('updateBtn');
     if (b.dataset.url) {
       const urls = pendingUpdateMirrors.length ? pendingUpdateMirrors : [b.dataset.url];
-      // APK 内：多线路下载（镜像优先）后直接拉起系统安装确认（无需跳浏览器）
+      // APK 内：多线路下载（版本化文件名+镜像优先），进度实时显示，完成后拉起系统安装
       if (window.Capacitor && Capacitor.Plugins.ApkInstaller) {
         b.disabled = true; b.textContent = '⬇️ 正在下载更新包…';
+        let prog = null;
         try {
+          try {
+            prog = await Capacitor.Plugins.ApkInstaller.addListener('progress', (d) => {
+              if (d && d.total > 0) {
+                b.textContent = '⬇️ 下载中 ' + Math.min(99, Math.round((d.bytes / d.total) * 100)) + '%';
+              }
+            });
+          } catch (e) { /* 进度监听失败不影响下载 */ }
           await Capacitor.Plugins.ApkInstaller.installApk({ urls });
           b.textContent = '📦 请在弹出的界面点「安装」';
           b.disabled = false;
           toast('📦 更新包已就绪', '系统安装界面已弹出，点「安装」即可完成更新');
         } catch (e) {
           b.disabled = false; b.textContent = '⬇️ 下载新版本';
-          toast('⚠️ 下载失败', '所有线路都试过了：请用电脑上的 DDL雷达.apk 覆盖安装，或稍后再试');
+          const msg = (e && e.message) ? String(e.message) : '';
+          toast('⚠️ 下载失败', (msg ? msg.slice(0, 120) + '。' : '') + '建议微信/电脑传桌面安装包覆盖安装');
+        } finally {
+          if (prog && prog.remove) { try { prog.remove(); } catch (e) { /* ignore */ } }
         }
         return;
       }

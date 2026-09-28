@@ -79,7 +79,7 @@ public class ApkInstallerPlugin extends Plugin {
         }, "apk-download").start();
     }
 
-    /** 下载单条线路并校验产物；失败抛异常由上层切下一条 */
+    /** 下载单条线路并校验产物；每 512KB 上报进度；失败抛异常由上层切下一条 */
     private long downloadTo(String url, File apk) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         try {
@@ -88,13 +88,21 @@ public class ApkInstallerPlugin extends Plugin {
             conn.setInstanceFollowRedirects(true);
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("http " + code);
+            long expected = conn.getContentLength();
 
             InputStream in = conn.getInputStream();
             FileOutputStream out = new FileOutputStream(apk);
             byte[] buf = new byte[16384];
             int n;
-            long total = 0;
-            while ((n = in.read(buf)) > 0) { out.write(buf, 0, n); total += n; }
+            long got = 0, reported = 0;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                got += n;
+                if (got - reported > 512 * 1024) {
+                    reported = got;
+                    notifyListeners("progress", new JSObject().put("bytes", got).put("total", Math.max(0, expected)));
+                }
+            }
             out.flush();
             out.close();
             in.close();

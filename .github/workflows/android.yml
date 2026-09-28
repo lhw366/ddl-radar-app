@@ -51,26 +51,24 @@ jobs:
             --notes "自动构建 · 覆盖安装即可，数据保留" --repo lhw366/ddl-radar-app \
           || gh release upload "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk --repo lhw366/ddl-radar-app --clobber
 
-      - name: Commit version.json + latest APK (CDN mirror for update)
+      # 版本化文件名：每个构建都是新文件，CDN 永不可能命中过期缓存
+      # （实测 jsdelivr 各边缘对同名文件缓存滞后 1~4 个构建且互不相同，purge 也刷不动）
+      - name: Commit version.json + versioned APK (CDN mirror for update)
         run: |
           cp www/version.json version.json
           mkdir -p apk-latest
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/app-debug.apk
-          # jsdelivr 会 301 拦截 .apk/.zip 等扩展名（重定向回 raw.githubusercontent），
-          # 分发改用 .bin；如仍被拦则由 ghproxy 线路兜底
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/ddl-radar.bin
+          N=${{ github.run_number }}
+          cp android/app/build/outputs/apk/debug/app-debug.apk "apk-latest/ddl-radar-${N}.apk"
           git config user.name "ci-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add version.json apk-latest/app-debug.apk apk-latest/ddl-radar.bin
-          git commit -m "chore: version.json + latest apk for build ${{ github.run_number }} [skip ci]"
+          git add version.json "apk-latest/ddl-radar-${N}.apk"
+          git commit -m "chore: version.json + versioned apk for build ${N} [skip ci]"
           git push
 
-      # jsdelivr 各边缘对 @main 的缓存可能滞后数小时（实测 fastly 落后 4 个构建），
-      # 每次构建后主动刷新，防止 App 检查更新拿到过期版本号误判「已是最新」
-      - name: Purge jsdelivr cache
+      - name: Purge jsdelivr version.json cache
         run: |
           curl -s -X POST https://purge.jsdelivr.net/ -H "Content-Type: application/json" \
-            -d '{"path":["/gh/lhw366/ddl-radar-app@main/version.json","/gh/lhw366/ddl-radar-app@main/apk-latest/app-debug.apk","/gh/lhw366/ddl-radar-app@main/apk-latest/ddl-radar.bin"]}' || true
+            -d '{"path":["/gh/lhw366/ddl-radar-app@main/version.json"]}' || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
