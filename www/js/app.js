@@ -752,8 +752,12 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.8.2';
+const APP_VERSION = '1.8.3';
 const REPO = 'lhw366/ddl-radar-app';
+let pendingUpdateMirrors = []; // 下载线路：jsdelivr 镜像优先，github 直连兜底
+function fetchTimeout(ms) {
+  try { return AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined; } catch (e) { return undefined; }
+}
 function openExternal(url) {
   try {
     if (window.Capacitor && Capacitor.Plugins.App) { Capacitor.Plugins.App.openUrl({ url }); return; }
@@ -761,23 +765,33 @@ function openExternal(url) {
   window.open(url, '_blank');
 }
 async function fetchRemoteVersion() {
-  // 首选 GitHub API（最新无缓存），失败退 jsdelivr 的 version.json（快但有 CDN 缓存延迟）
+  // 国内优先 jsdelivr 镜像（快，@main 可能滞后几分钟），8 秒超时快速切换；GitHub API 兜底
+  for (const base of ['https://cdn.jsdelivr.net/gh/', 'https://fastly.jsdelivr.net/gh/']) {
+    try {
+      const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store', signal: fetchTimeout(8000) });
+      if (r.ok) { const j = await r.json(); if (j.code) return withMirrors(j); }
+    } catch (e) { /* next mirror */ }
+  }
   try {
-    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { cache: 'no-store' });
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { cache: 'no-store', signal: fetchTimeout(8000) });
     if (r.ok) {
       const j = await r.json();
       const code = parseInt((j.tag_name || '').replace(/^v/, ''), 10) || 0;
       const asset = (j.assets || []).find((a) => a.name.endsWith('.apk'));
-      if (code > 0 && asset) return { code, version: j.tag_name, apk: asset.browser_download_url };
+      if (code > 0 && asset) return withMirrors({ code, version: j.tag_name, apk: asset.browser_download_url });
     }
-  } catch (e) { /* fallback */ }
-  for (const base of ['https://cdn.jsdelivr.net/gh/', 'https://fastly.jsdelivr.net/gh/']) {
-    try {
-      const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store' });
-      if (r.ok) { const j = await r.json(); if (j.code) return j; }
-    } catch (e) { /* next mirror */ }
-  }
+  } catch (e) { /* give up */ }
   return null;
+}
+/* APK 下载线路：仓库内 apk-latest（jsdelivr 代发，国内可达）→ github release 直连 */
+function withMirrors(j) {
+  const m = [
+    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
+    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`
+  ];
+  if (j.apk && m.indexOf(j.apk) < 0) m.push(j.apk);
+  j.mirrors = m;
+  return j;
 }
 
 /* ---------------- 提醒诊断面板 ---------------- */
@@ -858,22 +872,22 @@ function bindSettings() {
   $('updateBtn').addEventListener('click', async () => {
     const b = $('updateBtn');
     if (b.dataset.url) {
-      const url = b.dataset.url;
-      // APK 内：下载到应用目录后直接拉起系统安装确认（无需跳浏览器）
+      const urls = pendingUpdateMirrors.length ? pendingUpdateMirrors : [b.dataset.url];
+      // APK 内：多线路下载（镜像优先）后直接拉起系统安装确认（无需跳浏览器）
       if (window.Capacitor && Capacitor.Plugins.ApkInstaller) {
         b.disabled = true; b.textContent = '⬇️ 正在下载更新包…';
         try {
-          await Capacitor.Plugins.ApkInstaller.installApk({ url });
+          await Capacitor.Plugins.ApkInstaller.installApk({ urls });
           b.textContent = '📦 请在弹出的界面点「安装」';
           b.disabled = false;
           toast('📦 更新包已就绪', '系统安装界面已弹出，点「安装」即可完成更新');
         } catch (e) {
           b.disabled = false; b.textContent = '⬇️ 下载新版本';
-          toast('⚠️ 下载失败', (e && e.message) || '请稍后再试');
+          toast('⚠️ 下载失败', '所有线路都试过了：请用电脑上的 DDL雷达.apk 覆盖安装，或稍后再试');
         }
         return;
       }
-      openExternal(url);
+      openExternal(b.dataset.url);
       return;
     }
     b.disabled = true; b.textContent = '🔄 检查中…';
@@ -885,6 +899,7 @@ function bindSettings() {
     b.disabled = false;
     if (!rem) { b.textContent = '🔄 检查更新'; toast('⚠️ 检查失败', '连不上 GitHub，稍后再试'); return; }
     if ((rem.code || 0) > local) {
+      pendingUpdateMirrors = rem.mirrors || [];
       b.textContent = '⬇️ 下载新版本 ' + (rem.version || '');
       b.classList.add('primary');
       b.dataset.url = rem.apk || rem.url || '';
