@@ -1,7 +1,10 @@
 /* ============================================================
-   DDL雷达 · 原生系统提醒桥（Capacitor LocalNotifications）
-   - 精确闹钟调度（allowWhileIdle，杀后台/重启后由插件恢复）
-   - 提醒方式分通道：响铃+震动 / 仅震动 / 仅响铃 / 仅应用内横幅
+   DDL雷达 · 原生系统提醒桥（v1.8：AlarmManager.setAlarmClock 原生闹钟）
+   - 调度/恢复全部走自研 DdlAlarm 原生插件（系统时钟同款 setAlarmClock API）
+     免精确闹钟授权、Doze 深度休眠保证准时、状态栏常驻闹钟图标，
+     杀后台/重启/覆盖安装后由原生 BootReceiver 自动恢复
+   - 声音/震动由通知通道携带：响铃+震动 / 仅震动 / 仅响铃 / 仅应用内横幅
+   - 通道创建仍用 DdlNotify 原生插件（插件自带的不支持 vibration）
    网页版（file:// / http）自动跳过，走应用内引擎。
    ============================================================ */
 (function () {
@@ -13,144 +16,92 @@
     return (h >>> 0) % 2147483647;
   }
 
-  var LN = function () {
-    return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.LocalNotifications) || null;
-  };
+  function DDL() {
+    return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlAlarm) || null;
+  }
+  function DDP() {
+    return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify) || null;
+  }
+
+  var CHANNELS = ['ddlr_full', 'ddlr_vib', 'ddlr_ring'];
 
   var N = {
     available: function () {
-      return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform() && LN());
+      return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform() && DDL());
     },
     _sig: null,
-    _exactOn: null,
 
     init: async function () {
       if (!this.available()) return;
-      var ln = LN();
-      // 提醒方式通道：插件 createChannel 不支持 vibration（审计确认），
-      // 用自建 DdlNotify 原生插件正确创建（删除重建保证设置生效）
-      var defs = [
-        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
-        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
-      ];
-      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
-      this._channelOk = [];
-      // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
-      var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
-      var chSigStored = null;
-      try { chSigStored = localStorage.getItem('ddlr_chsig'); } catch (e) {}
-      if (chSig === chSigStored) {
-        defs.forEach(function (d) { this._channelOk.push({ id: d.id }); }, this);
-      } else {
-        for (var i = 0; i < defs.length; i++) {
-          var d = defs[i];
-          try {
-            if (ddp) {
-              await ddp.ensureChannel(d);
-              this._channelOk.push({ id: d.id });
-            } else {
-              await ln.createChannel({
-                id: d.id, name: d.name, importance: 4,
-                sound: d.sound || undefined, visibility: 1
-              });
-              this._channelOk.push({ id: d.id });
-            }
-          } catch (e) { /* 单个通道失败不阻断 */ }
-        }
-        try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
-      }
-      await this.ensurePermissions();
+      await this.ensureChannels();
+      await this.ensureNotifyPermission();
       await this.sync(window.S);
-      // 插件带开机恢复接收器；这里再兜底刷一次
+      // 原生 BootReceiver 负责重启/覆盖安装后恢复；这里兜底：切回前台时对账一次
       document.addEventListener('visibilitychange', function () {
         if (!document.hidden && window.S) N.sync(window.S);
       });
     },
 
-    ensurePermissions: async function () {
-      var ln = LN();
-      try {
-        var p = await ln.checkPermissions();
-        if (p.display !== 'granted') { await ln.requestPermissions(); }
-      } catch (e) { /* ignore */ }
-      var exact = await this.refreshExact();
-      // 精确闹钟未授权 → 每次启动提醒一次（退 App 后通知可能延迟/丢失）
-      if (exact === false && window.S && !window.S.settings.exactWarned) {
-        window.S.settings.exactWarned = true;
-        if (window.save) window.save();
-        if (window.toast) {
-          window.toast('⏰ 建议开启精确闹钟', '否则退 App 后提醒可能延迟或丢失：去「我的」页点黄色按钮', 'tt-urgent');
+    ensureChannels: async function () {
+      var ddp = DDP();
+      if (!ddp) return;
+      var defs = [
+        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
+        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
+      ];
+      // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
+      var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
+      var chSigStored = null;
+      try { chSigStored = localStorage.getItem('ddlr_chsig'); } catch (e) {}
+      if (chSig !== chSigStored) {
+        for (var i = 0; i < defs.length; i++) {
+          try { await ddp.ensureChannel(defs[i]); } catch (e) { /* 单个通道失败不阻断 */ }
         }
+        try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
       }
     },
 
-    refreshExact: async function () {
-      this._exactOn = null;
-      // 首选自建插件的精确布尔值；退回官方插件（注意其字段是 exact_alarm: 'granted'/'denied'）
-      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
+    // 通知权限（Android 13+ 运行时权限）：没开时申请一次，被拒则引导
+    ensureNotifyPermission: async function () {
+      var ddp = DDP();
+      if (!ddp) return;
       try {
-        if (ddp) {
-          var r = await ddp.exactStatus();
-          this._exactOn = !!r.granted;
-          return this._exactOn;
-        }
-      } catch (e) { /* fallback */ }
-      try {
-        var ln = LN();
-        if (ln && typeof ln.checkExactNotificationSetting === 'function') {
-          var s = await ln.checkExactNotificationSetting();
-          this._exactOn = s && s.exact_alarm === 'granted';
-          return this._exactOn;
-        }
-      } catch (e) { /* fallback */ }
-      this._exactOn = true;
-      return true;
-    },
-
-    openExactAlarm: async function () {
-      var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
-      try {
-        if (ddp) {
-          var r = await ddp.openExactSettings();
-          if (r && r.opened) return true;
-        }
-      } catch (e) { /* fallback */ }
-      var ln = LN();
-      try {
-        if (ln && typeof ln.changeExactNotificationSetting === 'function') {
-          await ln.changeExactNotificationSetting();
-          return true;
+        var s = await ddp.notifyStatus();
+        if (s && s.granted) return;
+        if (typeof ddp.requestPermissions === 'function') {
+          var r = await ddp.requestPermissions();
+          if (!(r && r.notifications === 'granted') && window.toast) {
+            window.toast('🔔 通知权限未开启', '没有通知权限，系统提醒弹不出来：去系统设置 → 应用 → DDL雷达 → 通知', 'tt-urgent');
+          }
         }
       } catch (e) { /* ignore */ }
-      return false;
     },
 
-    // 诊断：各链路状态（通知权限/精确闹钟/通道/已排定条数）
+    // 诊断：通知权限 / 已排定系统闹钟（条数+下一条时刻）/ 通道 / 系统版本
     diag: async function () {
       var out = { native: this.available() };
       if (!out.native) return out;
-      var ln = LN();
-      try { var p = await ln.checkPermissions(); out.notify = p.display === 'granted'; } catch (e) { out.notify = null; }
-      out.exact = await this.refreshExact();
+      var ddp = DDP();
+      try { var s = await ddp.notifyStatus(); out.notify = !!s.granted; } catch (e) { out.notify = null; }
       try {
-        var ddp = window.Capacitor && Capacitor.Plugins.DdlNotify;
-        var l = ddp ? await ddp.listChannelIds() : await ln.listChannels();
+        var p = await DDL().pending();
+        out.pending = (p.items || []).length;
+        out.nextAt = p.nextAt || 0;
+        out.sdk = p.sdk || null;
+      } catch (e) { out.pending = -1; out.nextAt = 0; }
+      try {
+        var l = await ddp.listChannelIds();
         var ids = l.ids || (l.channels || []).map(function (c) { return c.id; });
-        out.channels = ['ddlr_full', 'ddlr_vib', 'ddlr_ring'].filter(function (x) { return ids.indexOf(x) >= 0; }).length;
+        out.channels = CHANNELS.filter(function (x) { return ids.indexOf(x) >= 0; }).length;
       } catch (e) { out.channels = 0; }
-      try { var pend = await ln.getPending(); out.pending = (pend.notifications || []).length; } catch (e) { out.pending = -1; }
-      var ddp2 = window.Capacitor && Capacitor.Plugins.DdlNotify;
-      if (ddp2) {
-        try { var b = await ddp2.batteryStatus(); out.battery = !!b.ignoring; out.sdk = b.sdk; } catch (e) { out.battery = null; }
-      }
       return out;
     },
 
-    // 10 秒后发一条系统通知，用于验证提醒链路（含退 App 场景）
+    // 10 秒后由系统闹钟弹一条真实通知，用于验证提醒链路（含退 App 场景）
     test: async function () {
-      var ln = LN();
-      if (!ln) return false;
+      var ddl = DDL();
+      if (!ddl) return false;
       var mode = (window.S && S.settings.remindMode) || 'full';
       if (mode === 'silent') {
         setTimeout(function () {
@@ -159,14 +110,12 @@
         return true;
       }
       try {
-        await ln.schedule({
-          notifications: [{
-            id: 990000001,
-            title: '🧪 测试提醒',
-            body: '看到这条 = 提醒链路通 ✓（退 App 也能弹）',
-            schedule: { at: new Date(Date.now() + 10000), allowWhileIdle: true },
-            channelId: 'ddlr_' + mode
-          }]
+        await ddl.scheduleOne({
+          id: 990000001,
+          at: Date.now() + 10000,
+          title: '🧪 测试提醒',
+          body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
+          channelId: 'ddlr_' + mode
         });
         if (window.toast) {
           window.toast('🧪 已排定测试', '现在退出 App 试试：10 秒后锁屏/桌面应弹出系统通知并震动');
@@ -174,15 +123,14 @@
         return true;
       } catch (e) {
         console.warn('[DDL雷达] 测试提醒失败', e);
-        if (window.toast) window.toast('⚠️ 排定失败', '请检查通知权限与精确闹钟权限');
+        if (window.toast) window.toast('⚠️ 排定失败', '请检查通知权限（设置页可诊断）');
         return false;
       }
     },
 
-    // 任务/设置变化后重排系统提醒（带签名去抖）
+    // 任务/设置变化后整表协调系统闹钟（带签名去抖；原生侧多退少补）
     sync: async function (S) {
       if (!this.available() || !S) return;
-      var ln = LN();
       var mode = (S.settings && S.settings.remindMode) || 'full';
       var sig = mode + '|' + S.tasks.map(function (t) {
         return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
@@ -191,8 +139,7 @@
       this._sig = sig;
 
       try {
-        var wanted = {};   // id -> true
-        var notes = [];
+        var alarms = [];
         if (mode !== 'silent') {
           var now = Date.now();
           for (var i = 0; i < S.tasks.length; i++) {
@@ -201,28 +148,27 @@
               var r = list[j];
               if (r.at <= now + 3000) continue;
               var id = hashId(r.key);
-              if (wanted[id]) continue;
-              wanted[id] = true;
-              notes.push({
+              var dup = alarms.some(function (a) { return a.id === id; });
+              if (dup) continue;
+              alarms.push({
                 id: id,
+                at: r.at,
                 title: r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
-                schedule: { at: new Date(r.at), allowWhileIdle: true },
                 channelId: 'ddlr_' + mode
               });
             }
           }
-          notes.sort(function (a, b) { return a.schedule.at - b.schedule.at; });
-          if (notes.length > 120) notes = notes.slice(0, 120);
-          for (var k = 0; k < notes.length; k++) wanted[notes[k].id] = true;
+          alarms.sort(function (a, b) { return a.at - b.at; });
+          if (alarms.length > 120) alarms = alarms.slice(0, 120);
         }
-        var pend = await ln.getPending();
-        var stale = (pend.notifications || []).filter(function (n) { return !wanted[n.id]; })
-          .map(function (n) { return { id: n.id }; });
-        if (stale.length) { try { await ln.cancel({ notifications: stale }); } catch (e) { /* ignore */ } }
-        if (notes.length) { await ln.schedule({ notifications: notes }); }
+        var r = await DDL().apply({ alarms: alarms });
+        if (r && (r.added > 0 || r.cancelled > 0)) {
+          console.log('[DDL雷达] 系统闹钟对账完成：+' + r.added + ' -' + r.cancelled +
+            '，下一条 ' + (r.nextAt ? new Date(r.nextAt).toLocaleString() : '无'));
+        }
       } catch (e) {
-        console.warn('[DDL雷达] 系统提醒调度失败', e);
+        console.warn('[DDL雷达] 系统闹钟调度失败', e);
       }
     }
   };
