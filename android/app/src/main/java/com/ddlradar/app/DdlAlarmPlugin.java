@@ -1,5 +1,6 @@
 package com.ddlradar.app;
 
+import android.app.AlarmManager;
 import android.content.Context;
 import android.os.Build;
 
@@ -135,7 +136,7 @@ public class DdlAlarmPlugin extends Plugin {
         }
     }
 
-    /** 诊断：已排定列表 + 最近触发时刻 */
+    /** 诊断：已排定列表 + 最近触发时刻 + 系统已接受的最近闹钟 + 触发留痕 */
     @PluginMethod
     public void pending(PluginCall call) {
         try {
@@ -154,9 +155,19 @@ public class DdlAlarmPlugin extends Plugin {
                 long at = s.optLong("at");
                 if (at > now && (nextAt == 0 || at < nextAt)) nextAt = at;
             }
+            AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+            long sysNextAt = 0;
+            if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                AlarmManager.AlarmClockInfo info = am.getNextAlarmClock();
+                if (info != null) sysNextAt = info.getTriggerTime();
+            }
+            long[] lf = AlarmScheduler.lastFire(ctx);
             JSObject ret = new JSObject();
             ret.put("items", items);
             ret.put("nextAt", nextAt);
+            ret.put("sysNextAt", sysNextAt);
+            ret.put("lastFireId", lf[0]);
+            ret.put("lastFireAt", lf[1]);
             ret.put("sdk", Build.VERSION.SDK_INT);
             call.resolve(ret);
         } catch (Exception e) {

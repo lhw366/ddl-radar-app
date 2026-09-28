@@ -88,6 +88,9 @@
         var p = await DDL().pending();
         out.pending = (p.items || []).length;
         out.nextAt = p.nextAt || 0;
+        out.sysNextAt = p.sysNextAt || 0;
+        out.lastFireAt = p.lastFireAt || 0;
+        out.lastFireId = p.lastFireId || 0;
         out.sdk = p.sdk || null;
       } catch (e) { out.pending = -1; out.nextAt = 0; }
       try {
@@ -98,7 +101,8 @@
       return out;
     },
 
-    // 10 秒后由系统闹钟弹一条真实通知，用于验证提醒链路（含退 App 场景）
+    // 10 秒后由系统闹钟弹一条真实通知，用于验证提醒链路（含退 App 场景）。
+    // 自验证：排定后回读原生存储确认生效，toast 给出确定结论（单一出口）。
     test: async function () {
       var ddl = DDL();
       if (!ddl) return false;
@@ -109,21 +113,41 @@
         }, 10000);
         return true;
       }
+      var at = Date.now() + 10000;
       try {
+        // 权限预检：被拒时系统会静默丢弃通知横幅（原生接收器仍会响铃/震动兜底）
+        var granted = true;
+        var ddp = DDP();
+        if (ddp) {
+          try { var st = await ddp.notifyStatus(); granted = !!(st && st.granted); } catch (e) {}
+        }
         await ddl.scheduleOne({
           id: 990000001,
-          at: Date.now() + 10000,
+          at: at,
           title: '🧪 测试提醒',
           body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
           channelId: 'ddlr_' + mode
         });
-        if (window.toast) {
-          window.toast('🧪 已排定测试', '现在退出 App 试试：10 秒后锁屏/桌面应弹出系统通知并震动');
+        try { localStorage.setItem('ddlr_testAt', String(at)); } catch (e) {}
+        // 回读验证：这条闹钟确实在原生存储里
+        var ok = false;
+        try {
+          var p = await ddl.pending();
+          ok = (p.items || []).some(function (i) { return i.id === 990000001; });
+        } catch (e) { /* 验证失败不否定排定，按已排定提示 */ ok = true; }
+        if (ok) {
+          if (window.toast) {
+            var head = granted ? '✅ 已排定，10 秒后应响'
+              : '✅ 已排定 · ⚠️ 通知权限未开（横幅弹不出，但 10 秒后仍会响铃/震动兜底）';
+            window.toast(head, '验证中：退 App 也行。若 10 秒后毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
+          }
+        } else if (window.toast) {
+          window.toast('⚠️ 排定未生效', '点「运行诊断」查看系统闹钟状态', 'tt-urgent');
         }
-        return true;
+        return ok;
       } catch (e) {
         console.warn('[DDL雷达] 测试提醒失败', e);
-        if (window.toast) window.toast('⚠️ 排定失败', '请检查通知权限（设置页可诊断）');
+        if (window.toast) window.toast('⚠️ 排定失败', '点「运行诊断」查看通知权限与闹钟状态');
         return false;
       }
     },
@@ -162,6 +186,25 @@
           alarms.sort(function (a, b) { return a.at - b.at; });
           if (alarms.length > 120) alarms = alarms.slice(0, 120);
         }
+        // 未触发的测试闹钟并入对账列表，防止被 apply() 当作多余条目撤销
+        // （静默模式不并入：跟随当前模式被撤销，符合「不发系统通知」语义）
+        try {
+          var testAt = parseInt(localStorage.getItem('ddlr_testAt') || '0', 10);
+          if (mode !== 'silent' && testAt > Date.now() + 3000) {
+            if (!alarms.some(function (a) { return a.id === 990000001; })) {
+              alarms.push({
+                id: 990000001,
+                at: testAt,
+                title: '🧪 测试提醒',
+                body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
+                channelId: 'ddlr_' + mode
+              });
+              alarms.sort(function (a, b) { return a.at - b.at; });
+            }
+          } else if (testAt) {
+            localStorage.removeItem('ddlr_testAt'); // 已触发或过期：清标记
+          }
+        } catch (e) { /* ignore */ }
         var r = await DDL().apply({ alarms: alarms });
         if (r && (r.added > 0 || r.cancelled > 0)) {
           console.log('[DDL雷达] 系统闹钟对账完成：+' + r.added + ' -' + r.cancelled +

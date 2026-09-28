@@ -55,6 +55,27 @@ public final class AlarmScheduler {
         if (changed) save(ctx, keep);
     }
 
+    /** 闹钟实际触发留痕（接收器最先调用，后续任何失败都不影响此记录） */
+    public static void markFired(Context ctx, long id) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            sp.edit()
+                    .putLong("lastFireId", id)
+                    .putLong("lastFireAt", System.currentTimeMillis())
+                    .apply();
+        } catch (Exception e) { /* 诊断数据，失败忽略 */ }
+    }
+
+    /** 最近一次闹钟触发记录：[id, at]；从未触发返回 [0, 0] */
+    public static long[] lastFire(Context ctx) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            return new long[]{sp.getLong("lastFireId", 0), sp.getLong("lastFireAt", 0)};
+        } catch (Exception e) {
+            return new long[]{0, 0};
+        }
+    }
+
     /** 注册一条系统闹钟（setAlarmClock）；重复调用同一 id 会替换 */
     public static void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId) {

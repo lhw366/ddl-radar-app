@@ -752,7 +752,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 const REPO = 'lhw366/ddl-radar-app';
 function openExternal(url) {
   try {
@@ -799,6 +799,14 @@ async function renderDiag() {
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow((d.channels || 0) >= 3, '提醒通道已创建（' + (d.channels || 0) + '/3）', d.channels >= 3 ? '' : 'reinit');
   html += diagRow((d.pending || 0) > 0, '系统闹钟已排定 ' + d.pending + ' 条' + (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''), (d.pending || 0) > 0 ? '' : 'notask');
+  if ((d.pending || 0) > 0 && !(d.sysNextAt > 0)) {
+    html += diagRow(false, '已排定但系统未接受（可能被 ROM 拦截）');
+  } else if (d.sysNextAt > 0) {
+    html += diagRow(true, '系统已接受的最近闹钟 ' + fmtDT(d.sysNextAt));
+  } else {
+    html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
+  }
+  html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) : '还没有触发记录（闹钟触发一次后出现）');
   html += diagRow(null, '退后台必达由系统级闹钟（setAlarmClock）保证：免授权、Doze 准时、重启/更新后自动恢复');
   if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;
@@ -833,8 +841,8 @@ function bindSettings() {
   });
   $('testRemBtn').addEventListener('click', async () => {
     if (window.NativeNotify && NativeNotify.available()) {
-      const ok = await NativeNotify.test();
-      toast('🧪 已排定测试', ok ? '10 秒后会收到系统通知（留意屏幕顶部横幅/震动）' : '⚠️ 排定失败，请检查通知权限');
+      // 提示统一由 NativeNotify.test() 负责（含排定结果自验证与权限预检）
+      await NativeNotify.test();
     } else {
       toast('🧪 已排定测试', '10 秒后应用内提醒（此环境无系统级通知）');
       setTimeout(() => {
