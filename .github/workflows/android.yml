@@ -56,11 +56,12 @@ jobs:
           cp www/version.json version.json
           mkdir -p apk-latest
           cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/app-debug.apk
-          # jsdelivr 拦截 .apk 扩展名（301 回 raw.githubusercontent），改用 .zip 分发
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/ddl-radar.zip
+          # jsdelivr 会 301 拦截 .apk/.zip 等扩展名（重定向回 raw.githubusercontent），
+          # 分发改用 .bin；如仍被拦则由 ghproxy 线路兜底
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/ddl-radar.bin
           git config user.name "ci-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add version.json apk-latest/app-debug.apk apk-latest/ddl-radar.zip
+          git add version.json apk-latest/app-debug.apk apk-latest/ddl-radar.bin
           git commit -m "chore: version.json + latest apk for build ${{ github.run_number }} [skip ci]"
           git push
 

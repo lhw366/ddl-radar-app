@@ -784,15 +784,16 @@ async function fetchRemoteVersion() {
   return null;
 }
 /* APK 下载线路（按国内可达性排序，设备端逐条尝试直到成功）：
-   ① 仓库内 .zip 包走 jsdelivr（绕过其对 .apk 扩展名的拦截）② ghproxy 类代理转发 release 直链 ③ github release 直连 */
+   ① 仓库内无扩展名风险最低的 .bin 包走 jsdelivr ② ghproxy 类代理转发 release 直链 ③ github release 直连 */
 function withMirrors(j) {
   const m = [
-    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.zip`,
-    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.zip`
+    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`,
+    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`
   ];
   if (j.apk) {
     m.push(`https://ghfast.top/${j.apk}`);
     m.push(`https://gh-proxy.com/${j.apk}`);
+    m.push(`https://github.moeyy.xyz/${j.apk}`);
     m.push(j.apk);
   }
   j.mirrors = m;
