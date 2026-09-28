@@ -783,13 +783,18 @@ async function fetchRemoteVersion() {
   } catch (e) { /* give up */ }
   return null;
 }
-/* APK 下载线路：仓库内 apk-latest（jsdelivr 代发，国内可达）→ github release 直连 */
+/* APK 下载线路（按国内可达性排序，设备端逐条尝试直到成功）：
+   ① 仓库内 .zip 包走 jsdelivr（绕过其对 .apk 扩展名的拦截）② ghproxy 类代理转发 release 直链 ③ github release 直连 */
 function withMirrors(j) {
   const m = [
-    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
-    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`
+    `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.zip`,
+    `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.zip`
   ];
-  if (j.apk && m.indexOf(j.apk) < 0) m.push(j.apk);
+  if (j.apk) {
+    m.push(`https://ghfast.top/${j.apk}`);
+    m.push(`https://gh-proxy.com/${j.apk}`);
+    m.push(j.apk);
+  }
   j.mirrors = m;
   return j;
 }

@@ -51,14 +51,16 @@ jobs:
             --notes "自动构建 · 覆盖安装即可，数据保留" --repo lhw366/ddl-radar-app \
           || gh release upload "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk --repo lhw366/ddl-radar-app --clobber
 
-      - name: Commit version.json + latest APK (jsdelivr mirror for update)
+      - name: Commit version.json + latest APK (CDN mirror for update)
         run: |
           cp www/version.json version.json
           mkdir -p apk-latest
           cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/app-debug.apk
+          # jsdelivr 拦截 .apk 扩展名（301 回 raw.githubusercontent），改用 .zip 分发
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-latest/ddl-radar.zip
           git config user.name "ci-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add version.json apk-latest/app-debug.apk
+          git add version.json apk-latest/app-debug.apk apk-latest/ddl-radar.zip
           git commit -m "chore: version.json + latest apk for build ${{ github.run_number }} [skip ci]"
           git push
 
