@@ -784,16 +784,19 @@ async function fetchRemoteVersion() {
   return null;
 }
 /* APK 下载线路（按国内可达性排序，设备端逐条尝试直到成功）：
-   ① 仓库内无扩展名风险最低的 .bin 包走 jsdelivr ② ghproxy 类代理转发 release 直链 ③ github release 直连 */
+   ① jsdelivr 的 gcore/testingcf 边缘不拦 .apk 扩展名（实测 200 直出真包，文件名可直接安装）
+   ② cdn/fastly 边缘用 .bin 绕过拦截 ③ ghproxy 系代理转发 release 直链 ④ github 直连兜底 */
 function withMirrors(j) {
   const m = [
+    `https://gcore.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
+    `https://testingcf.jsdelivr.net/gh/${REPO}@main/apk-latest/app-debug.apk`,
     `https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`,
     `https://fastly.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar.bin`
   ];
   if (j.apk) {
     m.push(`https://ghfast.top/${j.apk}`);
     m.push(`https://gh-proxy.com/${j.apk}`);
-    m.push(`https://github.moeyy.xyz/${j.apk}`);
+    m.push(`https://ghproxy.net/${j.apk}`);
     m.push(j.apk);
   }
   j.mirrors = m;
