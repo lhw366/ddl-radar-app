@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ApkInstallerPlugin.class);
         registerPlugin(DdlNotifyPlugin.class);
+        registerPlugin(DdlAlarmPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
