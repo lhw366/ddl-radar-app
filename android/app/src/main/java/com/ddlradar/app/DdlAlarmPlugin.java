@@ -11,6 +11,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.HashMap;
@@ -185,15 +186,19 @@ public class DdlAlarmPlugin extends Plugin {
         Object idv = in.opt("id");
         Object atv = in.opt("at");
         if (!(idv instanceof Number) || !(atv instanceof Number)) return null;
-        JSONObject o = new JSONObject();
-        o.put("id", ((Number) idv).longValue());
-        o.put("at", ((Number) atv).longValue());
-        o.put("title", in.optString("title", ""));
-        o.put("body", in.optString("body", ""));
-        String ch = in.optString("channel", "");
-        if (ch.isEmpty()) ch = in.optString("channelId", "ddlr_full");
-        o.put("channel", ch);
-        return o;
+        try {
+            JSONObject o = new JSONObject();
+            o.put("id", ((Number) idv).longValue());
+            o.put("at", ((Number) atv).longValue());
+            o.put("title", in.optString("title", ""));
+            o.put("body", in.optString("body", ""));
+            String ch = in.optString("channel", "");
+            if (ch.isEmpty()) ch = in.optString("channelId", "ddlr_full");
+            o.put("channel", ch);
+            return o;
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     /** 同 id 下比对触发时刻与文案；任一变化都重排（更新 PendingIntent extras） */
