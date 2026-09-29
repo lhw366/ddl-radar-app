@@ -17,7 +17,10 @@ jobs:
       - name: Stamp build version into www
         run: |
           V=$(cat VERSION | tr -d '[:space:]')
-          printf '{"code":%s,"version":"%s","apk":"https://github.com/lhw366/ddl-radar-app/releases/download/v%s/app-debug.apk"}\n' "${{ github.run_number }}" "$V" "${{ github.run_number }}" > www/version.json
+          # apk 字段必须指向国内可直连的 CDN 版本化文件：旧版 App 的更新器
+          # 只会用这个字段下载（github 直连在国内不可达），这是引导旧版完成
+          # 自举的唯一通道
+          printf '{"code":%s,"version":"%s","apk":"https://gcore.jsdelivr.net/gh/lhw366/ddl-radar-app@main/apk-latest/ddl-radar-%s.apk"}\n' "${{ github.run_number }}" "$V" "${{ github.run_number }}" > www/version.json
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
