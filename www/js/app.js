@@ -804,9 +804,11 @@ function withMirrors(j) {
     m.push(`https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.bin`);
   }
   if (j.apk) {
-    m.push(`https://ghfast.top/${j.apk}`);
-    m.push(`https://gh-proxy.com/${j.apk}`);
-    m.push(`https://ghproxy.net/${j.apk}`);
+    if (j.apk.indexOf('https://github.com/') === 0) {
+      m.push(`https://ghfast.top/${j.apk}`);
+      m.push(`https://gh-proxy.com/${j.apk}`);
+      m.push(`https://ghproxy.net/${j.apk}`);
+    }
     m.push(j.apk);
   }
   j.mirrors = m;

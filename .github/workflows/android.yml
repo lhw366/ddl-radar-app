@@ -49,10 +49,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk \
+          # 附件必须不以 .apk 结尾：旧版 App 的检查更新若命中 GitHub API，
+          # 会取 .apk 附件的 github 直链下载（国内不可达）；找不到 .apk 附件
+          # 则自动落到 version.json 的 CDN 直链，保证任何旧版都能自举
+          mkdir -p release-asset
+          cp android/app/build/outputs/apk/debug/app-debug.apk "release-asset/ddl-radar-${{ github.run_number }}.apk.bin"
+          gh release create "v${{ github.run_number }}" "release-asset/ddl-radar-${{ github.run_number }}.apk.bin" \
             --title "DDL雷达 $(cat VERSION | tr -d '[:space:]') · build ${{ github.run_number }}" \
-            --notes "自动构建 · 覆盖安装即可，数据保留" --repo lhw366/ddl-radar-app \
-          || gh release upload "v${{ github.run_number }}" android/app/build/outputs/apk/debug/app-debug.apk --repo lhw366/ddl-radar-app --clobber
+            --notes "自动构建 · 请用 App 内「检查更新」或 Release 说明里的 CDN 直链下载" --repo lhw366/ddl-radar-app \
+          || gh release upload "v${{ github.run_number }}" "release-asset/ddl-radar-${{ github.run_number }}.apk.bin" --repo lhw366/ddl-radar-app --clobber
 
       # 版本化文件名：每个构建都是新文件，CDN 永不可能命中过期缓存
       # （实测 jsdelivr 各边缘对同名文件缓存滞后 1~4 个构建且互不相同，purge 也刷不动）
