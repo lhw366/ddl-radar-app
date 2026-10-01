@@ -36,6 +36,15 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- 闹钟式全屏提醒页（锁屏/灭屏由全屏 Intent 亮屏拉起） -->
+        <activity
+            android:name=".AlarmActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+
         <!-- 开机/改时间/覆盖安装后恢复闹钟（AlarmManager 闹钟不跨重启） -->
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>
@@ -60,4 +69,5 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 </manifest>

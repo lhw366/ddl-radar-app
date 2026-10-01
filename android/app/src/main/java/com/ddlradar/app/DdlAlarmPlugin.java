@@ -176,6 +176,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
+            ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
             call.resolve(ret);
         } catch (Exception e) {

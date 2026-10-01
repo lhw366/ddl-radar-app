@@ -842,7 +842,8 @@ async function renderDiag() {
     html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
   }
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) + (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' : '（经系统闹钟）') : '还没有触发记录（闹钟触发一次后出现）');
-  html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：设置 → 应用 → DDL雷达 → 允许自启动 + 耗电管理 → 允许后台运行', 'appinfo');
+  html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中（保活生效）' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
+  html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：允许自启动 + 耗电管理 → 允许后台运行；后台任务卡片下拉「锁定」', 'appinfo');
   html += diagRow(null, '退后台必达由系统级闹钟（setAlarmClock）保证：免授权、Doze 准时、重启/更新后自动恢复');
   if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;

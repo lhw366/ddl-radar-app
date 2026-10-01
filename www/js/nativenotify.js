@@ -94,6 +94,7 @@
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
         out.lastFireVia = p.lastFireVia || '';
+        out.guard = p.guard === true;
         out.sdk = p.sdk || null;
       } catch (e) { out.pending = -1; out.nextAt = 0; }
       try {
