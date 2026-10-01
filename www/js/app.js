@@ -752,7 +752,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.8.5';
+const APP_VERSION = '1.9.2';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -894,6 +894,10 @@ function bindSettings() {
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
 
   $('verText').textContent = 'v' + APP_VERSION;
+  // 版本显示以 CI 写入的 version.json 为准（version+构建号），杜绝手改遗漏：
+  fetch('version.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((j) => {
+    if (j && j.code) $('verText').textContent = 'v' + (j.version || APP_VERSION) + ' (b' + j.code + ')';
+  }).catch(() => {});
   $('diagBtn').addEventListener('click', renderDiag);
   $('updateBtn').addEventListener('click', async () => {
     const b = $('updateBtn');
@@ -937,12 +941,12 @@ function bindSettings() {
     if (!rem) { b.textContent = '🔄 检查更新'; toast('⚠️ 检查失败', '连不上 GitHub，稍后再试'); return; }
     if ((rem.code || 0) > local) {
       pendingUpdateMirrors = rem.mirrors || [];
-      b.textContent = '⬇️ 下载新版本 ' + (rem.version || '');
+      b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
       b.classList.add('primary');
       b.dataset.url = rem.apk || rem.url || '';
       toast('🚀 发现新版本', (rem.version || '') + ' · 再点一次按钮，浏览器会下载新 APK');
     } else {
-      b.textContent = '✅ 已是最新 v' + APP_VERSION;
+      b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
       setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
     }
   });
