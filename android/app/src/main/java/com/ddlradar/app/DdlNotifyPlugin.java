@@ -63,8 +63,9 @@ public class DdlNotifyPlugin extends Plugin {
             if (sound != null && !sound.isEmpty()) {
                 Uri soundUri = Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/" +
                         sound.substring(0, sound.lastIndexOf('.')));
+                // USAGE_ALARM：走闹钟音量、免勿扰干扰，与系统闹钟同语义
                 AudioAttributes attrs = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setUsage(AudioAttributes.USAGE_ALARM)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build();
                 ch.setSound(soundUri, attrs);

@@ -45,12 +45,12 @@
     ensureChannels: async function () {
       var ddp = DDP();
       if (!ddp) return;
-      // 通道全部静音：铃声/震动由原生接收器直执行（不依赖通知权限与 ROM 展示规则），
-      // 通道只承载视觉横幅——避免双响，也绕开厂商对通知声/震动的压制
+      // 通道承载一切表现（系统闹钟模式）：HIGH 重要性弹横幅、铃声/震动由系统
+      // 在通知送达时播放（不依赖进程存活）；到点路径只负责把通知交给系统
       var defs = [
-        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: false, sound: '' },
-        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: false, sound: '' },
-        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: '' }
+        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
+        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
       ];
       // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
       var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));

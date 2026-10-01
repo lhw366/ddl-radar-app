@@ -8,38 +8,27 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.media.AudioAttributes;
-import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.IBinder;
-import android.os.PowerManager;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
-import android.os.VibratorManager;
 
 /**
  * 提醒守护前台服务——真闹钟 App 的核心保活设计。
  *
- * 为什么需要它：ColorOS 会在 App 切后台后冻结进程，把系统闹钟的投递扣下
- * （前台全绿、后台不响的根因）。闹钟 App 的解法是进程从启动起就常驻一个
- * 前台服务，让进程永不被冻结——进程活着，setAlarmClock 主备双通道的投递
- * 就和前台时完全一样，必然送达。
+ * 为什么需要它：ColorOS 会在 App 切后台后冻结进程，把系统闹钟的投递扣下。
+ * 进程常驻前台服务 → 不被冻结 → setAlarmClock 主备双通道的投递和前台一样必然送达。
  *
- * 职责：
- * - 常驻低优先级通知「提醒守护中 · 下一条 HH:MM」（守护通道，静音）
- * - 闹钟到点（主备双通道 onStartCommand）在活进程内直响：留痕/去重/铃声/震动/
- *   横幅/清存储（声音震动直执行，不依赖通知权限与 ROM 展示规则）
- * - START_STICKY：被杀后系统自动重建；开机/覆盖安装由 BootReceiver 拉起
+ * 到点路径极简（系统通知优先，系统代劳一切表现）：
+ * 只把通知投递到对应通道——铃声/震动由通道携带（系统在通知送达时播放，
+ * 不依赖本进程存活），HIGH 重要性由系统弹顶部横幅，锁屏由全屏 Intent 亮屏。
+ * 本服务不做任何自定义声震/界面渲染。
  *
- * 注意：状态栏的「提醒守护中」通知是保活机制的一部分，请勿在通知设置里关闭。
+ * 守护通知「提醒守护中 · 下一条 HH:MM」是保活机制的一部分，请勿关闭。
  */
 public class AlarmService extends Service {
 
     static final String GUARD_CHANNEL = "ddlr_guard";
     static final int FG_ID = 19900214;
 
-    private MediaPlayer player;
-    private PowerManager.WakeLock wl;
     private static volatile boolean running;
 
     static boolean isRunning() { return running; }
@@ -88,9 +77,7 @@ public class AlarmService extends Service {
             nm.createNotificationChannel(ch);
         }
         Notification n = guardNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         } else {
             startForeground(FG_ID, n);
@@ -136,7 +123,7 @@ public class AlarmService extends Service {
         } catch (Exception e) { /* ignore */ }
     }
 
-    /* ---------------- 闹钟到点：在活进程内直响 ---------------- */
+    /* ---------------- 闹钟到点：交给系统通知 ---------------- */
 
     private void fireReminder(Intent intent) {
         int id = intent.getIntExtra("id", -1);
@@ -158,18 +145,8 @@ public class AlarmService extends Service {
         String channelId = intent.getStringExtra("channelId");
         if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
 
-        // 声音/震动直执行（按提醒方式：full 两者、vib 只震、ring 只响）
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ddlr:alarmSound");
-                wl.acquire(9000);
-            }
-        } catch (Exception e) { /* ignore */ }
-        if (!"ddlr_vib".equals(channelId)) playChime();
-        if (!"ddlr_ring".equals(channelId)) vibrate();
-
-        // 提醒横幅（高优通道，静音，锁屏可见）
+        // 到点只做一件事：把通知交给系统（铃声/震动/横幅由 HIGH 通道代劳，
+        // 全屏 Intent 负责锁屏亮屏）——路径越短越可靠
         postBanner(id, title, body, channelId);
 
         AlarmScheduler.remove(this, id);
@@ -187,8 +164,13 @@ public class AlarmService extends Service {
                     NotificationChannel ch = new NotificationChannel("ddlr_full",
                             "提醒 · 响铃+震动", NotificationManager.IMPORTANCE_HIGH);
                     ch.setShowBadge(true);
-                    ch.enableVibration(false);
-                    ch.setSound(null, null);
+                    ch.enableVibration(true);
+                    ch.setVibrationPattern(new long[]{0, 200, 120, 200});
+                    ch.setSound(android.net.Uri.parse("android.resource://com.ddlradar.app/raw/ddlr_chime"),
+                            new android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                    .build());
                     nm.createNotificationChannel(ch);
                 }
             }
@@ -196,7 +178,9 @@ public class AlarmService extends Service {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 b = new Notification.Builder(this, channelId);
             } else {
-                b = new Notification.Builder(this).setPriority(Notification.PRIORITY_MAX);
+                b = new Notification.Builder(this)
+                        .setPriority(Notification.PRIORITY_MAX)
+                        .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
             }
             PendingIntent pi = null;
             Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
@@ -224,51 +208,7 @@ public class AlarmService extends Service {
                     .setContentIntent(pi)
                     .build();
             nm.notify(id, n);
-        } catch (Exception e) { /* 横幅失败不影响已执行的铃声/震动 */ }
-    }
-
-    private void playChime() {
-        try {
-            AudioAttributes attrs = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build();
-            player = MediaPlayer.create(this, R.raw.ddlr_chime, attrs, 1);
-            if (player == null) return;
-            player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-                @Override
-                public void onCompletion(MediaPlayer m) { m.release(); }
-            });
-            player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-                @Override
-                public boolean onError(MediaPlayer m, int what, int extra) {
-                    m.release();
-                    return true;
-                }
-            });
-            player.start();
-        } catch (Exception e) {
-            if (player != null) { try { player.release(); } catch (Exception ignore) {} }
-        }
-    }
-
-    private void vibrate() {
-        try {
-            Vibrator v;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
-                v = vm == null ? null : vm.getDefaultVibrator();
-            } else {
-                v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-            }
-            if (v == null || !v.hasVibrator()) return;
-            long[] pattern = {0, 200, 120, 200, 120, 400};
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                v.vibrate(VibrationEffect.createWaveform(pattern, -1));
-            } else {
-                v.vibrate(pattern, -1);
-            }
-        } catch (Exception e) { /* ignore */ }
+        } catch (Exception e) { /* 投递失败不影响其他提醒 */ }
     }
 
     private static String fmtShort(long ts) {
@@ -279,13 +219,5 @@ public class AlarmService extends Service {
         int hh = c.get(java.util.Calendar.HOUR_OF_DAY);
         int mm = c.get(java.util.Calendar.MINUTE);
         return (m + "月" + d + "日 " + (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm);
-    }
-
-    @Override
-    public void onDestroy() {
-        running = false;
-        if (player != null) { try { player.release(); } catch (Exception ignore) {} }
-        if (wl != null) { try { wl.release(); } catch (Exception ignore) {} }
-        super.onDestroy();
     }
 }
