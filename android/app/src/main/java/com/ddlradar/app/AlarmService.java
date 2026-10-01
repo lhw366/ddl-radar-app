@@ -204,6 +204,15 @@ public class AlarmService extends Service {
                 pi = PendingIntent.getActivity(this, id, open,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             }
+            // 闹钟式全屏提醒：锁屏/灭屏直接亮屏进入 AlarmActivity（系统闹钟同款）
+            try {
+                Intent alarm = new Intent(this, AlarmActivity.class);
+                alarm.putExtra("title", title);
+                alarm.putExtra("body", body);
+                PendingIntent fsi = PendingIntent.getActivity(this, 1000000 + id, alarm,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                b.setFullScreenIntent(fsi, true);
+            } catch (Exception ignore) { /* 全屏 Intent 不可用时退化为普通横幅 */ }
             Notification n = b
                     .setContentTitle(title == null ? "DDL雷达" : title)
                     .setContentText(body == null ? "" : body)
@@ -214,15 +223,6 @@ public class AlarmService extends Service {
                     .setWhen(System.currentTimeMillis())
                     .setContentIntent(pi)
                     .build();
-            // 闹钟式全屏提醒：锁屏/灭屏直接亮屏进入 AlarmActivity（系统闹钟同款）
-            try {
-                Intent alarm = new Intent(this, AlarmActivity.class);
-                alarm.putExtra("title", title);
-                alarm.putExtra("body", body);
-                PendingIntent fsi = PendingIntent.getActivity(this, 1000000 + id, alarm,
-                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                n.setFullScreenIntent(fsi, true);
-            } catch (Exception ignore) { /* 全屏 Intent 不可用时退化为普通横幅 */ }
             nm.notify(id, n);
         } catch (Exception e) { /* 横幅失败不影响已执行的铃声/震动 */ }
     }
