@@ -784,7 +784,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.9.7';
+const APP_VERSION = '1.9.8';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -958,11 +958,17 @@ function bindSettings() {
           await Capacitor.Plugins.ApkInstaller.installApk({ urls });
           b.textContent = '📦 请在弹出的界面点「安装」';
           b.disabled = false;
+          // 下载已完成：清掉待更新状态，避免装完回来按钮还停在「更新到…」
+          delete b.dataset.url;
+          delete b.dataset.code;
+          pendingUpdateMirrors = [];
           toast('📦 更新包已就绪', '系统安装界面已弹出，点「安装」即可完成更新');
         } catch (e) {
-          b.disabled = false; b.textContent = '⬇️ 下载新版本';
+          b.disabled = false;
+          b.textContent = '⬇️ 下载新版本';
           const msg = (e && e.message) ? String(e.message) : '';
-          toast('⚠️ 下载失败', (msg ? msg.slice(0, 120) + '。' : '') + '建议微信/电脑传桌面安装包覆盖安装');
+          // 失败保留 dataset.url，用户可直接再点重试（换线路由原生负责）
+          toast('⚠️ 下载失败', (msg ? msg.slice(0, 160) + '。' : '') + '可再点一次重试，或让电脑传安装包覆盖安装');
         } finally {
           if (prog && prog.remove) { try { prog.remove(); } catch (e) { /* ignore */ } }
         }
@@ -994,9 +1000,18 @@ function bindSettings() {
       b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
       b.classList.add('primary');
       b.dataset.url = rem.apk || rem.url || '';
-      toast('🚀 发现新版本', (rem.version || '') + ' · 再点一次按钮，浏览器会下载新 APK');
+      b.dataset.code = String(rem.code || 0);
+      // 文案要说清楚下一步，别再讲「浏览器会下载」——APK 内是走应用内下载器
+      const inApp = !!(window.Capacitor && Capacitor.Plugins.ApkInstaller);
+      toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
+        inApp ? '再点一次按钮即开始下载，下载完自动弹出安装界面'
+              : '再点一次按钮，浏览器会下载新 APK');
     } else {
       b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
+      // 已是最新：清掉残留的待更新状态，否则按钮会一直卡在「更新到…」
+      delete b.dataset.url;
+      delete b.dataset.code;
+      pendingUpdateMirrors = [];
       setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
     }
   });

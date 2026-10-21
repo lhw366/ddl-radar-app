@@ -3,6 +3,7 @@ package com.ddlradar.app;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 
 import androidx.core.content.FileProvider;
 
@@ -61,8 +62,20 @@ public class ApkInstallerPlugin extends Plugin {
             for (String u : urls) {
                 try {
                     long bytes = downloadTo(u, apk);
-                    notifyListeners("downloaded", new JSObject().put("bytes", bytes));
+                    // 同样必须在主线程发事件；失败不影响后续安装流程
+                    final long doneBytes = bytes;
+                    try {
+                        getBridge().executeOnMainThread(() -> {
+                            try {
+                                notifyListeners("downloaded", new JSObject().put("bytes", doneBytes));
+                            } catch (Exception ignore) {}
+                        });
+                    } catch (Exception ignore) {}
                     openInstaller(apk);
+                    // openInstaller 内部投递到主线程；这里再投递一次 resolve。
+                    // 两者都进主线程队列、先进先出，所以安装界面一定先弹出。
+                    // 若 openInstaller 走了「缺权限」分支并 reject，downloadingCall
+                    // 已被清空，下面这次 resolve 会自动跳过（不报错）。
                     resolveOnUi(new JSObject().put("bytes", bytes).put("path", apk.getAbsolutePath()));
                     return;
                 } catch (Exception e) {
@@ -100,7 +113,20 @@ public class ApkInstallerPlugin extends Plugin {
                 got += n;
                 if (got - reported > 512 * 1024) {
                     reported = got;
-                    notifyListeners("progress", new JSObject().put("bytes", got).put("total", Math.max(0, expected)));
+                    // notifyListeners 必须在主线程调用。早前直接在下载线程里调，
+                    // 会抛异常并中断整个下载——被外层 catch 当成「这条线路失败」，
+                    // 于是每条线路都失败，最终表现为「手机上无法直接更新」。
+                    // 这里改为主线程投递，且进度上报失败绝不影响下载本身。
+                    final long g = got;
+                    final long exp = Math.max(0, expected);
+                    try {
+                        getBridge().executeOnMainThread(() -> {
+                            try {
+                                notifyListeners("progress",
+                                        new JSObject().put("bytes", g).put("total", exp));
+                            } catch (Exception ignore) { /* 进度只是 UI，失败忽略 */ }
+                        });
+                    } catch (Exception ignore) { /* 桥不可用时忽略进度 */ }
                 }
             }
             out.flush();
@@ -123,13 +149,38 @@ public class ApkInstallerPlugin extends Plugin {
         return apk.length();
     }
 
+    /**
+     * 拉起系统安装界面。
+     *
+     * 注意两点（早前都有缺陷）：
+     * 1) 必须在主线程调用 startActivity，下载线程直接调会抛
+     *    RuntimeException("Can't create handler inside thread that has not called Looper.prepare()")。
+     * 2) Android 8+ 需要「安装未知应用」权限；未授予时 ACTION_VIEW 会静默无反应，
+     *    这里检测并跳转到授权页，否则用户会以为「点了没反应」。
+     */
     private void openInstaller(File apk) {
-        Context ctx = getContext();
-        Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", apk);
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setDataAndType(uri, "application/vnd.android.package-archive");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-        ctx.startActivity(intent);
+        final Context ctx = getContext();
+        getBridge().executeOnMainThread(() -> {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        && !ctx.getPackageManager().canRequestPackageInstalls()) {
+                    Intent settings = new Intent(
+                            android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:" + ctx.getPackageName()));
+                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(settings);
+                    rejectOnUi("需要先允许「安装未知应用」，已跳转设置页。开启后请再点一次更新");
+                    return;
+                }
+                Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", apk);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, "application/vnd.android.package-archive");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(intent);
+            } catch (Exception e) {
+                rejectOnUi("拉起安装界面失败：" + (e.getMessage() == null ? "unknown" : e.getMessage()));
+            }
+        });
     }
 
     private void resolveOnUi(JSObject data) {
