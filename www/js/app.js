@@ -752,7 +752,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.9.3';
+const APP_VERSION = '1.9.4';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -793,7 +793,10 @@ async function fetchRemoteVersion() {
 }
 /* APK 下载线路（设备端逐条尝试直到成功）。文件名带构建号：每个构建都是新文件，
    CDN 不可能命中过期缓存（曾实测各边缘对同名文件缓存滞后 1~4 个构建、互不相同，
-   导致装到旧包/误判已是最新）。gcore/testingcf/jsdmirror 不拦 .apk；cdn 需 .bin */
+   导致装到旧包/误判已是最新）。gcore/testingcf/jsdmirror 不拦 .apk。
+   注意：不要再用 .bin —— CI 只在 Release 附件里产出 .bin，仓库的 apk-latest/
+   目录下只有 .apk；旧的第 4 条 .bin 线路必然 404（且 cdn 边缘还会 301 拦截），
+   纯属浪费一次超时。 */
 function withMirrors(j) {
   const code = j.code || 0;
   const m = [];
@@ -801,7 +804,6 @@ function withMirrors(j) {
     m.push(`https://gcore.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
     m.push(`https://testingcf.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
     m.push(`https://cdn.jsdmirror.com/gh/${REPO}@main/apk-latest/ddl-radar-${code}.apk`);
-    m.push(`https://cdn.jsdelivr.net/gh/${REPO}@main/apk-latest/ddl-radar-${code}.bin`);
   }
   if (j.apk) {
     if (j.apk.indexOf('https://github.com/') === 0) {
@@ -853,7 +855,7 @@ async function renderDiag() {
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
-    if (f === 'reinit') { await NativeNotify.init(); }
+    if (f === 'reinit') { await NativeNotify.ensureChannels(true); toast('🔧 提醒通道已重建', '已恢复默认铃声与震动设置'); }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
     setTimeout(renderDiag, 900);
   }));

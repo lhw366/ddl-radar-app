@@ -42,7 +42,8 @@
       });
     },
 
-    ensureChannels: async function () {
+    // force=true 时强制删旧建新（用户在诊断面板点「修复通道」才会走到）
+    ensureChannels: async function (force) {
       var ddp = DDP();
       if (!ddp) return;
       // 通道承载一切表现（系统闹钟模式）：HIGH 重要性弹横幅、铃声/震动由系统
@@ -52,13 +53,21 @@
         { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
         { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
       ];
-      // 通道设置签名：与上次一致则跳过删除重建（避免反复删通道影响已排定的提醒）
+      // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
+      // 注意：原生侧现在默认复用已存在通道，force 才删重建——用户手动调整过的
+      // 通道设置（静音/换铃声）不再被每次启动抹掉。
       var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
       var chSigStored = null;
       try { chSigStored = localStorage.getItem('ddlr_chsig'); } catch (e) {}
-      if (chSig !== chSigStored) {
+      if (force || chSig !== chSigStored) {
         for (var i = 0; i < defs.length; i++) {
-          try { await ddp.ensureChannel(defs[i]); } catch (e) { /* 单个通道失败不阻断 */ }
+          var d = defs[i];
+          try {
+            await ddp.ensureChannel({
+              id: d.id, name: d.name, importance: d.importance,
+              vibration: d.vibration, sound: d.sound, force: !!force
+            });
+          } catch (e) { /* 单个通道失败不阻断 */ }
         }
         try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
       }

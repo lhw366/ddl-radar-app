@@ -8,8 +8,13 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 
 /**
  * 提醒守护前台服务——真闹钟 App 的核心保活设计。
@@ -77,10 +82,27 @@ public class AlarmService extends Service {
             nm.createNotificationChannel(ch);
         }
         Notification n = guardNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-        } else {
-            startForeground(FG_ID, n);
+        // 类型必须与 manifest 的 foregroundServiceType 一致（specialUse）。
+        // 早前这里传 MEDIA_PLAYBACK 而 manifest 写 mediaPlayback，Android 14+
+        // 会因「类型与声明不符」或「无媒体播放行为」判定非法，startForeground
+        // 抛异常 → 服务未进入前台 → 被系统回收 → 后台投递丢失。
+        // 另外 startForeground 会抛多种运行时异常（FGS 类型不支持、被系统限制
+        // 启动前台服务等），绝不能让异常冒泡——那会直接崩掉服务，连 onStartCommand
+        // 里后面的 fireReminder 都执行不到，表现就是「到点什么都不响」。
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                // specialUse 常量本身是 API 34 引入的，低于 34 传入会被系统判为非法类型
+                startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(FG_ID, n);
+            }
+        } catch (Exception e) {
+            // 退化：不带类型再试一次；仍失败则仅保留普通通知，至少提醒逻辑继续跑
+            try {
+                startForeground(FG_ID, n);
+            } catch (Exception ignore) {
+                try { if (nm != null) nm.notify(FG_ID, n); } catch (Exception ignore2) {}
+            }
         }
     }
 
@@ -145,12 +167,65 @@ public class AlarmService extends Service {
         String channelId = intent.getStringExtra("channelId");
         if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
 
-        // 到点只做一件事：把通知交给系统（铃声/震动/横幅由 HIGH 通道代劳，
-        // 全屏 Intent 负责锁屏亮屏）——路径越短越可靠
+        // 自播兜底：通道铃声依赖「通知权限 + 通道未被用户静音」两个外部条件，
+        // 任一不满足就完全无声。系统闹钟从不依赖通知权限，这里同样直执行声震，
+        // 保证即使通知权限被关，锁屏/后台到点也一定听得见（通道仍在时会有双响，
+        // 可接受：宁可响两下，不可一声不响）。
+        playSoundAndVibrate(channelId);
+
         postBanner(id, title, body, channelId);
 
         AlarmScheduler.remove(this, id);
         refreshGuard();
+    }
+
+    /* ---------------- 声震直执行（不依赖通知权限） ---------------- */
+
+    private void playSoundAndVibrate(String channelId) {
+        boolean wantSound = !"ddlr_vib".equals(channelId);
+        boolean wantVibrate = !"ddlr_ring".equals(channelId);
+        if (wantSound) playChime();
+        if (wantVibrate) vibrate();
+    }
+
+    private void playChime() {
+        try {
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            final MediaPlayer player = MediaPlayer.create(this, R.raw.ddlr_chime, attrs, 1);
+            if (player == null) return;
+            player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override public void onCompletion(MediaPlayer m) { try { m.release(); } catch (Exception ignore) {} }
+            });
+            player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override public boolean onError(MediaPlayer m, int what, int extra) {
+                    try { m.release(); } catch (Exception ignore) {}
+                    return true;
+                }
+            });
+            player.start();
+        } catch (Exception e) { /* 铃声失败不阻断通知投递 */ }
+    }
+
+    private void vibrate() {
+        try {
+            Vibrator v;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                v = vm == null ? null : vm.getDefaultVibrator();
+            } else {
+                v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (v == null || !v.hasVibrator()) return;
+            long[] pattern = {0, 200, 120, 200, 120, 400};
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createWaveform(pattern, -1));
+            } else {
+                v.vibrate(pattern, -1);
+            }
+        } catch (Exception e) { /* ignore */ }
     }
 
     private void postBanner(int id, String title, String body, String channelId) {

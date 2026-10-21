@@ -45,8 +45,19 @@ public class DdlNotifyPlugin extends Plugin {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) { call.reject("no notification manager"); return; }
 
-            // 通道一经创建设置不可改：先删旧通道再重建，保证本次设置生效
-            if (nm.getNotificationChannel(id) != null) {
+            // 通道一经创建，重要性/声音/震动就归用户所有，系统不允许 App 改写。
+            // 早前这里「先删后建」强制生效，代价是：每删一次，用户在系统设置里
+            // 对该通道的调整（静音、改成其他铃声、关闭横幅）全部作废，
+            // 而且删通道会让已排定的提醒失去通道、到点静默。
+            // 现在：通道已存在就复用，不删除；只有用户主动点「修复」才重建。
+            boolean force = Boolean.TRUE.equals(call.getBoolean("force", false));
+            NotificationChannel existing = nm.getNotificationChannel(id);
+            if (existing != null && !force) {
+                JSObject ret = new JSObject().put("ok", true).put("reused", true);
+                call.resolve(ret);
+                return;
+            }
+            if (existing != null) {
                 nm.deleteNotificationChannel(id);
             }
             NotificationChannel ch = new NotificationChannel(id, name, importance);
@@ -74,7 +85,7 @@ public class DdlNotifyPlugin extends Plugin {
             }
 
             nm.createNotificationChannel(ch);
-            JSObject ret = new JSObject().put("ok", true);
+            JSObject ret = new JSObject().put("ok", true).put("reused", false);
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("ensureChannel failed: " + e.getMessage());
