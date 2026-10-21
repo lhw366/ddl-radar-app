@@ -28,8 +28,12 @@ import java.util.HashMap;
 @CapacitorPlugin(name = "DdlAlarm")
 public class DdlAlarmPlugin extends Plugin {
 
-    /** 闹钟注册规格版本：变更后 first apply 全量重排（v2 = 双机制注册 + 接收器直执行声震） */
-    private static final int SCHED_VER = 2;
+    /**
+     * 闹钟注册规格版本：变更后 first apply 全量重排。
+     * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
+     * ——旧版已排定的闹钟必须强制重排，否则仍带着「共用 PendingIntent」的缺陷。
+     */
+    private static final int SCHED_VER = 3;
 
     @PluginMethod
     public void apply(PluginCall call) {

@@ -89,10 +89,16 @@ public final class AlarmScheduler {
     }
 
     /**
-     * 注册一条系统闹钟，双机制同发（同一 PendingIntent，接收器 60s 窗口去重）：
+     * 注册一条系统闹钟，双机制同发：
      * 主：setAlarmClock（状态栏闹钟图标、免授权、Doze 准时）；
-     * 备：setExactAndAllowWhileIdle 在 +3s 再发一次——个别 ROM 对闹钟时钟通道
+     * 备：setExactAndAllowWhileIdle 在 +2s 再发一次——个别 ROM 对闹钟时钟通道
      * 的派发存在怪异拦截，两条独立通道指向同一接收器，只要一条到达即提醒。
+     *
+     * 注意备份通道必须用**独立 requestCode** 的 PendingIntent：
+     * 早前主备共用同一 PendingIntent，系统视为同一闹钟的重复设置，
+     * 后注册的 setExactAndAllowWhileIdle 会把 setAlarmClock 顶掉，
+     * 导致「状态栏闹钟图标消失 + 退化为精确闹钟（Doze 下有分钟级延迟）」，
+     * 这正是用户反馈「延迟有点高」的根因。
      */
     public static void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId) {
@@ -107,7 +113,7 @@ public final class AlarmScheduler {
             show = PendingIntent.getActivity(ctx, (int) id, open,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         }
-        PendingIntent op = operation(ctx, id, at, title, body, channelId);
+        PendingIntent op = operation(ctx, id, at, title, body, channelId, 0);
 
         try {
             am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show), op);
@@ -116,21 +122,24 @@ public final class AlarmScheduler {
             // 万一被厂商 ROM 拦截则退化为普通闹钟，提醒仍可达只是 Doze 下可能略偏
             am.set(AlarmManager.RTC_WAKEUP, at, op);
         }
+        // 备份通道：+2s 兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
+        // （共用会让后注册的精确闹钟顶掉 setAlarmClock，反而失去 Doze 准时性）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
-                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 3000, op);
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 2000,
+                            operation(ctx, id, at, title, body, channelId, 1));
                 }
             } catch (SecurityException e) { /* 主通道在即可 */ }
         }
     }
 
-    /** 取消一条闹钟（只注销闹钟，不改持久化列表——由调用方整表协调；filterEquals 不比对 extras，
-     *  主备两条闹钟共用同一 PendingIntent 身份，一次 cancel 同时注销） */
+    /** 取消一条闹钟：主备两条都要注销（独立 requestCode 后不再共享身份） */
     public static void cancel(Context ctx, long id) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
-        am.cancel(operation(ctx, id, 0, null, null, null));
+        am.cancel(operation(ctx, id, 0, null, null, null, 0));
+        am.cancel(operation(ctx, id, 0, null, null, null, 1));
     }
 
     /** 开机/改时间/替换安装后恢复所有未来闹钟，返回最近的触发时刻（无则 0） */
@@ -154,21 +163,34 @@ public final class AlarmScheduler {
         return nextAt;
     }
 
+    /**
+     * 构造投递用 PendingIntent。
+     *
+     * @param slot 0=主通道（setAlarmClock），1=备份通道（setExactAndAllowWhileIdle）。
+     *             两者必须用不同 requestCode，否则系统按「同一 PendingIntent」
+     *             处理，后注册的会覆盖前一个闹钟（详见 schedule 注释）。
+     */
     private static PendingIntent operation(Context ctx, long id, long at,
-                                           String title, String body, String channelId) {
+                                           String title, String body, String channelId, int slot) {
         Intent i = new Intent(ctx, AlarmService.class);
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
+        i.putExtra("slot", slot);
         if (title != null) i.putExtra("title", title);
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);
+        // requestCode 只需「同一 id 下主备不同」，且要避开溢出：
+        // id 来自 JS 的 hashId()（上限 2^31-1），直接 *2 会溢出成负数，
+        // 虽然负值合法但与别的 id 撞码概率上升。这里用低 30 位左移 + slot，
+        // 保证不同 id 的码段不重叠（id 的低 30 位最多 2^30 个，乘以 2 落在 int 内）。
+        int reqCode = (((int) id & 0x3FFFFFFF) << 1) | (slot & 1);
         // O+ 直接以「前台服务」身份拉起：ColorOS 冻结后台进程时会扣广播，
         // 但闹钟触发的 FGS 拉起必须放行（真闹钟 App 的标准做法）；pre-O 走广播委托
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            return PendingIntent.getForegroundService(ctx, (int) id, i,
+            return PendingIntent.getForegroundService(ctx, reqCode, i,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         }
-        return PendingIntent.getBroadcast(ctx, (int) id, i,
+        return PendingIntent.getBroadcast(ctx, reqCode, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 }

@@ -152,9 +152,11 @@ public class AlarmService extends Service {
         long at = intent.getLongExtra("at", 0);
         long now = System.currentTimeMillis();
 
-        // 主备双通道去重：同一提醒 60s 内只响一次（备份通道晚 3s 到达会被跳过）
+        // 主备双通道去重：备份通道 +2s 到达，窗口收到 8s 足够覆盖
+        // （早前 60s 窗口太宽：同一时刻附近的真实连续提醒会被误吞，
+        //  而且用户 1 分钟内改了时间再触发也会被当成重复）
         long[] lf = AlarmScheduler.lastFire(this);
-        boolean dup = lf[0] == id && now - lf[1] < 60000;
+        boolean dup = lf[0] == id && now - lf[1] < 8000;
         if (dup) {
             AlarmScheduler.remove(this, id);
             refreshGuard();
@@ -228,34 +230,86 @@ public class AlarmService extends Service {
         } catch (Exception e) { /* ignore */ }
     }
 
+    /**
+     * 确保目标提醒通道存在，且**语义与通道 id 一致**。
+     * 只补建缺失的通道，不覆盖已存在的（已存在的设置归用户所有，系统也不允许改写）。
+     * 返回实际可用的通道 id（无法识别时回落 ddlr_full）。
+     */
+    private String ensureReminderChannel(NotificationManager nm, String channelId) {
+        String id = channelId;
+        if (!"ddlr_vib".equals(id) && !"ddlr_ring".equals(id) && !"ddlr_full".equals(id)) {
+            id = "ddlr_full";
+        }
+        if (nm.getNotificationChannel(id) != null) return id;
+        String name;
+        boolean sound, vib;
+        if ("ddlr_vib".equals(id)) {
+            name = "提醒 · 仅震动"; sound = false; vib = true;
+        } else if ("ddlr_ring".equals(id)) {
+            name = "提醒 · 仅响铃"; sound = true; vib = false;
+        } else {
+            name = "提醒 · 响铃+震动"; sound = true; vib = true;
+        }
+        NotificationChannel ch = new NotificationChannel(id, name,
+                NotificationManager.IMPORTANCE_HIGH);
+        ch.setShowBadge(true);
+        ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        ch.enableVibration(vib);
+        if (vib) ch.setVibrationPattern(new long[]{0, 200, 120, 200});
+        if (sound) {
+            ch.setSound(android.net.Uri.parse("android.resource://" + getPackageName() + "/raw/ddlr_chime"),
+                    new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build());
+        } else {
+            ch.setSound(null, null);
+        }
+        nm.createNotificationChannel(ch);
+        return id;
+    }
+
+    /**
+     * 投递提醒通知。
+     *
+     * 通道语义（与 JS 侧三个通道一一对应，绝不能混用）：
+     *   ddlr_full 响铃+震动 / ddlr_vib 仅震动（**必须静音**）/ ddlr_ring 仅响铃
+     *
+     * 早前这里一旦通道缺失就回落 ddlr_full（带声音），于是「仅震动」模式下
+     * 通道若因故缺失，系统会用它补一条带铃声的通道 → 用户反馈的
+     * 「选震动那种声音有点大」正是这条回落路径造成的。现在按目标通道
+     * 精确重建，绝不跨模式回落。
+     */
     private void postBanner(int id, String title, String body, String channelId) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                    && nm.getNotificationChannel(channelId) == null) {
-                channelId = "ddlr_full";
-                if (nm.getNotificationChannel(channelId) == null) {
-                    NotificationChannel ch = new NotificationChannel("ddlr_full",
-                            "提醒 · 响铃+震动", NotificationManager.IMPORTANCE_HIGH);
-                    ch.setShowBadge(true);
-                    ch.enableVibration(true);
-                    ch.setVibrationPattern(new long[]{0, 200, 120, 200});
-                    ch.setSound(android.net.Uri.parse("android.resource://com.ddlradar.app/raw/ddlr_chime"),
-                            new android.media.AudioAttributes.Builder()
-                                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
-                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                                    .build());
-                    nm.createNotificationChannel(ch);
-                }
+            if (channelId == null || channelId.isEmpty()) channelId = "ddlr_full";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                channelId = ensureReminderChannel(nm, channelId);
             }
             Notification.Builder b;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 b = new Notification.Builder(this, channelId);
             } else {
-                b = new Notification.Builder(this)
-                        .setPriority(Notification.PRIORITY_MAX)
-                        .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
+                // pre-O 无通道概念：按模式设置提示音与震动
+                b = new Notification.Builder(this).setPriority(Notification.PRIORITY_MAX);
+                if ("ddlr_vib".equals(channelId)) {
+                    b.setDefaults(Notification.DEFAULT_VIBRATE);
+                } else if ("ddlr_ring".equals(channelId)) {
+                    b.setDefaults(Notification.DEFAULT_SOUND);
+                } else {
+                    b.setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
+                }
+            }
+            // 声音/震动已由本服务直执行（playSoundAndVibrate），通道再响一次就是
+            // 双响。这里让通知本身不重复发声：通道保持 HIGH 以弹出横幅，
+            // 但把该条通知的 sound/vibrate 置空，由直执行唯一负责发声。
+            if ("ddlr_vib".equals(channelId)) {
+                b.setSound(null);
+                b.setVibrate(null);
+            } else if ("ddlr_ring".equals(channelId)) {
+                b.setVibrate(null);
             }
             PendingIntent pi = null;
             Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());

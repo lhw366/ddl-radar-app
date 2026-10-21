@@ -93,7 +93,20 @@ function vibe() {
 function toast(title, body, kind) {
   const el = document.createElement('div');
   el.className = 'toast' + (kind ? ' tt-' + kind : '') + (S.settings.toastCompact ? ' compact' : '');
-  el.innerHTML = `<div class="tt-title">${title}</div>${body ? `<div class="tt-body">${body}</div>` : ''}`;
+  // 用 textContent 赋值而非拼 innerHTML：任务名里若含 < > & 等字符，
+  // 早前会把整段横幅结构破坏（用户反馈的「横幅显示有点小问题」即此类）。
+  // 调用方传进来的 title/body 可能已做过 escapeHtml，这里统一按纯文本渲染，
+  // 避免二次转义成 &amp;lt; 之类。
+  const tEl = document.createElement('div');
+  tEl.className = 'tt-title';
+  tEl.textContent = stripTags(title);
+  el.appendChild(tEl);
+  if (body) {
+    const bEl = document.createElement('div');
+    bEl.className = 'tt-body';
+    bEl.textContent = stripTags(body);
+    el.appendChild(bEl);
+  }
   $('toastWrap').appendChild(el);
   const kill = () => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); };
   el.addEventListener('click', kill);
@@ -102,10 +115,19 @@ function toast(title, body, kind) {
     document.title = '⏰ DDL雷达 · 有提醒！';
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
-        new Notification(title.replace(/<[^>]+>/g, ''), { body: (body || '').replace(/<[^>]+>/g, ''), tag: 'ddlr' });
+        new Notification(stripTags(title), { body: stripTags(body), tag: 'ddlr' });
       } catch (e) { /* ignore */ }
     }
   }
+}
+
+/** 去掉 HTML 标签并把常见实体还原成字面字符（用于纯文本展示） */
+function stripTags(s) {
+  return String(s == null ? '' : s)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
@@ -704,13 +726,22 @@ function ymdOf(ts) {
 
 function tickReminders() {
   const now = Date.now();
+  // APK 环境：到点提醒由原生系统闹钟负责（锁屏/后台都可靠），
+  // 应用内引擎若再弹一次就是「双横幅 + 双响声」，也是用户观感上
+  // 「怎么这么久才弹」的来源之一（两条链路到达时刻不同）。
+  // 这里只负责「错过补弹」：系统闹钟没排上的历史提醒才由前台补。
+  const native = !!(window.NativeNotify && window.NativeNotify.available &&
+    window.NativeNotify.available() && remindMode() !== 'silent');
   for (const t of S.tasks) {
     for (const r of planReminders(t)) {
       if (S.fired.includes(r.key)) continue;
       if (r.at > now) continue;
       if (now - r.at > 15 * 60000) { S.fired.push(r.key); continue; } // 超过15分钟才静默
       S.fired.push(r.key);
+      // 原生负责准点投递：准点（60s 内）的交给系统通知，避免双响；
+      // 只有明显迟到（>60s，说明系统通道没送达）才前台补弹。
       const late = now - r.at > 60000;
+      if (native && !late) { save(); continue; }
       toast(r.title + (late ? ' · 错过补弹' : ''), r.body, r.kind);
       beep(); vibe();
       if (S.fired.length > 600) S.fired = S.fired.slice(-400);
@@ -752,7 +783,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.9.4';
+const APP_VERSION = '1.9.5';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -867,6 +898,12 @@ function bindSettings() {
       S.settings.remindMode = b.dataset.m;
       save(); syncRemindModeUI();
       toast('🔕 提醒方式已切换', '🔊 响铃+震动 / 📳 仅震动 / 🔔 仅响铃 / 🔇 仅横幅'.split(' / ')[['full','vib','ring','silent'].indexOf(b.dataset.m)]);
+      // 切模式后必须重排系统闹钟：旧闹钟带着旧 channelId，不重排就会
+      // 继续按「响铃+震动」响（用户选了仅震动却还有声音的成因之一）。
+      if (window.NativeNotify && NativeNotify.available()) {
+        NativeNotify._sig = null;   // 强制忽略签名去抖，确保真的重排
+        NativeNotify.sync(S);
+      }
     }));
   syncRemindModeUI();
 
@@ -934,10 +971,20 @@ function bindSettings() {
       return;
     }
     b.disabled = true; b.textContent = '🔄 检查中…';
-    const local = await (async () => {
-      try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) return (await r.json()).code || 0; } catch (e) {}
-      return 0;
-    })();
+    // 本地版本：优先用原生返回的**已安装包真实 versionCode**。
+    // 早前读的是包内 version.json——那是 CI 构建时写死的当次构建号，
+    // 装到手机上后永远等于「当时那次构建」，一旦远端有更新就再也判不出
+    // 「已是最新」，会出现反复提示更新、甚至更新后仍提示的循环。
+    let local = 0;
+    try {
+      if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.getInfo) {
+        const info = await Capacitor.Plugins.App.getInfo();
+        local = parseInt(info && info.build, 10) || 0;
+      }
+    } catch (e) { /* 取不到再回落 */ }
+    if (!local) {
+      try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) local = (await r.json()).code || 0; } catch (e) {}
+    }
     const rem = await fetchRemoteVersion();
     b.disabled = false;
     if (!rem) { b.textContent = '🔄 检查更新'; toast('⚠️ 检查失败', '连不上 GitHub，稍后再试'); return; }
