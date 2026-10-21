@@ -118,19 +118,35 @@ public final class AlarmScheduler {
         try {
             am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show), op);
         } catch (SecurityException e) {
-            // 理论上不可达（setAlarmClock 免授权 + USE_EXACT_ALARM 双保险）；
-            // 万一被厂商 ROM 拦截则退化为普通闹钟，提醒仍可达只是 Doze 下可能略偏
-            am.set(AlarmManager.RTC_WAKEUP, at, op);
+            // 降级路径：setAlarmClock 被拒（Android 12/12L 上用户撤销「闹钟和提醒」
+            // 权限，或个别 ROM 自定义拦截）。此时改用精确闹钟而非 set()：
+            // set() 是 inexact 闹钟，Doze 下会被推迟到下一个维护窗口（小时级），
+            // 而 setExactAndAllowWhileIdle 每个 Doze 窗口仍能保证触发一次。
+            // 此处 op 是「尚未注册成功」的身份，不存在与其他闹钟互相覆盖的问题。
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
+                } else {
+                    am.set(AlarmManager.RTC_WAKEUP, at, op);
+                }
+            } catch (SecurityException e2) {
+                // 精确闹钟同样被拒：最后退回 inexact。这一层必须自己兜住，
+                // 否则异常会冒出 schedule() 打断后续备份通道注册，并被
+                // DdlAlarmPlugin.apply() 的 try 捕获后 reject 整次调用——
+                // 那会导致整表闹钟一条都排不上，远比「不准时」严重。
+                try { am.set(AlarmManager.RTC_WAKEUP, at, op); } catch (Exception ignore) {}
+            }
         }
         // 备份通道：+2s 兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
         // （共用会让后注册的精确闹钟顶掉 setAlarmClock，反而失去 Doze 准时性）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
-                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 2000,
-                            operation(ctx, id, at, title, body, channelId, 1));
-                }
-            } catch (SecurityException e) { /* 主通道在即可 */ }
+                // 不用 canScheduleExactAlarms() 预判：该 API 仅 Android 12+ 存在，
+                // 且在「主通道刚被拒」的场景下必然返回 false，会导致最需要兜底时
+                // 反而跳过兜底。改为直接尝试、由异常决定是否可用。
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 2000,
+                        operation(ctx, id, at, title, body, channelId, 1));
+            } catch (Exception ignore) { /* 主通道在即可 */ }
         }
     }
 
