@@ -198,7 +198,10 @@
             var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i]) : [];
             for (var j = 0; j < list.length; j++) {
               var r = list[j];
-              if (r.at <= now + 3000) continue;
+              // 只跳过「已过期」的（留 1s 容差）。早前是 now+3000，
+              // 会把 3 秒内就要响的提醒排除出期望列表，配合原生 apply()
+              // 的对账逻辑可能把临期闹钟撤掉 —— 改成 1s 后临期提醒仍会被保留。
+              if (r.at <= now - 1000) continue;
               var id = hashId(r.key);
               var dup = alarms.some(function (a) { return a.id === id; });
               if (dup) continue;

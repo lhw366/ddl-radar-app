@@ -31,9 +31,10 @@ public class DdlAlarmPlugin extends Plugin {
     /**
      * 闹钟注册规格版本：变更后 first apply 全量重排。
      * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
+     * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
      * ——旧版已排定的闹钟必须强制重排，否则仍带着「共用 PendingIntent」的缺陷。
      */
-    private static final int SCHED_VER = 3;
+    private static final int SCHED_VER = 4;
 
     @PluginMethod
     public void apply(PluginCall call) {
@@ -65,9 +66,24 @@ public class DdlAlarmPlugin extends Plugin {
             }
 
             int cancelled = 0, added = 0;
+            long nowMs = System.currentTimeMillis();
             for (Long id : storedMap.keySet()) {
                 JSONObject w = wantedMap.get(id);
-                if (w == null || !sameSpec(storedMap.get(id), w)) {
+                if (w == null) {
+                    // 期望列表里没有：只有「仍然在未来」的才取消。
+                    // 已到点（含即将到点）的条目必须保留——JS 侧 sync() 用
+                    // `r.at <= now + 3000` 过滤掉临期提醒，若这里无条件 cancel，
+                    // 就会把「马上要响」的闹钟撤掉，只能等应用内引擎 60 秒后补弹，
+                    // 这正是用户反馈「延迟整整 1 分钟」的根因。
+                    JSONObject s = storedMap.get(id);
+                    long at = s == null ? 0 : s.optLong("at", 0);
+                    if (at > nowMs + 3000) {
+                        AlarmScheduler.cancel(ctx, id);
+                        cancelled++;
+                    }
+                    continue;
+                }
+                if (!sameSpec(storedMap.get(id), w)) {
                     AlarmScheduler.cancel(ctx, id);
                     cancelled++;
                 }
@@ -82,7 +98,23 @@ public class DdlAlarmPlugin extends Plugin {
                     added++;
                 }
             }
-            AlarmScheduler.save(ctx, wanted);
+            // 持久化列表 = 期望列表 ∪ 仍未被投递的临期条目。
+            // 只存 wanted 会把上面刻意保留的临期闹钟从存储里抹掉，
+            // 导致它虽仍注册在系统里，但诊断面板看不到、重启后也无法恢复。
+            // 注意保留范围：只留「最近 2 分钟内到点」的——那是正在投递中的，
+            // 更早的说明已经响过或彻底错过，留着会让列表无限增长。
+            JSONArray persist = new JSONArray();
+            for (int i = 0; i < wanted.length(); i++) persist.put(wanted.getJSONObject(i));
+            for (Long id : storedMap.keySet()) {
+                if (wantedMap.containsKey(id)) continue;
+                JSONObject s = storedMap.get(id);
+                if (s == null) continue;
+                long at = s.optLong("at", 0);
+                if (at > nowMs + 3000) continue;          // 未来条目：该取消的已在上面处理
+                if (at < nowMs - 120000) continue;        // 早于 2 分钟：视为已处理，丢弃
+                persist.put(s);                            // 投递窗口内：保留
+            }
+            AlarmScheduler.save(ctx, persist);
             AlarmService.start(ctx); // 守护服务刷新「下一条」显示（并确保常驻）
 
             JSObject ret = new JSObject();

@@ -318,13 +318,19 @@ public class AlarmService extends Service {
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             }
             // 闹钟式全屏提醒：锁屏/灭屏直接亮屏进入 AlarmActivity（系统闹钟同款）
+            // 注意：Android 14+ 若用户拒绝了「全屏通知」权限，setFullScreenIntent
+            // 会静默失效——通知仍弹但不亮屏。故这里额外在锁屏/灭屏时主动拉起
+            // AlarmActivity 兜底（前台服务已持有 START_ACTIVITY 能力）。
+            boolean fsiOk = false;
             try {
                 Intent alarm = new Intent(this, AlarmActivity.class);
                 alarm.putExtra("title", title);
                 alarm.putExtra("body", body);
+                alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 PendingIntent fsi = PendingIntent.getActivity(this, 1000000 + id, alarm,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
                 b.setFullScreenIntent(fsi, true);
+                fsiOk = true;
             } catch (Exception ignore) { /* 全屏 Intent 不可用时退化为普通横幅 */ }
             Notification n = b
                     .setContentTitle(title == null ? "DDL雷达" : title)
@@ -337,7 +343,35 @@ public class AlarmService extends Service {
                     .setContentIntent(pi)
                     .build();
             nm.notify(id, n);
+
+            // 锁屏/灭屏兜底亮屏：全屏 Intent 可能因权限被拒而不生效，
+            // 这里直接拉起提醒页，保证「锁屏也看得见」。
+            // 亮屏时则不拉（避免打断用户正在做的事，横幅已足够）。
+            if (fsiOk && isScreenOffOrLocked()) {
+                try {
+                    Intent alarm = new Intent(this, AlarmActivity.class);
+                    alarm.putExtra("title", title);
+                    alarm.putExtra("body", body);
+                    alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+                    startActivity(alarm);
+                } catch (Exception ignore) { /* 后台启动 Activity 被系统限制时忽略 */ }
+            }
         } catch (Exception e) { /* 投递失败不影响其他提醒 */ }
+    }
+
+    /** 屏幕是否熄灭或处于锁屏状态（决定是否需要主动亮屏拉起提醒页） */
+    private boolean isScreenOffOrLocked() {
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && !pm.isInteractive()) return true;
+            android.app.KeyguardManager km =
+                    (android.app.KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+            if (km != null && km.isKeyguardLocked()) return true;
+        } catch (Exception ignore) { /* 判断失败时按「不需要」处理，不冒险拉起 */ }
+        return false;
     }
 
     private static String fmtShort(long ts) {

@@ -726,10 +726,8 @@ function ymdOf(ts) {
 
 function tickReminders() {
   const now = Date.now();
-  // APK 环境：到点提醒由原生系统闹钟负责（锁屏/后台都可靠），
-  // 应用内引擎若再弹一次就是「双横幅 + 双响声」，也是用户观感上
-  // 「怎么这么久才弹」的来源之一（两条链路到达时刻不同）。
-  // 这里只负责「错过补弹」：系统闹钟没排上的历史提醒才由前台补。
+  // APK 环境：准点投递由原生系统闹钟负责（锁屏/后台都可靠），
+  // 应用内引擎只做「补弹」——原生已投递的（fired 已记录或闹钟已出队）不再重复。
   const native = !!(window.NativeNotify && window.NativeNotify.available &&
     window.NativeNotify.available() && remindMode() !== 'silent');
   for (const t of S.tasks) {
@@ -738,11 +736,14 @@ function tickReminders() {
       if (r.at > now) continue;
       if (now - r.at > 15 * 60000) { S.fired.push(r.key); continue; } // 超过15分钟才静默
       S.fired.push(r.key);
-      // 原生负责准点投递：准点（60s 内）的交给系统通知，避免双响；
-      // 只有明显迟到（>60s，说明系统通道没送达）才前台补弹。
-      const late = now - r.at > 60000;
+      // 原生负责准点投递：留 5s 宽限（系统闹钟正常在 2s 内到达），
+      // 超过才认为是原生没送达、由前台补弹。
+      // 早前这里是 60s —— 等于把「原生没响」的补弹硬生生推迟一分钟，
+      // 用户观感就是「延迟 1 分钟」。5s 既能避开与原生同时弹的双响，
+      // 又能在原生失效时迅速兜底。
+      const late = now - r.at > 5000;
       if (native && !late) { save(); continue; }
-      toast(r.title + (late ? ' · 错过补弹' : ''), r.body, r.kind);
+      toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
       beep(); vibe();
       if (S.fired.length > 600) S.fired = S.fired.slice(-400);
       save();
@@ -783,7 +784,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.9.6';
+const APP_VERSION = '1.9.7';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1188,13 +1189,18 @@ function init() {
   tickReminders();
   tickCountdown();
 
-  // 心跳：提醒检查 5s / 顶栏与列表 30s / 倒计时秒表 1s / 闲逛提醒 60s
-  setInterval(tickReminders, 5000);
+  // 心跳：提醒检查 2s / 顶栏与列表 30s / 倒计时秒表 1s / 闲逛提醒 60s
+  // 提醒检查用 2s：这是「前台补弹」的响应粒度。原生闹钟才是准点主通道，
+  // 这里只决定「万一原生没送达，前台多快补上」——2s 在用户感知上接近即时。
+  setInterval(tickReminders, 2000);
   setInterval(() => { renderTop(); if (curView === 'home') renderHome(); }, 30000);
   setInterval(tickCountdown, 1000);
   setInterval(idleNudge, 60000);
   if (window.NativeNotify && NativeNotify.available()) {
-    setInterval(() => NativeNotify.sync(S), 60000); // APK 兜底重排系统提醒
+    // 兜底重排：只在前台做，且间隔不宜过短（每次都会与原生对账）。
+    // 注意：后台时 WebView 定时器会被节流到 60s 甚至暂停，所以准点投递
+    // 绝不能依赖这里——真正的可靠性来自 setAlarmClock 原生闹钟。
+    setInterval(() => { if (!document.hidden) NativeNotify.sync(S); }, 60000);
   }
 }
 document.addEventListener('DOMContentLoaded', init);
