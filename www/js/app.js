@@ -743,7 +743,7 @@ function planReminders(t) {
       const at = due - min * 60000;
       // 已过期的分段提醒不再生成：早前这里没有这个判断，
       // 截止时间一过，due-120min 等全是过去时刻，会生成一堆过期条目，
-      // 白白占用 sync 的 120 条配额、挤掉真正有效的提醒。
+      // 白白占用系统提醒队列、挤掉真正有效的提醒。
       if (at <= nowTs) continue;
       out.push({
         key: `${t.id}|t${min}`, at,
@@ -941,7 +941,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.5';
+const APP_VERSION = '2.2.6';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1024,9 +1024,13 @@ async function renderDiag() {
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow((d.channels || 0) >= 3, '提醒通道已创建（' + (d.channels || 0) + '/3）', d.channels >= 3 ? '' : 'reinit');
-  html += diagRow((d.pending || 0) > 0, '系统闹钟已排定 ' + d.pending + ' 条' + (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''), (d.pending || 0) > 0 ? '' : 'notask');
-  if ((d.pending || 0) > 0 && !(d.sysNextAt > 0)) {
-    html += diagRow(false, '已排定但系统未接受（可能被 ROM 拦截）');
+  const queued = d.queued || 0;
+  html += diagRow((d.pending || 0) > 0 || queued > 0,
+    '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
+      (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''),
+    (d.pending || 0) > 0 || queued > 0 ? '' : 'notask');
+  if (((d.pending || 0) > 0 || queued > 0) && !(d.sysNextAt > 0)) {
+    html += diagRow(false, '有待提醒内容，但系统当前没有接受任何闹钟（可能被 ROM 拦截）');
   } else if (d.sysNextAt > 0) {
     html += diagRow(true, '系统已接受的最近闹钟 ' + fmtDT(d.sysNextAt));
   } else {
@@ -1035,10 +1039,12 @@ async function renderDiag() {
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) + (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' : '（经系统闹钟）') : '还没有触发记录（闹钟触发一次后出现）');
 
   // ── 新增：直接回答「为什么没横幅 / 为什么不准时」 ──
-  if (d.headsUp === false) {
-    html += diagRow(false, '提醒通道被系统降级（重要性 ' + d.channelImportance + '/4），不会弹顶部横幅', 'channel');
+  if (S.settings.remindMode === 'silent') {
+    html += diagRow(null, '静默模式只显示应用内提醒，不会发送系统通知横幅');
+  } else if (d.headsUp === false) {
+    html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {
-    html += diagRow(true, '顶部横幅可用（通道重要性 4/4）');
+    html += diagRow(true, '当前提醒通道重要性 4/4；若仍无横幅，请检查 ColorOS 的横幅显示开关', 'channel');
   }
   if (d.canFullScreen === false) {
     html += diagRow(false, '「全屏通知」权限被关闭：锁屏时不会亮屏弹提醒页', 'appinfo');
@@ -1065,8 +1071,11 @@ async function renderDiag() {
     if (f === 'channel') {
       // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
       try {
-        await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: 'ddlr_full' });
-        toast('⚙️ 已打开通道设置', '把「提醒 · 响铃+震动」的重要性调回「重要/紧急」，并确认没被静音');
+        const mode = S.settings.remindMode || 'full';
+        const channelId = ['full', 'vib', 'ring'].includes(mode) ? 'ddlr_' + mode : 'ddlr_full';
+        const modeName = { full: '响铃+震动', vib: '仅震动', ring: '仅响铃' }[mode] || '提醒';
+        await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: channelId });
+        toast('⚙️ 已打开通道设置', '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
       } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
     }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
@@ -1152,13 +1161,13 @@ function bindSettings() {
           delete b.dataset.url;
           delete b.dataset.code;
           pendingUpdateMirrors = [];
-          toast('📦 更新包已就绪', '系统安装界面已弹出，点「安装」即可完成更新');
+          toast('📦 更新已就绪', '系统安装确认页已打开，点「安装」即可完成更新');
         } catch (e) {
           b.disabled = false;
           b.textContent = '⬇️ 下载新版本';
           const msg = (e && e.message) ? String(e.message) : '';
           // 失败保留 dataset.url，用户可直接再点重试（换线路由原生负责）
-          toast('⚠️ 下载失败', (msg ? msg.slice(0, 160) + '。' : '') + '可再点一次重试，或让电脑传安装包覆盖安装');
+          toast('⚠️ 更新失败', (msg ? msg.slice(0, 160) + '。' : '') + '可在本机再点一次重试');
         } finally {
           if (prog && prog.remove) { try { prog.remove(); } catch (e) { /* ignore */ } }
           delete b.dataset.busy; // 无论成败都要解除防重入
@@ -1202,7 +1211,7 @@ function bindSettings() {
         // 文案要说清楚下一步，别再讲「浏览器会下载」——APK 内是走应用内下载器
         const inApp = !!(window.Capacitor && Capacitor.Plugins.ApkInstaller);
         toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
-          inApp ? '再点一次按钮即开始下载，下载完自动弹出安装界面'
+          inApp ? 'App 会直接获取更新，完成后打开系统安装确认页'
                 : '再点一次按钮，浏览器会下载新 APK');
       } else {
         b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');

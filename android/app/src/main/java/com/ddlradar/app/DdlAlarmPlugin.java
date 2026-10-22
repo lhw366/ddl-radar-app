@@ -16,7 +16,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 
 /**
  * DDL雷达 原生系统闹钟桥（替代 Capacitor LocalNotifications 的调度职责）。
@@ -33,6 +35,7 @@ public class DdlAlarmPlugin extends Plugin {
      * 闹钟注册规格版本：变更后 first apply 全量重排。
      * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
      * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
+     * v5 = 最近 120 条进入系统闹钟，超出部分排队递补
      * 常量定义在 AlarmScheduler 里共用：reapplyAll 也要写同一个版本号，
      * 两处各写一份会漂移（早前就是因此导致开机后必然全量重排）。
      */
@@ -61,18 +64,27 @@ public class DdlAlarmPlugin extends Plugin {
                 if (wantedMap.containsKey(id)) continue; // id 去重
                 wantedMap.put(id, w);
                 wanted.put(w);
-                long at = w.optLong("at");
+            }
+
+            List<JSONObject> ordered = new ArrayList<>();
+            for (int i = 0; i < wanted.length(); i++) {
+                JSONObject item = wanted.optJSONObject(i);
+                if (item != null) ordered.add(item);
+            }
+            AlarmScheduler.sortByTriggerTime(ordered);
+            wanted = new JSONArray();
+            wantedMap.clear();
+            for (JSONObject item : ordered) {
+                wanted.put(item);
+                wantedMap.put(item.optLong("id"), item);
+                long at = item.optLong("at");
                 if (nextAt == 0 || at < nextAt) nextAt = at;
             }
 
-            JSONArray stored = AlarmScheduler.load(ctx);
+            JSONArray stored;
             HashMap<Long, JSONObject> storedMap = new HashMap<>();
-            for (int i = 0; i < stored.length(); i++) {
-                JSONObject s = stored.optJSONObject(i);
-                if (s != null) storedMap.put(s.optLong("id"), s);
-            }
 
-            int cancelled = 0, added = 0;
+            int cancelled = 0, added = 0, queued = 0;
             long nowMs = System.currentTimeMillis();
             // ── 顺序很重要：先「注册新的/需要改的」，再「取消多余的」 ──
             // 早前是「先全量 cancel，再 schedule」，两者之间存在时间窗口：
@@ -80,52 +92,73 @@ public class DdlAlarmPlugin extends Plugin {
             // AlarmManager 已经把它摘掉 → 这次提醒永久丢失。
             // 表现为「有时准、有时不准」，且完全取决于恰不恰好卡在这个窗口。
             // 现在的顺序保证任何时刻该响的闹钟都至少有一条存活。
-            for (int i = 0; i < wanted.length(); i++) {
-                JSONObject w = wanted.getJSONObject(i);
-                JSONObject s = storedMap.get(w.optLong("id"));
-                if (s == null || !sameSpec(s, w)) {
-                    // 用同一 id 重新 schedule 会覆盖旧的注册（PendingIntent 身份相同），
-                    // 所以不需要先 cancel——这正是消除空窗的关键。
-                    AlarmScheduler.schedule(ctx, w.optLong("id"), w.optLong("at"),
-                            w.optString("title", null), w.optString("body", null),
-                            w.optString("channel", null));
-                    added++;
+            synchronized (AlarmScheduler.class) {
+                stored = AlarmScheduler.load(ctx);
+                for (int i = 0; i < stored.length(); i++) {
+                    JSONObject s = stored.optJSONObject(i);
+                    if (s != null) storedMap.put(s.optLong("id"), s);
                 }
-            }
-            // 再清理「期望列表里确实没有」的条目。
-            for (Long id : storedMap.keySet()) {
-                if (wantedMap.containsKey(id)) continue;
-                JSONObject s = storedMap.get(id);
-                // 已到点（含即将到点）的保留：可能正在投递中，撤掉就丢提醒
-                long at = s == null ? 0 : s.optLong("at", 0);
-                if (at > nowMs + 3000) {
-                    AlarmScheduler.cancel(ctx, id);
-                    cancelled++;
+                for (int i = 0; i < wanted.length(); i++) {
+                    JSONObject w = wanted.getJSONObject(i);
+                    JSONObject s = storedMap.get(w.optLong("id"));
+                    boolean inActiveWindow = i < AlarmScheduler.MAX_ACTIVE_ALARMS;
+                    boolean wasScheduled = s != null && s.optBoolean("scheduled", true);
+                    if (inActiveWindow) {
+                        if (s == null || !sameSpec(s, w) || !wasScheduled) {
+                            // 用同一 id 重新 schedule 会覆盖旧的注册（PendingIntent 身份相同），
+                            // 所以不需要先 cancel——这正是消除空窗的关键。
+                            AlarmScheduler.schedule(ctx, w.optLong("id"), w.optLong("at"),
+                                    w.optString("title", null), w.optString("body", null),
+                                    w.optString("channel", null));
+                            added++;
+                        }
+                        w.put("scheduled", true);
+                    } else {
+                        if (s != null && wasScheduled && w.optLong("at") > nowMs + 3000) {
+                            AlarmScheduler.cancel(ctx, w.optLong("id"));
+                            cancelled++;
+                            wasScheduled = false;
+                        }
+                        w.put("scheduled", wasScheduled);
+                        if (!wasScheduled) queued++;
+                    }
                 }
+                // 再清理「期望列表里确实没有」的条目。
+                for (Long id : storedMap.keySet()) {
+                    if (wantedMap.containsKey(id)) continue;
+                    JSONObject s = storedMap.get(id);
+                    // 已到点（含即将到点）的保留：可能正在投递中，撤掉就丢提醒
+                    long at = s == null ? 0 : s.optLong("at", 0);
+                    if (at > nowMs + 3000) {
+                        if (s == null || s.optBoolean("scheduled", true)) {
+                            AlarmScheduler.cancel(ctx, id);
+                            cancelled++;
+                        }
+                    }
+                }
+                // Persist both active alarms and their queued overflow.
+                JSONArray persist = new JSONArray();
+                for (int i = 0; i < wanted.length(); i++) persist.put(wanted.getJSONObject(i));
+                for (Long id : storedMap.keySet()) {
+                    if (wantedMap.containsKey(id)) continue;
+                    JSONObject s = storedMap.get(id);
+                    if (s == null) continue;
+                    long at = s.optLong("at", 0);
+                    if (at > nowMs + 3000) continue;
+                    if (at < nowMs - 120000) continue;
+                    if (!s.optBoolean("scheduled", true)) continue;
+                    try { s.put("scheduled", true); } catch (Exception ignore) {}
+                    persist.put(s);
+                }
+                AlarmScheduler.save(ctx, persist);
             }
-            // 持久化列表 = 期望列表 ∪ 仍未被投递的临期条目。
-            // 只存 wanted 会把上面刻意保留的临期闹钟从存储里抹掉，
-            // 导致它虽仍注册在系统里，但诊断面板看不到、重启后也无法恢复。
-            // 注意保留范围：只留「最近 2 分钟内到点」的——那是正在投递中的，
-            // 更早的说明已经响过或彻底错过，留着会让列表无限增长。
-            JSONArray persist = new JSONArray();
-            for (int i = 0; i < wanted.length(); i++) persist.put(wanted.getJSONObject(i));
-            for (Long id : storedMap.keySet()) {
-                if (wantedMap.containsKey(id)) continue;
-                JSONObject s = storedMap.get(id);
-                if (s == null) continue;
-                long at = s.optLong("at", 0);
-                if (at > nowMs + 3000) continue;          // 未来条目：该取消的已在上面处理
-                if (at < nowMs - 120000) continue;        // 早于 2 分钟：视为已处理，丢弃
-                persist.put(s);                            // 投递窗口内：保留
-            }
-            AlarmScheduler.save(ctx, persist);
             AlarmService.start(ctx); // 守护服务刷新「下一条」显示（并确保常驻）
 
             JSObject ret = new JSObject();
             ret.put("added", added);
             ret.put("cancelled", cancelled);
             ret.put("kept", wanted.length() - added);
+            ret.put("queued", queued);
             ret.put("nextAt", nextAt);
             call.resolve(ret);
         } catch (Exception e) {
@@ -140,10 +173,13 @@ public class DdlAlarmPlugin extends Plugin {
             Context ctx = getContext();
             JSONObject o = normalize(spec(call));
             if (o == null) { call.reject("id/at required"); return; }
-            AlarmScheduler.schedule(ctx, o.optLong("id"), o.optLong("at"),
-                    o.optString("title", null), o.optString("body", null),
-                    o.optString("channel", null));
-            upsert(ctx, o);
+            synchronized (AlarmScheduler.class) {
+                AlarmScheduler.schedule(ctx, o.optLong("id"), o.optLong("at"),
+                        o.optString("title", null), o.optString("body", null),
+                        o.optString("channel", null));
+                o.put("scheduled", true);
+                upsert(ctx, o);
+            }
             AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
@@ -158,8 +194,11 @@ public class DdlAlarmPlugin extends Plugin {
             Object idv = call.getData().get("id");
             if (!(idv instanceof Number)) { call.reject("id required"); return; }
             long id = ((Number) idv).longValue();
-            AlarmScheduler.cancel(ctx, id);
-            AlarmScheduler.remove(ctx, id);
+            synchronized (AlarmScheduler.class) {
+                AlarmScheduler.cancel(ctx, id);
+                AlarmScheduler.remove(ctx, id);
+                AlarmScheduler.promoteQueued(ctx);
+            }
             AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
@@ -171,12 +210,14 @@ public class DdlAlarmPlugin extends Plugin {
     public void cancelAll(PluginCall call) {
         try {
             Context ctx = getContext();
-            JSONArray stored = AlarmScheduler.load(ctx);
-            for (int i = 0; i < stored.length(); i++) {
-                JSONObject s = stored.optJSONObject(i);
-                if (s != null) AlarmScheduler.cancel(ctx, s.optLong("id"));
+            synchronized (AlarmScheduler.class) {
+                JSONArray stored = AlarmScheduler.load(ctx);
+                for (int i = 0; i < stored.length(); i++) {
+                    JSONObject s = stored.optJSONObject(i);
+                    if (s != null) AlarmScheduler.cancel(ctx, s.optLong("id"));
+                }
+                AlarmScheduler.save(ctx, new JSONArray());
             }
-            AlarmScheduler.save(ctx, new JSONArray());
             AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
@@ -192,10 +233,17 @@ public class DdlAlarmPlugin extends Plugin {
             JSONArray stored = AlarmScheduler.load(ctx);
             JSArray items = new JSArray();
             long nextAt = 0;
+            int queued = 0;
             long now = System.currentTimeMillis();
             for (int i = 0; i < stored.length(); i++) {
                 JSONObject s = stored.optJSONObject(i);
                 if (s == null) continue;
+                if (!s.optBoolean("scheduled", true)) {
+                    queued++;
+                    long at = s.optLong("at");
+                    if (at > now && (nextAt == 0 || at < nextAt)) nextAt = at;
+                    continue;
+                }
                 JSObject item = new JSObject()
                         .put("id", s.optLong("id"))
                         .put("at", s.optLong("at"));
@@ -213,6 +261,7 @@ public class DdlAlarmPlugin extends Plugin {
             JSObject ret = new JSObject();
             ret.put("items", items);
             ret.put("nextAt", nextAt);
+            ret.put("queued", queued);
             ret.put("sysNextAt", sysNextAt);
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
@@ -220,12 +269,17 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
 
-            // ── 诊断增强：解释「为什么没弹横幅」 ──
+            // ── 诊断增强：检查当前提醒模式实际使用的通知通道 ──
             // 通道重要性一旦被用户调低（或旧版建成了 LOW），App 改不回来，
             // 只能引导用户去系统设置。这里把真实重要性暴露给诊断面板。
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            int imp = AlarmService.channelImportance(nm, "ddlr_full");
+            String channelId = call.getString("channelId", "ddlr_full");
+            if (!"ddlr_vib".equals(channelId) && !"ddlr_ring".equals(channelId)) {
+                channelId = "ddlr_full";
+            }
+            int imp = AlarmService.channelImportance(nm, channelId);
+            ret.put("channelId", channelId);
             ret.put("channelImportance", imp);
             // 4 = IMPORTANCE_HIGH，只有 >=4 才会弹 heads-up 顶部横幅
             ret.put("headsUp", imp >= 4);

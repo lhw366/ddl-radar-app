@@ -10,6 +10,11 @@ import android.os.Build;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
 /**
  * 系统闹钟调度核心：AlarmManager.setAlarmClock()（系统时钟同款 API）。
  * - 免精确闹钟授权（配合 USE_EXACT_ALARM 双保险），Doze 深度休眠保证准时
@@ -23,19 +28,35 @@ public final class AlarmScheduler {
      * 闹钟注册规格版本：变更后首次 apply 会全量重排。
      * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
      * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
+     * v5 = 系统只调度最近 120 条，其余保存在原生队列中逐条递补
      * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 4;
+    public static final int SCHED_VER = 5;
+
+    /** Keep the number of active system alarms bounded while retaining overflow locally. */
+    public static final int MAX_ACTIVE_ALARMS = 120;
 
     private static final String PREFS = "ddlr_alarms";
     private static final String KEY = "alarms";
+    private static final Comparator<JSONObject> BY_TRIGGER_TIME = new Comparator<JSONObject>() {
+        @Override
+        public int compare(JSONObject left, JSONObject right) {
+            long a = left.optLong("at", 0);
+            long b = right.optLong("at", 0);
+            return a < b ? -1 : (a == b ? 0 : 1);
+        }
+    };
 
     private AlarmScheduler() {}
 
+    static void sortByTriggerTime(List<JSONObject> items) {
+        Collections.sort(items, BY_TRIGGER_TIME);
+    }
+
     /** 读已排定的闹钟列表：[{id, at, title, body, channel}] */
-    public static JSONArray load(Context ctx) {
+    public static synchronized JSONArray load(Context ctx) {
         try {
             SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             return new JSONArray(sp.getString(KEY, "[]"));
@@ -45,7 +66,7 @@ public final class AlarmScheduler {
     }
 
     /** 整表覆写持久化列表 */
-    public static void save(Context ctx, JSONArray arr) {
+    public static synchronized void save(Context ctx, JSONArray arr) {
         try {
             SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             sp.edit().putString(KEY, arr.toString()).apply();
@@ -53,7 +74,7 @@ public final class AlarmScheduler {
     }
 
     /** 从持久化列表里删除一条（闹钟触发后调用） */
-    public static void remove(Context ctx, long id) {
+    public static synchronized void remove(Context ctx, long id) {
         JSONArray arr = load(ctx);
         JSONArray keep = new JSONArray();
         boolean changed = false;
@@ -62,6 +83,47 @@ public final class AlarmScheduler {
             if (o == null) { changed = true; continue; }
             if (o.optLong("id", -1) == id) { changed = true; continue; }
             keep.put(o);
+        }
+        if (changed) save(ctx, keep);
+    }
+
+    /** Fill a freed system-alarm slot from the earliest queued reminder. */
+    public static synchronized void promoteQueued(Context ctx) {
+        JSONArray arr = load(ctx);
+        List<JSONObject> ordered = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            if (item != null) ordered.add(item);
+        }
+        Collections.sort(ordered, BY_TRIGGER_TIME);
+
+        long now = System.currentTimeMillis();
+        int active = 0;
+        for (JSONObject item : ordered) {
+            if (item.optBoolean("scheduled", true) && item.optLong("at", 0) > now - 15 * 60000L) {
+                active++;
+            }
+        }
+
+        JSONArray keep = new JSONArray();
+        boolean changed = false;
+        for (JSONObject item : ordered) {
+            long at = item.optLong("at", 0);
+            boolean scheduled = item.optBoolean("scheduled", true);
+            if (at < now - 15 * 60000L) {
+                if (scheduled) cancel(ctx, item.optLong("id"));
+                changed = true;
+                continue;
+            }
+            if (!scheduled && active < MAX_ACTIVE_ALARMS) {
+                schedule(ctx, item.optLong("id"), at,
+                        item.optString("title", null), item.optString("body", null),
+                        item.optString("channel", null));
+                try { item.put("scheduled", true); } catch (Exception ignore) {}
+                active++;
+                changed = true;
+            }
+            keep.put(item);
         }
         if (changed) save(ctx, keep);
     }
@@ -110,7 +172,7 @@ public final class AlarmScheduler {
      * 导致「状态栏闹钟图标消失 + 退化为精确闹钟（Doze 下有分钟级延迟）」，
      * 这正是用户反馈「延迟有点高」的根因。
      */
-    public static void schedule(Context ctx, long id, long at,
+    public static synchronized void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
@@ -161,7 +223,7 @@ public final class AlarmScheduler {
     }
 
     /** 取消一条闹钟：主备两条都要注销（独立 requestCode 后不再共享身份） */
-    public static void cancel(Context ctx, long id) {
+    public static synchronized void cancel(Context ctx, long id) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
         am.cancel(operation(ctx, id, 0, null, null, null, 0));
@@ -175,16 +237,21 @@ public final class AlarmScheduler {
      * 那条记录就彻底消失、也没有任何提示。现在把它们记进 missedAt，
      * 由 App 打开时读取并补弹一条「你错过了 N 条提醒」，避免静默丢失。
      */
-    public static long reapplyAll(Context ctx) {
+    public static synchronized long reapplyAll(Context ctx) {
         JSONArray arr = load(ctx);
         long now = System.currentTimeMillis();
         JSONArray keep = new JSONArray();
         long nextAt = 0;
         int missed = 0;
         long missedLatest = 0;
+        List<JSONObject> ordered = new ArrayList<>();
         for (int i = 0; i < arr.length(); i++) {
             JSONObject o = arr.optJSONObject(i);
-            if (o == null) continue;
+            if (o != null) ordered.add(o);
+        }
+        Collections.sort(ordered, BY_TRIGGER_TIME);
+        int active = 0;
+        for (JSONObject o : ordered) {
             long at = o.optLong("at", 0);
             if (at <= now) {
                 // 过期：计入错过统计。
@@ -197,25 +264,26 @@ public final class AlarmScheduler {
                     missed++;
                     if (at > missedLatest) missedLatest = at;
                 }
+                cancel(ctx, o.optLong("id"));
                 continue;
             }
+            boolean scheduled = active < MAX_ACTIVE_ALARMS;
+            if (scheduled) {
+                schedule(ctx, o.optLong("id"), at,
+                        o.optString("title", null), o.optString("body", null),
+                        o.optString("channel", null));
+                active++;
+                if (nextAt == 0) nextAt = at;
+            } else if (o.optBoolean("scheduled", true)) {
+                cancel(ctx, o.optLong("id"));
+            }
+            try {
+                o.put("v", SCHED_VER);
+                o.put("scheduled", scheduled);
+            } catch (Exception ignore) {}
             keep.put(o);
-            schedule(ctx, o.optLong("id"), at,
-                    o.optString("title", null), o.optString("body", null),
-                    o.optString("channel", null));
-            if (nextAt == 0 || at < nextAt) nextAt = at;
         }
-        // 把写回的条目统一升级到当前规格版本。
-        // 不这么做的话，旧版存下的 v 会一直偏低，sameSpec() 比对永远失败，
-        // 每次开机后第一次 apply() 都会把全部闹钟 cancel + 重排一遍
-        // （状态栏闹钟图标闪烁、AlarmManager 被反复唤醒）。
-        for (int i = 0; i < keep.length(); i++) {
-            JSONObject k = keep.optJSONObject(i);
-            if (k == null) continue;
-            if (k.optInt("v", 1) == SCHED_VER) continue;
-            try { k.put("v", SCHED_VER); } catch (Exception ignore) {}
-        }
-        if (keep.length() != arr.length()) save(ctx, keep);
+        save(ctx, keep);
         // 累加而不是覆盖：改时区可能连续收到两条广播，覆盖会丢掉前一次的计数。
         if (missed > 0) addMissed(ctx, missed);
         return nextAt;

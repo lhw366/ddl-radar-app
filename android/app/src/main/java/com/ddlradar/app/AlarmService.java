@@ -252,7 +252,10 @@ public class AlarmService extends Service {
         long[] lf = AlarmScheduler.lastFire(this);
         boolean dup = lf[0] == id && now - lf[1] < 8000;
         if (dup) {
-            AlarmScheduler.remove(this, id);
+            synchronized (AlarmScheduler.class) {
+                AlarmScheduler.remove(this, id);
+                AlarmScheduler.promoteQueued(this);
+            }
             refreshGuard();
             return;
         }
@@ -271,7 +274,10 @@ public class AlarmService extends Service {
 
         postBanner(id, title, body, channelId);
 
-        AlarmScheduler.remove(this, id);
+        synchronized (AlarmScheduler.class) {
+            AlarmScheduler.remove(this, id);
+            AlarmScheduler.promoteQueued(this);
+        }
         refreshGuard();
     }
 

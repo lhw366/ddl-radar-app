@@ -118,8 +118,12 @@
       var ddp = DDP();
       try { var s = await ddp.notifyStatus(); out.notify = !!s.granted; } catch (e) { out.notify = null; }
       try {
-        var p = await DDL().pending();
+        var mode = (window.S && window.S.settings && window.S.settings.remindMode) || 'full';
+        var channelId = mode === 'silent' ? 'ddlr_full' : 'ddlr_' + mode;
+        var p = await DDL().pending({ channelId: channelId });
         out.pending = (p.items || []).length;
+        out.queued = p.queued || 0;
+        out.channelId = mode === 'silent' ? null : (p.channelId || channelId);
         out.nextAt = p.nextAt || 0;
         out.sysNextAt = p.sysNextAt || 0;
         out.lastFireAt = p.lastFireAt || 0;
@@ -253,13 +257,10 @@
           var now = Date.now();
           // 关键：只排「近 7 天内」的提醒。
           // planReminders() 的远期每日提醒会为每个任务生成最多 400 天、
-          // 每天一条的条目，几个任务就能凑出上千条；再被下面的 120 条上限
-          // 截断——而截断是按 at 升序取前 120 条，本身没问题，但真正的坑是：
-          // 每次 sync 都重算全部条目、逐条 hashId 去重、再整表发给原生做对账，
-          // 任务多时这一步会卡住主线程，且原生侧大量 schedule/cancel
-          // 反复唤醒 AlarmManager —— 这是「耗电」和「越用越慢」的来源。
-          // 限 7 天窗口后条目数从千级降到几十条，且近期提醒永远不会被远期条目挤掉。
+          // 每天一条的条目可能超过系统适合同时调度的数量；原生侧会保留队列，
+          // 并在每次提醒触发后按时间顺序递补。7 天窗口让本地队列保持有界。
           var HORIZON = 7 * 86400000;
+          var scheduledIds = new Set();
           for (var i = 0; i < S.tasks.length; i++) {
             var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i]) : [];
             for (var j = 0; j < list.length; j++) {
@@ -267,8 +268,8 @@
               if (r.at <= now - 1000) continue;      // 已过期
               if (r.at > now + HORIZON) continue;    // 超出 7 天窗口
               var id = hashId(r.key);
-              var dup = alarms.some(function (a) { return a.id === id; });
-              if (dup) continue;
+              if (scheduledIds.has(id)) continue;
+              scheduledIds.add(id);
               alarms.push({
                 id: id,
                 at: r.at,
@@ -290,7 +291,8 @@
                   var cr = cs[ci];
                   if (cr.at <= now - 1000 || cr.at > now + HORIZON) continue;
                   var cid = hashId(cr.key);
-                  if (alarms.some(function (a) { return a.id === cid; })) continue;
+                  if (scheduledIds.has(cid)) continue;
+                  scheduledIds.add(cid);
                   alarms.push({
                     id: cid,
                     at: cr.at,
@@ -303,15 +305,13 @@
             }
           } catch (e) { console.warn('[DDL雷达] 课表提醒生成失败', e); }
           alarms.sort(function (a, b) { return a.at - b.at; });
-          // 上限只截「最远」的，最近的必定保留
-          if (alarms.length > 120) alarms = alarms.slice(0, 120);
         }
         // 未触发的测试闹钟并入对账列表，防止被 apply() 当作多余条目撤销
         // （静默模式不并入：跟随当前模式被撤销，符合「不发系统通知」语义）
         try {
           var testAt = parseInt(localStorage.getItem('ddlr_testAt') || '0', 10);
           if (mode !== 'silent' && testAt > Date.now() + 3000) {
-            if (!alarms.some(function (a) { return a.id === 990000001; })) {
+            if (!scheduledIds.has(990000001)) {
               alarms.push({
                 id: 990000001,
                 at: testAt,
