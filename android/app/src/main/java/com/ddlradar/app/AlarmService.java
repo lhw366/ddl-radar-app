@@ -440,12 +440,29 @@ public class AlarmService extends Service {
             } else if ("ddlr_ring".equals(channelId)) {
                 b.setVibrate(null);
             }
+            // 通知基础属性（在 addAction 之前设置好，最后统一 build）
+            String safeTitle = (title == null || title.isEmpty()) ? "DDL雷达" : title;
+            String safeBody = body == null ? "" : body;
+            b.setContentTitle(safeTitle)
+                    .setContentText(safeBody)
+                    .setStyle(new Notification.BigTextStyle().bigText(safeBody))
+                    .setSmallIcon(R.drawable.ic_stat_ddlr)
+                    .setAutoCancel(true)
+                    // 用 CATEGORY_REMINDER 而非 CATEGORY_ALARM：
+                    // CATEGORY_ALARM 会让部分 ROM（含 ColorOS）走「闹钟特殊通道」，
+                    // 表现为只响不弹横幅；REMINDER 是普通提醒语义，配合 HIGH 通道
+                    // 才会正常弹 heads-up 顶部横幅。
+                    .setCategory(Notification.CATEGORY_REMINDER)
+                    .setPriority(Notification.PRIORITY_HIGH)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setWhen(System.currentTimeMillis());
             PendingIntent pi = null;
             Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
             if (open != null) {
                 pi = PendingIntent.getActivity(this, id, open,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             }
+            b.setContentIntent(pi);
             // 闹钟式全屏提醒：锁屏/灭屏直接亮屏进入 AlarmActivity（系统闹钟同款）
             // 注意：Android 14+ 若用户拒绝了「全屏通知」权限，setFullScreenIntent
             // 会静默失效——通知仍弹但不亮屏。故这里额外在锁屏/灭屏时主动拉起
@@ -462,34 +479,20 @@ public class AlarmService extends Service {
                 b.setFullScreenIntent(fsi, true);
                 fsiOk = true;
             } catch (Exception ignore) { /* 全屏 Intent 不可用时退化为普通横幅 */ }
-            Notification n = b
-                    .setContentTitle(title == null ? "DDL雷达" : title)
-                    .setContentText(body == null ? "" : body)
-                    .setStyle(new Notification.BigTextStyle().bigText(body == null ? "" : body))
-                    .setSmallIcon(R.drawable.ic_stat_ddlr)
-                    .setAutoCancel(true)
-                    // 用 CATEGORY_REMINDER 而非 CATEGORY_ALARM：
-                    // CATEGORY_ALARM 会让部分 ROM（含 ColorOS）走「闹钟特殊通道」，
-                    // 表现为只响不弹横幅；REMINDER 是普通提醒语义，配合 HIGH 通道
-                    // 才会正常弹 heads-up 顶部横幅。
-                    .setCategory(Notification.CATEGORY_REMINDER)
-                    .setPriority(Notification.PRIORITY_HIGH)
-                    .setVisibility(Notification.VISIBILITY_PUBLIC)
-                    .setWhen(System.currentTimeMillis())
-                    .setDefaults(0)
-                    .setContentIntent(pi)
-                    .build();
-
             // ── 操作按钮：解决「震动完不知道该做什么」 ──
             // 只震动/只响铃时用户往往在忙，看到通知却不知道怎么处理。
-            // 给两个直接动作：打开 App 处理 / 直接标记完成（免进 App）。
+            // 给两个直接动作：打开 App 处理 / 直接标记已知悉。
+            //
+            // 必须用 Builder.addAction()，而不是 build() 之后去改 n.actions：
+            // Notification.actions 是系统内部维护的字段，build 后再往里 add
+            // 不保证被通知服务采纳（部分版本直接忽略）。addAction 才是官方路径。
             try {
                 Intent openI = getPackageManager().getLaunchIntentForPackage(getPackageName());
                 if (openI != null) {
                     openI.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     PendingIntent pOpen = PendingIntent.getActivity(this, 2000000 + id, openI,
                             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                    n.actions.add(new Notification.Action.Builder(
+                    b.addAction(new Notification.Action.Builder(
                             android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
                             "去看看", pOpen).build());
                 }
@@ -498,11 +501,12 @@ public class AlarmService extends Service {
                 ackI.putExtra("ackId", notifId(id));
                 PendingIntent pAck = PendingIntent.getService(this, 3000000 + id, ackI,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                n.actions.add(new Notification.Action.Builder(
+                b.addAction(new Notification.Action.Builder(
                         android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
                         "知道了", pAck).build());
             } catch (Exception ignore) { /* 按钮加不上不影响通知本体 */ }
 
+            Notification n = b.build();
             nm.notify(notifId(id), n);
 
             // 锁屏/灭屏兜底亮屏：全屏 Intent 可能因权限被拒而不生效，
@@ -513,7 +517,7 @@ public class AlarmService extends Service {
                     Intent alarm = new Intent(this, AlarmActivity.class);
                     alarm.putExtra("title", title);
                     alarm.putExtra("body", body);
-                alarm.putExtra("notifId", notifId(id));
+                    alarm.putExtra("notifId", notifId(id));
                     alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                             | Intent.FLAG_ACTIVITY_CLEAR_TOP
                             | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
