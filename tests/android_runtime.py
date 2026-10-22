@@ -109,27 +109,31 @@ try:
         states.append({'command': forced, 'state': state})
         if state == 'IDLE':
             break
-        # force-idle only requests the transition. Every intermediate state
-        # (INACTIVE -> IDLE_PENDING -> SENSING -> LOCATING) still needs its own
-        # step, and the controller ignores steps issued inside its anti-flapping
-        # window. The previous 10s budget with 0.2s retries raced that window and
-        # reported "stopped at INACTIVE" even though nothing was wrong.
+        # Advance one state per attempt. force-idle only requests the transition,
+        # and every intermediate state (INACTIVE -> IDLE_PENDING -> SENSING ->
+        # LOCATING) needs its own step.
         if state != 'ACTIVE':
             adb('shell', 'dumpsys', 'deviceidle', 'step', 'deep', check=False)
         time.sleep(1.0)
     (OUT / 'forced-idle.txt').write_text(json.dumps(states, indent=2), encoding='utf-8')
     (OUT / 'confirmed-idle-state.txt').write_text(state, encoding='utf-8')
     if state != 'IDLE':
-        # Deep Doze is an emulator property, not a product property. The product
-        # property is: a cold process with the screen off still gets woken by the
-        # alarm and delivers. Record the achieved state loudly and keep testing
-        # that; only fail if the device never left ACTIVE (which means the screen
-        # or charging state is simply wrong and the run proves nothing).
+        # Why this is not a failure any more: the product schedules reminders with
+        # AlarmManager.setAlarmClock(), and Android documents that "the system exits
+        # Doze shortly before those alarms fire"
+        # (developer.android.com/training/monitoring-device-state/doze-standby).
+        # This fixture schedules the alarm 30 seconds out, so the device legitimately
+        # refuses to settle into deep IDLE -- that refusal IS the reliability we want.
+        # An earlier revision scheduled with setExactAndAllowWhileIdle, which does let
+        # the device idle, and this precondition passed while background delivery was
+        # actually broken. So keep asserting delivery below (the product property), and
+        # only fail when the device never even left ACTIVE (then the run proves nothing).
         (OUT / 'doze-precondition.txt').write_text(
             json.dumps({'achieved': state, 'states': states}, indent=2), encoding='utf-8')
         assert state == 'INACTIVE', f'Device never left ACTIVE: {states}'
-        print(f'WARNING: emulator reached {state} but not deep IDLE; '
-              'cold screen-off delivery is still verified below.')
+        print(f'WARNING: emulator reached {state} but not deep IDLE; that is expected'
+              ' with an imminent setAlarmClock() alarm. Cold screen-off delivery is'
+              ' still verified below.')
     until = time.monotonic() + 65
     events = []
     while time.monotonic() < until:
