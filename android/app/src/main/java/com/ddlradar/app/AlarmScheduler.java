@@ -19,6 +19,16 @@ import org.json.JSONObject;
  */
 public final class AlarmScheduler {
 
+    /**
+     * 闹钟注册规格版本：变更后首次 apply 会全量重排。
+     * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
+     * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
+     * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
+     * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
+     * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
+     */
+    public static final int SCHED_VER = 4;
+
     private static final String PREFS = "ddlr_alarms";
     private static final String KEY = "alarms";
 
@@ -195,11 +205,18 @@ public final class AlarmScheduler {
                     o.optString("channel", null));
             if (nextAt == 0 || at < nextAt) nextAt = at;
         }
+        // 把写回的条目统一升级到当前规格版本。
+        // 不这么做的话，旧版存下的 v 会一直偏低，sameSpec() 比对永远失败，
+        // 每次开机后第一次 apply() 都会把全部闹钟 cancel + 重排一遍
+        // （状态栏闹钟图标闪烁、AlarmManager 被反复唤醒）。
+        for (int i = 0; i < keep.length(); i++) {
+            JSONObject k = keep.optJSONObject(i);
+            if (k == null) continue;
+            if (k.optInt("v", 1) == SCHED_VER) continue;
+            try { k.put("v", SCHED_VER); } catch (Exception ignore) {}
+        }
         if (keep.length() != arr.length()) save(ctx, keep);
         // 累加而不是覆盖：改时区可能连续收到两条广播，覆盖会丢掉前一次的计数。
-        // 另外只有「确实早于当前时间 1 分钟以上」的才算错过——刚过点几秒的
-        // 条目可能正在投递中（DdlAlarmPlugin 会刻意保留 2 分钟窗口），
-        // 计成 missed 会造成「明明响了却说错过」的误报。
         if (missed > 0) addMissed(ctx, missed);
         return nextAt;
     }

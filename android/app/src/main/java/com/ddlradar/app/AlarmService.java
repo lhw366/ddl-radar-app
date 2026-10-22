@@ -176,7 +176,7 @@ public class AlarmService extends Service {
         }
         return b.setContentTitle("DDL雷达 · 提醒守护中")
                 .setContentText(text)
-                .setSmallIcon(getApplicationInfo().icon)
+                .setSmallIcon(R.drawable.ic_stat_ddlr)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(cachedContentPi)
@@ -441,7 +441,7 @@ public class AlarmService extends Service {
                     .setContentTitle(title == null ? "DDL雷达" : title)
                     .setContentText(body == null ? "" : body)
                     .setStyle(new Notification.BigTextStyle().bigText(body == null ? "" : body))
-                    .setSmallIcon(getApplicationInfo().icon)
+                    .setSmallIcon(R.drawable.ic_stat_ddlr)
                     .setAutoCancel(true)
                     // 用 CATEGORY_REMINDER 而非 CATEGORY_ALARM：
                     // CATEGORY_ALARM 会让部分 ROM（含 ColorOS）走「闹钟特殊通道」，
