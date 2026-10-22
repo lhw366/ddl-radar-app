@@ -41,6 +41,9 @@ function dtLocalValue(ts) {
 
 /* ---------------- 状态 ---------------- */
 const LS_KEY = 'ddlr_v1';
+// 壁纸单独存放：base64 图片体积大，混在主状态里会导致每次 save() 都序列化
+// 整张图（拖动亮度滑块时每像素一次），是卡顿与耗电的主因之一。
+const LS_BG = 'ddlr_bg_v1';
 let S = {
   onboarded: false,
   tasks: [],
@@ -56,6 +59,13 @@ try {
   const raw = localStorage.getItem(LS_KEY);
   if (raw) S = Object.assign(S, JSON.parse(raw));
 } catch (e) { console.warn('状态读取失败', e); }
+// 壁纸从独立 key 恢复（save() 时不再混在主状态里）。
+// 兼容旧数据：老版本把 bgImage 直接存在主状态里，读出来时若还在就迁移过来。
+try {
+  const bg = localStorage.getItem(LS_BG);
+  if (bg) S.settings.bgImage = bg;
+  else if (S.settings.bgImage) { localStorage.setItem(LS_BG, S.settings.bgImage); }
+} catch (e) { /* ignore */ }
 if (S.settings.toastCompact === undefined) S.settings.toastCompact = true;
 
 // ⚠️ 必须显式暴露到 window：
@@ -71,7 +81,22 @@ if (S.settings.toastCompact === undefined) S.settings.toastCompact = true;
 window.S = S;
 
 function save() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { console.warn('存储失败', e); }
+  // 壁纸（base64，可能 200KB~1MB）不参与主状态的 JSON 序列化：
+  // 早前 S.settings.bgImage 直接躺在 S 里，每次 save() 都要 stringify 整张
+  // base64 并同步写 localStorage。而 save() 被调用的频率很高——
+  // 拖动壁纸亮度滑块时是「每个像素一次 input 事件」，tickReminders 里
+  // 每条新提醒还会再调一次。这是卡顿与耗电的主要来源之一。
+  // 现在壁纸单独存一个 key，主状态只留一个标记。
+  try {
+    const bg = S.settings.bgImage;
+    const payload = JSON.stringify(S, (k, v) => (k === 'bgImage' ? undefined : v));
+    localStorage.setItem(LS_KEY, payload);
+    if (bg) {
+      if (localStorage.getItem(LS_BG) !== bg) localStorage.setItem(LS_BG, bg);
+    } else {
+      localStorage.removeItem(LS_BG);
+    }
+  } catch (e) { console.warn('存储失败', e); }
   // 保持 window.S 与内部 S 指向同一对象（防止某处整体替换了 S 的引用）
   window.S = S;
   // APK 内同步重排系统级精确提醒
@@ -317,7 +342,18 @@ function renderThemeGrids() {
 }
 
 /* ---------------- 顶栏日期 ---------------- */
+/**
+ * 距离下一个节日还有几天。
+ *
+ * 结果一天才变一次，但早前 renderTop 每 30 秒就调用一次，每次都做
+ * 90 天 × (Solar.fromDate + Lunar.fromDate) 的农历换算 —— 这是纯浪费的
+ * CPU 与耗电。现在按「当天日期」缓存，一天只算一次。
+ */
+let _festivalCache = { day: '', text: '' };
 function nextFestivalLine() {
+  const todayKey = ymdOf(Date.now());
+  if (_festivalCache.day === todayKey) return _festivalCache.text;
+  let result = '';
   try {
     const now = new Date(); now.setHours(0, 0, 0, 0);
     for (let i = 0; i <= 90; i++) {
@@ -327,11 +363,13 @@ function nextFestivalLine() {
       if (!name) { const l = Lunar.fromDate(d); const lf = l.getFestivals(); if (lf.length) name = lf[0]; }
       if (name) {
         const gap = i === 0 ? '就是今天' : `还有 ${i} 天`;
-        return `距离 ${name} ${gap}`;
+        result = `距离 ${name} ${gap}`;
+        break;
       }
     }
   } catch (e) { /* ignore */ }
-  return '';
+  _festivalCache = { day: todayKey, text: result };
+  return result;
 }
 function renderTop() {
   const d = new Date();
@@ -725,7 +763,7 @@ function planReminders(t) {
         if (at <= Date.now()) continue;
         const days = Math.ceil((dueDay - day) / 86400000);
         out.push({
-          key: `${t.id}|d${ymd(day.getTime())}`, at,
+          key: `${t.id}|d${ymdOf(day.getTime())}`, at,
           title: `📅 每日提醒 · 还有 ${days} 天`,
           body: `『${escapeHtml(t.name)}』将于 ${fmtDT(due)} 截止`,
           kind: 'daily'
@@ -765,7 +803,13 @@ function tickReminders() {
   const fired = tickReminders._set;
   let dirty = false;
   for (const t of S.tasks) {
-    for (const r of planReminders(t)) {
+    // 逐任务 try/catch：planReminders 只要有一条任务的数据异常（比如
+    // 时间戳为 null、字段缺失），异常会向上冒泡打断整个 tickReminders，
+    // 进而打断 init()，导致后面所有 setInterval 一个都注册不上——
+    // 这是「提醒引擎整体静默」的放大器。隔离到单任务，坏一条不影响其他。
+    let list;
+    try { list = planReminders(t); } catch (e) { console.warn('planReminders 失败', t && t.id, e); continue; }
+    for (const r of list) {
       if (fired.has(r.key)) continue;
       if (r.at > now) continue;
       // 超过 15 分钟：只标记不再打扰（避免堆积）
@@ -826,7 +870,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1267,8 +1311,13 @@ function init() {
   }
 
   renderAll();
-  tickReminders();
-  tickCountdown();
+  // ⚠️ 这三处必须各自 try/catch：
+  // 早前是裸调用，tickReminders() 内部一旦抛异常（历史上曾因 planReminders
+  // 引用未定义的 ymd() 而必抛），异常会直接打断 init()，导致下面五个
+  // setInterval 一个都注册不上 —— 提醒引擎、倒计时、界面刷新全部静默，
+  // 但界面本身已经渲染完了，用户看不出异常，只觉得「提醒不响」。
+  try { tickReminders(); } catch (e) { console.warn('tickReminders 初始化失败', e); }
+  try { tickCountdown(); } catch (e) { console.warn('tickCountdown 初始化失败', e); }
 
   // ── 心跳：全部按「前台/后台」分档，避免后台空转耗电 ──
   // 背景：WebView 在后台本就会被系统节流（通常 60s 一次），但即便被节流，

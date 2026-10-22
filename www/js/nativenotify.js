@@ -196,20 +196,26 @@
     sync: async function (S) {
       if (!this.available() || !S) return;
       var mode = (S.settings && S.settings.remindMode) || 'full';
-      // 签名里必须带上「当前日期」与「时刻档位」：
-      // planReminders() 的结果随日期推移而变（每日提醒按天生成），
-      // 若签名只看任务 id/updatedAt/done，跨天之后签名不变 →
-      // sync 直接 return → 原生侧永远停在昨天的闹钟列表，
-      // 新的一天根本没有排上任何闹钟（这正是「要等很久才响」的成因之一）。
-      // 用「当天日期 + 10 分钟档」做签名：跨天必重排，同一天内也不会太频繁。
+      // 签名必须覆盖所有会影响 planReminders() 输出的因素：
+      // · 日期/时刻档 —— planReminders 结果随时间推移变化（每日提醒按天生成），
+      //   签名若不含时间，跨天不会重排，7 天窗口用完后提醒体系直接归零。
+      // · tiered / dailyTime —— 改这两个设置会改变提醒点，早前不进签名，
+      //   用户改了等于没改（save→sync→签名不变→直接 return）。
       var nowMs = Date.now();
       var dayKey = new Date(nowMs).toDateString();
       var slot10 = Math.floor(nowMs / 600000); // 10 分钟一档
-      var sig = mode + '|' + dayKey + '|' + slot10 + '|' + S.tasks.map(function (t) {
-        return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
-      }).join(',');
+      var tiered = (S.settings && S.settings.tiered) ? 1 : 0;
+      var dailyTime = (S.settings && S.settings.dailyTime) || '';
+      var sig = mode + '|' + tiered + '|' + dailyTime + '|' + dayKey + '|' + slot10 + '|'
+        + S.tasks.map(function (t) {
+          return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
+        }).join(',');
       if (this._sig === sig) return;
-      this._sig = sig;
+      // ⚠️ 注意：这里**不能**先给 _sig 赋值。
+      // 早前是 `this._sig = sig` 写在 try 之前，一旦下面 apply() 抛异常，
+      // 签名已经被记账 → 后续所有 sync 都因「签名相同」直接 return，
+      // 系统闹钟永久停止更新（一次失败 = 永久静默）。
+      // 正确做法：成功拿到 apply 结果之后再记账，失败则保持 null 以便重试。
 
       try {
         var alarms = [];
@@ -266,11 +272,15 @@
           }
         } catch (e) { /* ignore */ }
         var r = await DDL().apply({ alarms: alarms });
+        // apply() 真正成功后才记账（见上方注释：先记账会导致一次失败永久静默）
+        this._sig = sig;
         if (r && (r.added > 0 || r.cancelled > 0)) {
           console.log('[DDL雷达] 系统闹钟对账完成：+' + r.added + ' -' + r.cancelled +
             '，下一条 ' + (r.nextAt ? new Date(r.nextAt).toLocaleString() : '无'));
         }
       } catch (e) {
+        // 失败时清空签名，保证下次一定会重试（而不是被去抖挡掉）
+        this._sig = null;
         console.warn('[DDL雷达] 系统闹钟调度失败', e);
       }
     }

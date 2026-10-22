@@ -68,6 +68,7 @@ public class AlarmService extends Service {
         foregrounded = false;
         lastGuardText = null;
         cachedContentPi = null;
+        releasePlayer(); // 释放正在播放的铃声，避免泄漏与残留发声
         super.onDestroy();
     }
 
@@ -225,32 +226,47 @@ public class AlarmService extends Service {
         if (wantVibrate) vibrate();
     }
 
+    /** 当前正在播放的铃声：持有引用以便 onDestroy 时释放，避免泄漏 */
+    private MediaPlayer player;
+
     private void playChime() {
         try {
             // 用 USAGE_NOTIFICATION 而非 USAGE_ALARM：
             // USAGE_ALARM 走「闹钟音量」流，而手机音量键默认调的是媒体/铃声音量，
             // 用户按音量键完全控制不了闹钟音量流 —— 这就是「提示声音大小不能用
-            // 音量键控制」的根因。改成通知音量流后，音量键（在未播放时默认调铃声
-            // 音量，部分 ROM 可设成媒体音量）即可直接调节，符合普通提醒 App 的直觉。
-            // 代价：不受「闹钟音量」保护，勿扰模式下可能被静音——但可预期、可控制，
-            // 比「完全调不动」更符合用户诉求。
+            // 音量键控制」的根因。改成通知音量流后，音量键即可直接调节。
             AudioAttributes attrs = new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build();
-            final MediaPlayer player = MediaPlayer.create(this, R.raw.ddlr_chime, attrs, 1);
-            if (player == null) return;
-            player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-                @Override public void onCompletion(MediaPlayer m) { try { m.release(); } catch (Exception ignore) {} }
+            releasePlayer(); // 上一条还没放完就先释放，避免叠加播放
+            final MediaPlayer p = MediaPlayer.create(this, R.raw.ddlr_chime, attrs, 1);
+            if (p == null) return;
+            player = p;
+            p.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override public void onCompletion(MediaPlayer m) {
+                    try { m.release(); } catch (Exception ignore) {}
+                    if (player == m) player = null;
+                }
             });
-            player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            p.setOnErrorListener(new MediaPlayer.OnErrorListener() {
                 @Override public boolean onError(MediaPlayer m, int what, int extra) {
                     try { m.release(); } catch (Exception ignore) {}
+                    if (player == m) player = null;
                     return true;
                 }
             });
-            player.start();
+            p.start();
         } catch (Exception e) { /* 铃声失败不阻断通知投递 */ }
+    }
+
+    private void releasePlayer() {
+        MediaPlayer p = player;
+        player = null;
+        if (p != null) {
+            try { if (p.isPlaying()) p.stop(); } catch (Exception ignore) {}
+            try { p.release(); } catch (Exception ignore) {}
+        }
     }
 
     private void vibrate() {
