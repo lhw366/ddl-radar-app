@@ -14,6 +14,8 @@
   /* ---------- 节假日数据仓库 ---------- */
   const Hol = {
     mem: {},
+    pending: {},
+    retryAfter: {},
     key: (y) => 'ddlr_holiday_' + y,
 
     getLocal(y) {
@@ -24,7 +26,10 @@
       }
       try {
         const raw = localStorage.getItem(this.key(y));
-        if (raw) { this.mem[y] = JSON.parse(raw); return this.mem[y]; }
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data && Array.isArray(data.days)) { this.mem[y] = data; return data; }
+        }
       } catch (e) { /* ignore */ }
       return null;
     },
@@ -33,22 +38,36 @@
     async ensure(y) {
       const local = this.getLocal(y);
       if (local) return local;
+      if (this.pending[y]) return this.pending[y];
+      if (this.retryAfter[y] > Date.now()) return null;
+      const request = this.fetchYear(y);
+      this.pending[y] = request;
+      try { return await request; }
+      finally { delete this.pending[y]; }
+    },
+
+    async fetchYear(y) {
       const urls = [
         `https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/${y}.json`,
         `https://fastly.jsdelivr.net/gh/NateScarlet/holiday-cn@master/${y}.json`
       ];
       for (const u of urls) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timeout = controller ? setTimeout(() => controller.abort(), 8000) : null;
         try {
-          const res = await fetch(u, { cache: 'no-cache' });
+          const res = await fetch(u, { cache: 'no-cache', signal: controller ? controller.signal : undefined });
           if (!res.ok) continue;
           const data = await res.json();
           if (data && Array.isArray(data.days)) {
             this.mem[y] = data;
+            delete this.retryAfter[y];
             try { localStorage.setItem(this.key(y), JSON.stringify(data)); } catch (e) { /* ignore */ }
             return data;
           }
         } catch (e) { /* 离线或被拦截，尝试下一个源 */ }
+        finally { if (timeout !== null) clearTimeout(timeout); }
       }
+      this.retryAfter[y] = Date.now() + 5 * 60000;
       return null;
     },
 
@@ -56,11 +75,11 @@
     day(ymdStr) {
       const y = +ymdStr.slice(0, 4);
       const data = this.getLocal(y);
-      if (!data || !data.days) return null;
-      const hit = data.days.find((d) => d.date === ymdStr);
+      if (!data || !Array.isArray(data.days)) return null;
+      const hit = data.days.find((d) => d && d.date === ymdStr);
       return hit ? { name: hit.name, off: hit.isOffDay } : null;
     },
-    yearStatus(y) { return this.getLocal(y) ? 'ok' : 'loading'; }
+    yearStatus(y) { return this.getLocal(y) ? 'ok' : this.retryAfter[y] > Date.now() ? 'unavailable' : 'loading'; }
   };
   window.Hol = Hol;
 
@@ -108,16 +127,15 @@
       grid.innerHTML = '';
 
       const first = new Date(this.y, this.m, 1);
-      const daysInMonth = new Date(this.y, this.m + 1, 0).getDate();
       let lead = first.getDay() - 1; if (lead < 0) lead = 6; // 周一开头
       const start = new Date(this.y, this.m, 1 - lead);
       const todayStr = ymd(new Date());
-      const selStr = Cal._sel && Cal._sel.startsWith(`${this.y}-${pad(this.m + 1)}`) ? Cal._sel : null;
+      const selStr = Cal._sel || null;
 
       const tasks = (window.S && window.S.tasks) || [];
       const taskDays = {};
       for (const t of tasks) {
-        if (t.done || !t.dueAt) continue;
+        if (!t || t.done || !t.dueAt || !Number.isFinite(new Date(t.dueAt).getTime())) continue;
         const k = ymd(new Date(t.dueAt));
         (taskDays[k] = taskDays[k] || []).push(t);
       }
@@ -138,9 +156,11 @@
         const sub = cellSub(d, legal);
         const dots = (taskDays[k] || []).length;
 
+        const subText = String(sub.text || '').replace(/[&<>"']/g, (ch) =>
+          ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
         cell.innerHTML =
           `<div class="d-num">${d.getDate()}</div>` +
-          `<div class="d-sub ${sub.cls}">${sub.text}</div>` +
+          `<div class="d-sub ${sub.cls}">${subText}</div>` +
           (dots ? `<div class="cal-dots">${'<i></i>'.repeat(Math.min(dots, 3))}${dots > 3 ? '<i class="many"></i>' : ''}</div>` : '');
 
         cell.addEventListener('click', () => {
@@ -152,13 +172,18 @@
       }
 
       // 年度数据状态注记；未内置的年份异步拉取后重绘
-      const st = Hol.yearStatus(this.y);
+      const year = this.y, month = this.m;
+      const st = Hol.yearStatus(year);
       $('calYearNote').textContent =
         st === 'ok'
           ? `${this.y} 年法定节假日与调休已加载 · 月历同时显示农历、节气与节日`
-          : `${this.y} 年节假日安排尚未发布（通常在上一年的 11 月前后公布），发布后将自动在线获取`;
-      if (st !== 'ok') {
-        Hol.ensure(this.y).then((data) => { if (data) this.render(); });
+          : st === 'unavailable'
+            ? `${year} 年节假日数据暂不可用，将稍后重试 · 农历和事项仍可查看`
+            : `正在获取 ${year} 年法定节假日与调休安排…`;
+      if (st === 'loading') {
+        Hol.ensure(year).then(() => {
+          if (this.y === year && this.m === month) this.render();
+        });
       }
     }
   };

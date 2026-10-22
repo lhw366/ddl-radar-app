@@ -5,6 +5,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Build;
 
 import org.json.JSONArray;
@@ -12,12 +13,13 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Calendar;
 import java.util.Comparator;
 import java.util.List;
 
 /**
  * 系统闹钟调度核心：AlarmManager.setAlarmClock()（系统时钟同款 API）。
- * - 免精确闹钟授权（配合 USE_EXACT_ALARM 双保险），Doze 深度休眠保证准时
+ * - 精确闹钟权限可用时使用 setAlarmClock；否则降级为允许休眠期间执行的闹钟
  * - 状态栏显示闹钟图标（点按直达 App），系统视为用户真正的闹钟
  * - 闹钟列表持久化在 SharedPreferences，开机/改时间/替换安装后由
  *   BootReceiver 调 reapplyAll() 自动恢复（AlarmManager 闹钟不跨重启）
@@ -33,7 +35,7 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 5;
+    public static final int SCHED_VER = 6;
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
@@ -67,10 +69,87 @@ public final class AlarmScheduler {
 
     /** 整表覆写持久化列表 */
     public static synchronized void save(Context ctx, JSONArray arr) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!sp.edit().putString(KEY, arr.toString()).commit()) {
+            throw new IllegalStateException("Unable to persist reminder schedule");
+        }
+    }
+
+    /** A consumed occurrence must not be re-added by an in-flight JS reconciliation. */
+    static boolean wasDelivered(Context ctx, long id, long at) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getLong("delivered_" + id, -1) == at;
+    }
+
+    static void recordDelivered(Context ctx, long id, long at) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor edit = sp.edit().putLong("delivered_" + id, at);
+        long oldest = System.currentTimeMillis() - 24 * 60 * 60000L;
+        for (java.util.Map.Entry<String, ?> entry : sp.getAll().entrySet()) {
+            if (entry.getKey().startsWith("delivered_") && entry.getValue() instanceof Long
+                    && ((Long) entry.getValue()) < oldest) edit.remove(entry.getKey());
+        }
+        if (!edit.commit()) throw new IllegalStateException("Unable to record reminder delivery");
+    }
+
+    static JSONObject findOccurrence(Context ctx, long id, long at) {
+        JSONArray items = load(ctx);
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null && item.optLong("id", -1) == id && item.optLong("at", -1) == at) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    /** Keep local wall-clock time across daylight-saving changes. */
+    static JSONObject nextOccurrence(JSONObject item, long after) {
+        int days = item.optInt("repeatDays", 0);
+        if (days != 1 && days != 7 && days != 14) return null;
         try {
-            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            sp.edit().putString(KEY, arr.toString()).apply();
-        } catch (Exception e) { /* 存储失败不影响已注册的闹钟 */ }
+            Calendar calendar = Calendar.getInstance();
+            calendar.setTimeInMillis(item.optLong("at"));
+            do { calendar.add(Calendar.DAY_OF_YEAR, days); }
+            while (calendar.getTimeInMillis() <= after);
+            long at = calendar.getTimeInMillis();
+            long until = item.optLong("repeatUntil", 0);
+            if (until > 0 && at > until) return null;
+            JSONObject next = new JSONObject(item.toString());
+            next.put("at", at);
+            next.put("scheduled", false);
+            next.put("v", SCHED_VER);
+            return next;
+        } catch (Exception error) {
+            throw new IllegalStateException("Cannot advance recurring reminder", error);
+        }
+    }
+
+    static JSONObject currentOccurrence(Context ctx, JSONObject item, long now) {
+        long at = item.optLong("at");
+        if (wasDelivered(ctx, item.optLong("id"), at)) {
+            return nextOccurrence(item, Math.max(at, now - 15 * 60000L));
+        }
+        if (at < now - 15 * 60000L) {
+            return nextOccurrence(item, now - 15 * 60000L);
+        }
+        return item;
+    }
+
+    static void completeOccurrence(Context ctx, JSONObject item) {
+        long id = item.optLong("id");
+        JSONArray items = load(ctx);
+        JSONArray keep = new JSONArray();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject stored = items.optJSONObject(i);
+            if (stored != null && stored.optLong("id") != id) keep.put(stored);
+        }
+        JSONObject next = nextOccurrence(item, System.currentTimeMillis());
+        if (next != null) keep.put(next);
+        // Persist the next occurrence before cancelling/replacing the old alarms.
+        save(ctx, keep);
+        cancel(ctx, id);
+        promoteQueued(ctx);
     }
 
     /** 从持久化列表里删除一条（闹钟触发后调用） */
@@ -107,7 +186,14 @@ public final class AlarmScheduler {
 
         JSONArray keep = new JSONArray();
         boolean changed = false;
-        for (JSONObject item : ordered) {
+        for (JSONObject original : ordered) {
+            JSONObject item = currentOccurrence(ctx, original, now);
+            if (item == null) {
+                cancel(ctx, original.optLong("id"));
+                changed = true;
+                continue;
+            }
+            if (item != original) changed = true;
             long at = item.optLong("at", 0);
             boolean scheduled = item.optBoolean("scheduled", true);
             if (at < now - 15 * 60000L) {
@@ -175,7 +261,8 @@ public final class AlarmScheduler {
     public static synchronized void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-        if (am == null) return;
+        if (am == null) throw new IllegalStateException("Alarm manager unavailable");
+        cancelLegacy(ctx, id);
 
         // showIntent：状态栏闹钟图标点按后打开 App
         PendingIntent show = null;
@@ -199,14 +286,18 @@ public final class AlarmScheduler {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
                 } else {
-                    am.set(AlarmManager.RTC_WAKEUP, at, op);
+                    am.setExact(AlarmManager.RTC_WAKEUP, at, op);
                 }
             } catch (SecurityException e2) {
                 // 精确闹钟同样被拒：最后退回 inexact。这一层必须自己兜住，
                 // 否则异常会冒出 schedule() 打断后续备份通道注册，并被
                 // DdlAlarmPlugin.apply() 的 try 捕获后 reject 整次调用——
                 // 那会导致整表闹钟一条都排不上，远比「不准时」严重。
-                try { am.set(AlarmManager.RTC_WAKEUP, at, op); } catch (Exception ignore) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
+                } else {
+                    am.set(AlarmManager.RTC_WAKEUP, at, op);
+                }
             }
         }
         // 备份通道：+2s 兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
@@ -228,6 +319,7 @@ public final class AlarmScheduler {
         if (am == null) return;
         am.cancel(operation(ctx, id, 0, null, null, null, 0));
         am.cancel(operation(ctx, id, 0, null, null, null, 1));
+        cancelLegacy(ctx, id);
     }
 
     /**
@@ -251,22 +343,22 @@ public final class AlarmScheduler {
         }
         Collections.sort(ordered, BY_TRIGGER_TIME);
         int active = 0;
-        for (JSONObject o : ordered) {
-            long at = o.optLong("at", 0);
-            if (at <= now) {
+        for (JSONObject original : ordered) {
+            long at = original.optLong("at", 0);
+            JSONObject o = currentOccurrence(ctx, original, now);
+            if (at < now - 15 * 60000L && !wasDelivered(ctx, original.optLong("id"), at)
+                    && now - at < 24 * 3600 * 1000L) missed++;
+            if (o == null) {
                 // 过期：计入错过统计。
                 // 只统计「早于当前时间 1 分钟以上」的：刚过点几秒的条目可能
                 // 正在投递中（DdlAlarmPlugin 刻意保留 2 分钟窗口），
                 // 计成 missed 会造成「明明响了却说错过」的误报。
                 // 同时只统计 24 小时内的，更早的没意义。
                 long overdue = now - at;
-                if (overdue > 60000 && overdue < 24 * 3600 * 1000L) {
-                    missed++;
-                    if (at > missedLatest) missedLatest = at;
-                }
-                cancel(ctx, o.optLong("id"));
+                cancel(ctx, original.optLong("id"));
                 continue;
             }
+            at = o.optLong("at", 0);
             boolean scheduled = active < MAX_ACTIVE_ALARMS;
             if (scheduled) {
                 schedule(ctx, o.optLong("id"), at,
@@ -324,27 +416,38 @@ public final class AlarmScheduler {
      *             两者必须用不同 requestCode，否则系统按「同一 PendingIntent」
      *             处理，后注册的会覆盖前一个闹钟（详见 schedule 注释）。
      */
-    private static PendingIntent operation(Context ctx, long id, long at,
+    static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId, int slot) {
-        Intent i = new Intent(ctx, AlarmService.class);
+        Intent i = new Intent(ctx, AlarmReceiver.class);
+        i.setAction("com.ddlradar.app.DELIVER_REMINDER");
+        // Extras do not participate in PendingIntent identity. Preserve the full id,
+        // with a separate URI for each route, instead of truncating it to 30 bits.
+        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot));
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
         i.putExtra("slot", slot);
         if (title != null) i.putExtra("title", title);
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);
-        // requestCode 只需「同一 id 下主备不同」，且要避开溢出：
-        // id 来自 JS 的 hashId()（上限 2^31-1），直接 *2 会溢出成负数，
-        // 虽然负值合法但与别的 id 撞码概率上升。这里用低 30 位左移 + slot，
-        // 保证不同 id 的码段不重叠（id 的低 30 位最多 2^30 个，乘以 2 落在 int 内）。
-        int reqCode = (((int) id & 0x3FFFFFFF) << 1) | (slot & 1);
-        // O+ 直接以「前台服务」身份拉起：ColorOS 冻结后台进程时会扣广播，
-        // 但闹钟触发的 FGS 拉起必须放行（真闹钟 App 的标准做法）；pre-O 走广播委托
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            return PendingIntent.getForegroundService(ctx, reqCode, i,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        }
-        return PendingIntent.getBroadcast(ctx, reqCode, i,
+        return PendingIntent.getBroadcast(ctx, slot, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /** Retire v5 and older service PendingIntents when migrating or cancelling. */
+    private static void cancelLegacy(Context ctx, long id) {
+        AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
+        for (int slot = 0; slot < 2; slot++) {
+            int request = (((int) id & 0x3FFFFFFF) << 1) | slot;
+            Intent intent = new Intent(ctx, AlarmService.class);
+            int flags = PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE;
+            PendingIntent legacy = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? PendingIntent.getForegroundService(ctx, request, intent, flags)
+                    : PendingIntent.getBroadcast(ctx, request, intent, flags);
+            if (legacy != null) {
+                am.cancel(legacy);
+                legacy.cancel();
+            }
+        }
     }
 }

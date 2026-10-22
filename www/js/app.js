@@ -47,7 +47,7 @@ const LS_BG = 'ddlr_bg_v1';
 // 上一次已写入 localStorage 的壁纸引用：用于跳过重复写入
 // （save() 高频触发，尤其是拖动亮度滑块时每像素一次）
 let _lastBgWritten;
-let S = {
+function defaultState() { return {
   onboarded: false,
   tasks: [],
   fired: [],
@@ -57,10 +57,40 @@ let S = {
     remindMode: 'full', // full=响铃+震动 / vib=仅震动 / ring=仅响铃 / silent=仅应用内横幅
     tiered: true, toastCompact: true
   }
-};
+}; }
+function normalizeState(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.tasks)) throw new Error('无效事项列表');
+  const next = Object.assign(defaultState(), data);
+  next.settings = Object.assign(defaultState().settings, data.settings || {});
+  const ids = new Set();
+  next.tasks = data.tasks.map(t => {
+    if (!t || typeof t.id !== 'string' || !t.id || ids.has(t.id) ||
+        typeof t.name !== 'string' || !Number.isFinite(t.dueAt) || t.dueAt <= 0 ||
+        !Number.isFinite(new Date(t.dueAt).getTime())) throw new Error('无效事项');
+    ids.add(t.id);
+    const task = Object.assign({ detail: '', quadrant: 'q2', custom: [], tiers: {}, daily: false }, t);
+    if (!['q1', 'q2', 'q3', 'q4'].includes(task.quadrant) ||
+        !Array.isArray(task.custom) || task.custom.some(r => !r || !Number.isFinite(r.v) || r.v < 0 || !['m', 'h', 'd'].includes(r.u)) ||
+        (task.isRange && (!Number.isFinite(task.startAt) || task.startAt > task.dueAt))) throw new Error('无效提醒设置');
+    if (task.repeat && (!['daily', 'weekly', 'ndays'].includes(task.repeat.type) ||
+        (task.repeat.type === 'ndays' && (!Number.isInteger(task.repeat.n) || task.repeat.n < 2)))) throw new Error('无效重复规则');
+    return task;
+  });
+  next.fired = Array.isArray(data.fired) ? data.fired.filter(k => typeof k === 'string') : [];
+  if (!['full', 'vib', 'ring', 'silent'].includes(next.settings.remindMode)) next.settings.remindMode = 'full';
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(next.settings.dailyTime)) next.settings.dailyTime = '12:00';
+  if (data.timetable != null) {
+    const tt = data.timetable;
+    if (!Array.isArray(tt.courses) || tt.courses.some(c => !c || typeof c.id !== 'string' ||
+        typeof c.name !== 'string' || !Number.isInteger(c.day) || c.day < 1 || c.day > 7 ||
+        !Number.isInteger(c.start) || !Number.isInteger(c.end) || c.start < 1 || c.end > 12 || c.end < c.start)) throw new Error('无效课表');
+  }
+  return next;
+}
+let S = defaultState();
 try {
   const raw = localStorage.getItem(LS_KEY);
-  if (raw) S = Object.assign(S, JSON.parse(raw));
+  if (raw) S = normalizeState(JSON.parse(raw));
 } catch (e) { console.warn('状态读取失败', e); }
 // 壁纸从独立 key 恢复（save() 时不再混在主状态里）。
 // 兼容旧数据：老版本把 bgImage 直接存在主状态里，读出来时若还在就迁移过来。
@@ -417,16 +447,19 @@ const QUAD_NAME = { q1: '重要且紧急', q2: '重要不紧急', q3: '紧急不
 /* 打卡类任务完成后，按重复规则自动生成下一次 */
 function spawnNext(t) {
   if (!t.repeat || !t.dueAt) return null;
+  if (t.nextRepeatId) return S.tasks.find(x => x.id === t.nextRepeatId) || null;
   const stepDays = t.repeat.type === 'daily' ? 1 : t.repeat.type === 'weekly' ? 7 : Math.max(2, t.repeat.n || 2);
   let due = t.dueAt + stepDays * 86400000;
   while (due <= Date.now()) due += stepDays * 86400000;
   const nt = Object.assign({}, t, {
     id: uid(), done: false, doneAt: null,
     createdAt: Date.now(), updatedAt: Date.now(),
-    startAt: t.startAt ? t.startAt + stepDays * 86400000 : null,
+    startAt: t.startAt ? t.startAt + (due - t.dueAt) : null,
     dueAt: due,
     repeat: { type: t.repeat.type, n: t.repeat.n }
   });
+  delete nt.nextRepeatId;
+  t.nextRepeatId = nt.id;
   S.tasks.push(nt);
   return nt;
 }
@@ -460,12 +493,14 @@ function taskCard(t) {
 
   el.querySelector('.t-check').addEventListener('click', (e) => {
     e.stopPropagation();
-    t.done = !t.done; t.doneAt = t.done ? Date.now() : null; save();
+    t.done = !t.done; t.doneAt = t.done ? Date.now() : null;
+    t.updatedAt = Date.now();
     if (t.done) {
       const nt = spawnNext(t);
       toast('🎉 干得漂亮！', nt ? `🔁 下一次已自动排到 ${fmtDT(nt.dueAt)}` : `『${escapeHtml(t.name)}』完成`);
       beep();
     }
+    save();
     renderAll();
   });
   const toggle = el.querySelector('.t-toggle');
@@ -660,6 +695,9 @@ function saveEditor() {
   const dueAt = new Date(dueV).getTime();
   const isRange = curType === 'range';
   const startAt = isRange ? new Date($('fStart').value || dueV).getTime() : null;
+  if (!Number.isFinite(dueAt) || (isRange && (!Number.isFinite(startAt) || startAt > dueAt))) {
+    toast('⚠️ 时间无效', '请检查日期，并确保开始时间不晚于截止时间'); return;
+  }
 
   const data = {
     name, detail: $('fDetail').value.trim(), quadrant: curQuad,
@@ -670,6 +708,7 @@ function saveEditor() {
   };
   if (editingId) {
     const target = S.tasks.find((x) => x.id === editingId);
+    if (!target) { toast('⚠️ 事项已不存在', '请关闭编辑器后重新选择'); return; }
     // 只有「截止时间真的变了」才清掉该任务的 fired 记录（提醒需要重排）。
     // 早前是无条件 filter：只改标题/细节也会清空，于是 15 分钟补弹窗口内
     // 已经弹过的提醒会被再弹一遍 —— 用户感知就是「重复提醒 / 乱弹」。
@@ -732,8 +771,9 @@ const TIER_MIN = [120, 60, 30, 5];
 // 计算某任务所有「应触发时刻」: [{key, at, title, body, kind}]
 function planReminders(t) {
   const out = [];
-  if (t.done || !t.dueAt) return out;
+  if (!t || t.done || !Number.isFinite(t.dueAt)) return out;
   const due = t.dueAt;
+  const cutoff = Date.now() - 15 * 60000;
 
   // 当天分段提醒：设置页总开关 × 单事项细分开关
   if (t.tiers && S.settings.tiered) {
@@ -744,7 +784,7 @@ function planReminders(t) {
       // 已过期的分段提醒不再生成：早前这里没有这个判断，
       // 截止时间一过，due-120min 等全是过去时刻，会生成一堆过期条目，
       // 白白占用系统提醒队列、挤掉真正有效的提醒。
-      if (at <= nowTs) continue;
+      if (at < cutoff) continue;
       out.push({
         key: `${t.id}|t${min}`, at,
         title: min > 60 ? `⏰ 还有 ${min / 60} 小时` : `⏰ 还有 ${min} 分钟`,
@@ -757,7 +797,7 @@ function planReminders(t) {
   for (const r of (t.custom || [])) {
     const mult = r.u === 'd' ? 1440 : r.u === 'h' ? 60 : 1;
     const at = due - r.v * mult * 60000;
-    if (at <= Date.now()) continue;
+    if (at < cutoff) continue;
     const unit = r.u === 'd' ? '天' : r.u === 'h' ? '小时' : '分钟';
     out.push({
       key: `${t.id}|c${r.v}${r.u}`, at,
@@ -783,7 +823,7 @@ function planReminders(t) {
         if (day > dueDay) break;
         if (day.getTime() === dueDay.getTime()) break; // 当天由分段提醒负责
         const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hh, mm, 0).getTime();
-        if (at <= Date.now()) continue;
+        if (at < cutoff) continue;
         const days = Math.ceil((dueDay - day) / 86400000);
         out.push({
           key: `${t.id}|d${ymdOf(day.getTime())}`, at,
@@ -941,7 +981,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.6';
+const APP_VERSION = '2.2.7';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -962,14 +1002,14 @@ async function fetchRemoteVersion() {
     const r = await fetch(`${base}${REPO}@main/version.json`, { cache: 'no-store', signal: fetchTimeout(8000) });
     if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
-    return j.code ? j : null;
+    return Number.isSafeInteger(Number(j.code)) && Number(j.code) > 0 ? { ...j, code: Number(j.code) } : null;
   });
   jobs.push((async () => {
     const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { cache: 'no-store', signal: fetchTimeout(8000) });
     if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
     const code = parseInt((j.tag_name || '').replace(/^v/, ''), 10) || 0;
-    const asset = (j.assets || []).find((a) => a.name.endsWith('.apk'));
+    const asset = (j.assets || []).find((a) => /\.apk(?:\.bin)?$/i.test(a.name || ''));
     return (code > 0 && asset) ? { code, version: j.tag_name, apk: asset.browser_download_url } : null;
   })());
   const results = await Promise.allSettled(jobs);
@@ -1004,6 +1044,154 @@ function withMirrors(j) {
   }
   j.mirrors = m;
   return j;
+}
+
+// 更新按钮的锁覆盖检查、原生下载和恢复；安装器返回后保留目标构建。
+function bindUpdater() {
+  const b = $('updateBtn');
+  if (!b || b.dataset.bound === '1') return;
+  b.dataset.bound = '1';
+  const plugin = window.Capacitor && Capacitor.Plugins.ApkInstaller;
+  let requestPending = false, nativeBusy = false, pollTimer = null;
+  let stateRevision = 0;
+  const setBusy = () => {
+    b.disabled = requestPending || nativeBusy;
+    if (b.disabled) b.dataset.busy = '1'; else delete b.dataset.busy;
+  };
+  const clearTarget = () => {
+    delete b.dataset.url;
+    delete b.dataset.code;
+    pendingUpdateMirrors = [];
+    b.classList.remove('primary');
+  };
+  const applyNativeState = (state) => {
+    if (!state || !state.status || state.status === 'idle') return;
+    // 一个旧构建的恢复结果不能覆盖刚检查到的新构建。
+    if (!state.busy && Number(b.dataset.code || 0) > Number(state.code || 0)) return;
+    stateRevision++;
+    nativeBusy = !!state.busy;
+    if (state.code > 0 && state.status !== 'installed') {
+      b.dataset.code = String(state.code);
+      if (Array.isArray(state.urls) && state.urls.length) {
+        pendingUpdateMirrors = state.urls.filter((u) => typeof u === 'string' && u.startsWith('https://'));
+        b.dataset.url = pendingUpdateMirrors[0] || '';
+      }
+      b.classList.add('primary');
+    }
+    if (state.status === 'installed') {
+      clearTarget();
+      b.textContent = '✅ 此版本已安装，点击检查更新';
+    } else if (state.status === 'ready' || state.status === 'installerOpened') {
+      b.textContent = '📦 继续安装已下载的更新';
+    } else if (state.status === 'awaitingPermission') {
+      b.textContent = state.canInstall ? '⬇️ 权限已开启，继续更新' : '⚙️ 允许安装后继续更新';
+    } else if (state.status === 'downloading' || state.status === 'preparing') {
+      b.textContent = state.total > 0 ? '⬇️ 下载中 ' + Math.min(99, Math.round(state.bytes / state.total * 100)) + '%' : '⬇️ 正在准备更新包…';
+    } else {
+      b.textContent = state.status === 'error' ? '⬇️ 更新失败，点击重试' : '⬇️ 继续更新 (b' + state.code + ')';
+    }
+    setBusy();
+    // 监听器失败或 WebView 重建也能从原生状态恢复，避免永久停在“下载中”。
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = nativeBusy ? setTimeout(recoverState, 1500) : null;
+  };
+  async function recoverState() {
+    if (!plugin || !plugin.getUpdateState) return;
+    const before = stateRevision;
+    try {
+      const state = await plugin.getUpdateState();
+      if (before === stateRevision) applyNativeState(state);
+    } catch (e) { /* 旧插件没有状态接口时保留当前按钮 */ }
+  }
+  const initialization = (async () => {
+    if (!plugin) return;
+    await Promise.allSettled([
+      (async () => {
+        await plugin.addListener('stateChanged', applyNativeState);
+      })(),
+      (async () => {
+        await plugin.addListener('progress', (d) => {
+          if (!d || (d.code && Number(b.dataset.code) !== Number(d.code))) return;
+          if (!nativeBusy && !requestPending) return;
+          b.textContent = d.total > 0 ? '⬇️ 下载中 ' + Math.min(99, Math.round(d.bytes / d.total * 100)) + '%' : '⬇️ 正在下载更新包…';
+        });
+      })()
+    ]);
+    await recoverState();
+  })();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) recoverState();
+  });
+  if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.addListener) {
+    try {
+      Promise.resolve(Capacitor.Plugins.App.addListener('appStateChange', (s) => {
+        if (s.isActive) recoverState();
+      })).catch(() => {});
+    } catch (e) { /* 网页端没有 App 生命周期 */ }
+  }
+  b.addEventListener('click', async () => {
+    if (requestPending || nativeBusy) return;
+    requestPending = true;
+    setBusy();
+    try {
+      await initialization;
+      if (nativeBusy) return;
+      if (b.dataset.url && Number(b.dataset.code) > 0) {
+        const urls = pendingUpdateMirrors.length ? pendingUpdateMirrors.slice() : [b.dataset.url];
+        if (!plugin) { openExternal(b.dataset.url); return; }
+        b.textContent = '⬇️ 正在准备更新包…';
+        const result = await plugin.installApk({ urls, versionCode: Number(b.dataset.code) });
+        if (result && result.status) {
+          applyNativeState(result);
+          if (result.status === 'awaitingPermission') {
+            toast('⚙️ 需要安装权限', '开启「允许安装未知应用」后返回，再点继续更新');
+          } else if (result.status === 'installerOpened') {
+            toast('📦 更新已就绪', '请在系统界面确认安装；返回后可继续安装，无需重新下载');
+          } else if (result.status === 'installed') {
+            toast('✅ 此版本已安装', '可继续检查是否有更新版本');
+          }
+        } else {
+          // 兼容旧原生插件；新版结果由持久状态提供。
+          b.textContent = '📦 继续安装已下载的更新';
+        }
+        return;
+      }
+      b.textContent = '🔄 检查中…';
+      let local = 0;
+      try {
+        if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.getInfo) {
+          const info = await Capacitor.Plugins.App.getInfo();
+          local = parseInt(info && info.build, 10) || 0;
+        }
+      } catch (e) { /* 回退到构建时写入的版本 */ }
+      if (!local) {
+        try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) local = Number((await r.json()).code) || 0; } catch (e) {}
+      }
+      const rem = await fetchRemoteVersion();
+      if (!rem) throw new Error('暂时无法取得版本信息，请稍后重试');
+      if (Number(rem.code) > local) {
+        pendingUpdateMirrors = rem.mirrors || [];
+        b.dataset.url = rem.apk || rem.url || pendingUpdateMirrors[0] || '';
+        if (!b.dataset.url) throw new Error('新版本没有可用的下载地址');
+        b.dataset.code = String(rem.code);
+        b.classList.add('primary');
+        b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
+        toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
+          plugin ? '再点一次获取更新，完成后打开系统安装确认页' : '再点一次按钮，浏览器会下载新 APK');
+      } else {
+        clearTarget();
+        b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
+      }
+    } catch (e) {
+      nativeBusy = false;
+      b.textContent = b.dataset.url ? '⬇️ 更新失败，点击重试' : '🔄 检查更新';
+      toast('⚠️ 更新未完成', (e && e.message ? String(e.message).slice(0, 180) : '请稍后重试'));
+      await recoverState();
+    } finally {
+      requestPending = false;
+      setBusy();
+    }
+  });
 }
 
 /* ---------------- 提醒诊断面板 ---------------- */
@@ -1131,102 +1319,7 @@ function bindSettings() {
     if (j && j.code) $('verText').textContent = 'v' + (j.version || APP_VERSION) + ' (b' + j.code + ')';
   }).catch(() => {});
   $('diagBtn').addEventListener('click', renderDiag);
-  $('updateBtn').addEventListener('click', async () => {
-    const b = $('updateBtn');
-    // ⚠️ 防重入：b.disabled = true 只能挡住「后续的新点击」，
-    // 挡不住已经排进事件队列的连点（快速点两下会触发两次 handler）。
-    // 而原生 ApkInstallerPlugin 的 downloadingCall 是单个字段，
-    // 两个并发调用会互相覆盖 —— 表现为重复下载多个安装包。
-    // 用显式标志位在 JS 侧串行化，且必须在任何 await 之前置位。
-    if (b.dataset.busy === '1') return;
-    if (b.dataset.url) {
-      b.dataset.busy = '1';
-      const urls = pendingUpdateMirrors.length ? pendingUpdateMirrors : [b.dataset.url];
-      // APK 内：多线路下载（版本化文件名+镜像优先），进度实时显示，完成后拉起系统安装
-      if (window.Capacitor && Capacitor.Plugins.ApkInstaller) {
-        b.disabled = true; b.textContent = '⬇️ 正在下载更新包…';
-        let prog = null;
-        try {
-          try {
-            prog = await Capacitor.Plugins.ApkInstaller.addListener('progress', (d) => {
-              if (d && d.total > 0) {
-                b.textContent = '⬇️ 下载中 ' + Math.min(99, Math.round((d.bytes / d.total) * 100)) + '%';
-              }
-            });
-          } catch (e) { /* 进度监听失败不影响下载 */ }
-          await Capacitor.Plugins.ApkInstaller.installApk({ urls });
-          b.textContent = '📦 请在弹出的界面点「安装」';
-          b.disabled = false;
-          // 下载已完成：清掉待更新状态，避免装完回来按钮还停在「更新到…」
-          delete b.dataset.url;
-          delete b.dataset.code;
-          pendingUpdateMirrors = [];
-          toast('📦 更新已就绪', '系统安装确认页已打开，点「安装」即可完成更新');
-        } catch (e) {
-          b.disabled = false;
-          b.textContent = '⬇️ 下载新版本';
-          const msg = (e && e.message) ? String(e.message) : '';
-          // 失败保留 dataset.url，用户可直接再点重试（换线路由原生负责）
-          toast('⚠️ 更新失败', (msg ? msg.slice(0, 160) + '。' : '') + '可在本机再点一次重试');
-        } finally {
-          if (prog && prog.remove) { try { prog.remove(); } catch (e) { /* ignore */ } }
-          delete b.dataset.busy; // 无论成败都要解除防重入
-        }
-        return;
-      }
-      delete b.dataset.busy;
-      openExternal(b.dataset.url);
-      return;
-    }
-    b.dataset.busy = '1';
-    b.disabled = true; b.textContent = '🔄 检查中…';
-    // 本地版本：优先用原生返回的**已安装包真实 versionCode**。
-    // 早前读的是包内 version.json——那是 CI 构建时写死的当次构建号，
-    // 装到手机上后永远等于「当时那次构建」，一旦远端有更新就再也判不出
-    // 「已是最新」，会出现反复提示更新、甚至更新后仍提示的循环。
-    try {
-      let local = 0;
-      try {
-        if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.getInfo) {
-          const info = await Capacitor.Plugins.App.getInfo();
-          local = parseInt(info && info.build, 10) || 0;
-        }
-      } catch (e) { /* 取不到再回落 */ }
-      if (!local) {
-        try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) local = (await r.json()).code || 0; } catch (e) {}
-      }
-      const rem = await fetchRemoteVersion();
-      b.disabled = false;
-      if (!rem) {
-        b.textContent = '🔄 检查更新';
-        toast('⚠️ 检查失败', '连不上 GitHub，稍后再试');
-        return;
-      }
-      if ((rem.code || 0) > local) {
-        pendingUpdateMirrors = rem.mirrors || [];
-        b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
-        b.classList.add('primary');
-        b.dataset.url = rem.apk || rem.url || '';
-        b.dataset.code = String(rem.code || 0);
-        // 文案要说清楚下一步，别再讲「浏览器会下载」——APK 内是走应用内下载器
-        const inApp = !!(window.Capacitor && Capacitor.Plugins.ApkInstaller);
-        toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
-          inApp ? 'App 会直接获取更新，完成后打开系统安装确认页'
-                : '再点一次按钮，浏览器会下载新 APK');
-      } else {
-        b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
-        // 已是最新：清掉残留的待更新状态，否则按钮会一直卡在「更新到…」
-        delete b.dataset.url;
-        delete b.dataset.code;
-        pendingUpdateMirrors = [];
-        setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
-      }
-    } finally {
-      // 所有出口（含异常/提前 return）都必须解除防重入，
-      // 否则一次网络异常会让按钮永久失效，用户只能重启 App。
-      delete b.dataset.busy;
-    }
-  });
+  bindUpdater();
   $('bgDimRange').value = S.settings.bgDim;
   $('bgDimVal').textContent = S.settings.bgDim + '%';
   $('bgDimRange').addEventListener('input', () => {
@@ -1249,7 +1342,11 @@ function bindSettings() {
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('wipeBtn').addEventListener('click', () => {
     if (confirm('确定清空所有事项和数据吗？此操作不可恢复。')) {
-      S.tasks = []; S.fired = []; invalidateFiredCache(); save(); renderAll(); toast('🧹 已清空', '一切从头开始');
+      S = defaultState(); S.onboarded = true; window.S = S;
+      localStorage.removeItem('ddlr_testAt');
+      invalidateFiredCache(); save(); applyTheme(); bindSettingsValues(); renderAll();
+      if (window.Timetable && Timetable.render) Timetable.render();
+      toast('🧹 已清空', '事项、课表和设置已清空');
     }
   });
   $('demoBtn').addEventListener('click', loadDemo);
@@ -1279,8 +1376,10 @@ function handleImport(f) {
   rd.onload = () => {
     try {
       const data = JSON.parse(rd.result);
-      if (!data || !Array.isArray(data.tasks)) throw new Error('bad');
-      S = Object.assign(S, data); save(); applyTheme(); bindSettingsValues(); renderAll();
+      const imported = normalizeState(data);
+      S = imported; window.S = S; invalidateFiredCache();
+      save(); applyTheme(); bindSettingsValues(); renderAll();
+      if (window.Timetable && Timetable.render) Timetable.render();
       toast('📥 导入成功', `共 ${S.tasks.length} 条事项`);
     } catch (e) { toast('⚠️ 导入失败', '文件格式不对，需要本应用导出的 JSON'); }
   };
@@ -1342,6 +1441,7 @@ function init() {
   $('bgPick').addEventListener('click', () => bgFile.click());
 
   const impFile = document.createElement('input');
+  impFile.id = 'importFile';
   impFile.type = 'file'; impFile.accept = '.json,application/json'; impFile.style.display = 'none';
   impFile.addEventListener('change', () => { handleImport(impFile.files[0]); impFile.value = ''; });
   document.body.appendChild(impFile);

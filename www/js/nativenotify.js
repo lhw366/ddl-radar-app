@@ -82,6 +82,7 @@
       var chSigStored = null;
       try { chSigStored = localStorage.getItem('ddlr_chsig'); } catch (e) {}
       if (force || chSig !== chSigStored) {
+        var allOk = true;
         for (var i = 0; i < defs.length; i++) {
           var d = defs[i];
           try {
@@ -89,9 +90,14 @@
               id: d.id, name: d.name, importance: d.importance,
               vibration: d.vibration, sound: d.sound, force: !!force
             });
-          } catch (e) { /* 单个通道失败不阻断 */ }
+          } catch (e) {
+            // 没建成功就不能记签名，否则后续启动会误以为通道已经完整。
+            allOk = false;
+          }
         }
-        try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
+        if (allOk) {
+          try { localStorage.setItem('ddlr_chsig', chSig); } catch (e) {}
+        }
       }
     },
 

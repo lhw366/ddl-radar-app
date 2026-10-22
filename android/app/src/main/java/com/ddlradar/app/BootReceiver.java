@@ -29,7 +29,8 @@ public class BootReceiver extends BroadcastReceiver {
         boolean hit = Intent.ACTION_BOOT_COMPLETED.equals(action)
                 || Intent.ACTION_TIME_CHANGED.equals(action)
                 || Intent.ACTION_TIMEZONE_CHANGED.equals(action)
-                || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action);
+                || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)
+                || "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED".equals(action);
         if (!hit) return;
         try {
             AlarmScheduler.reapplyAll(context);

@@ -2,8 +2,12 @@ package com.ddlradar.app;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.core.content.FileProvider;
 
@@ -17,198 +21,298 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.io.RandomAccessFile;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/**
- * 应用内直接更新：下载 APK 到应用外部缓存目录，完成后拉起系统安装确认。
- * Android 不允许任何应用静默替换自己，最后一步的系统"安装"确认无法省略。
- *
- * 下载走多线路：JS 传入 urls（jsdelivr 镜像优先、github 直连兜底），
- * 逐条尝试（连接 10s / 读取 30s 超时），下载完校验 ZIP 头与体积，
- * 防止把超时页/错误页当安装包；一条失败自动切下一条。
- */
+/** 下载和安装是两个阶段：授权/安装取消后复用通过校验的同一构建 APK。 */
 @CapacitorPlugin(name = "ApkInstaller")
 public class ApkInstallerPlugin extends Plugin {
+    // Plugin/WebView 重建不能产生第二个下载器；回调属于各自请求，绝不共享或覆盖。
+    private static final Object LOCK = new Object();
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static WeakReference<ApkInstallerPlugin> current = new WeakReference<>(null);
+    private static boolean loaded, busy;
+    private static int targetCode;
+    private static String status = "idle", error = "";
+    private static List<String> targetUrls = new ArrayList<>();
+    private static long bytes, total, lastLaunchAt;
+    private static final String PREFS = "ddlr_update";
 
-    private PluginCall downloadingCall;
-    /** 保护 downloadingCall 的并发判重（连点会触发多次 installApk） */
-    private final Object downloadLock = new Object();
+    @Override
+    public void load() {
+        synchronized (LOCK) { current = new WeakReference<>(this); }
+    }
+
+    private static SharedPreferences prefs(Context ctx) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static void ensureState(Context ctx) {
+        if (loaded) return;
+        SharedPreferences p = prefs(ctx);
+        targetCode = p.getInt("code", 0);
+        status = p.getString("status", "idle");
+        error = p.getString("error", "");
+        targetUrls = new ArrayList<>();
+        try {
+            JSArray saved = new JSArray(p.getString("urls", "[]"));
+            for (int i = 0; i < saved.length(); i++) targetUrls.add(saved.getString(i));
+        } catch (Exception ignored) { }
+        loaded = true;
+        refreshState(ctx);
+    }
+
+    private static void saveState(Context ctx) {
+        prefs(ctx).edit().putInt("code", targetCode).putString("status", status)
+                .putString("urls", new JSArray(targetUrls).toString()).putString("error", error).apply();
+    }
+
+    private static File apkFile(Context ctx, int code) {
+        File dir = ctx.getExternalFilesDir("update");
+        if (dir == null) dir = new File(ctx.getCacheDir(), "update");
+        return new File(dir, "ddl-radar-update-" + code + ".apk");
+    }
+
+    private static long versionCode(PackageInfo info) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? info.getLongVersionCode() : info.versionCode;
+    }
+
+    private static long installedCode(Context ctx) throws Exception {
+        return versionCode(ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0));
+    }
+
+    private static boolean canInstall(Context ctx) {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ctx.getPackageManager().canRequestPackageInstalls();
+    }
+
+    private static void validateApk(Context ctx, File apk, int code) throws Exception {
+        if (!apk.isFile() || apk.length() < 1024 * 1024) throw new Exception("安装包不完整");
+        PackageInfo info = ctx.getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), 0);
+        if (info == null || !ctx.getPackageName().equals(info.packageName)) throw new Exception("安装包无效或应用不匹配");
+        if (versionCode(info) != code) throw new Exception("安装包构建号不匹配（期望 " + code + "）");
+    }
+
+    private static boolean hasApk(Context ctx, int code) {
+        try { validateApk(ctx, apkFile(ctx, code), code); return true; }
+        catch (Exception ignored) { return false; }
+    }
+
+    // 进程被回收时 downloading 不能永久锁住按钮；只复用完整且版本匹配的 .apk。
+    private static void refreshState(Context ctx) {
+        if (busy || targetCode <= 0) return;
+        try {
+            if (targetCode <= installedCode(ctx)) {
+                status = "installed";
+                error = "";
+            } else if (hasApk(ctx, targetCode)) {
+                bytes = total = apkFile(ctx, targetCode).length();
+                if (!"installerOpened".equals(status)) status = "ready";
+            } else if (!"error".equals(status)) {
+                status = "available";
+            }
+            if (!"installed".equals(status) && "awaitingPermission".equals(prefs(ctx).getString("status", "")) && !canInstall(ctx)) {
+                status = "awaitingPermission";
+            }
+            saveState(ctx);
+        } catch (Exception e) {
+            error = e.getMessage();
+            status = "error";
+        }
+    }
+
+    private static JSObject snapshot(Context ctx) {
+        return new JSObject().put("status", status).put("code", targetCode)
+                .put("urls", new JSArray(targetUrls)).put("bytes", bytes).put("total", total)
+                .put("busy", busy).put("canInstall", canInstall(ctx)).put("error", error);
+    }
+
+    private static void emit(String event, JSObject data) {
+        MAIN.post(() -> {
+            ApkInstallerPlugin plugin;
+            synchronized (LOCK) { plugin = current.get(); }
+            if (plugin != null) {
+                try { plugin.notifyListeners(event, data); } catch (Exception ignored) { }
+            }
+        });
+    }
+
+    @PluginMethod
+    public void getUpdateState(PluginCall call) {
+        Context ctx = getContext().getApplicationContext();
+        synchronized (LOCK) {
+            ensureState(ctx);
+            refreshState(ctx);
+            call.resolve(snapshot(ctx));
+        }
+    }
 
     @PluginMethod
     public void installApk(PluginCall call) {
+        final Context ctx = getContext().getApplicationContext();
         List<String> urls = new ArrayList<>();
         JSArray arr = call.getArray("urls");
         if (arr != null) {
             for (int i = 0; i < arr.length(); i++) {
-                String u = arr.optString(i, null);
-                if (u != null && !u.isEmpty() && !urls.contains(u)) urls.add(u);
+                String u = arr.optString(i, "");
+                if (u.startsWith("https://") && !urls.contains(u)) urls.add(u);
             }
         }
-        String single = call.getString("url");
-        if (single != null && !single.isEmpty() && !urls.contains(single)) urls.add(single);
-        if (urls.isEmpty()) { call.reject("url required"); return; }
-
-        // ⚠️ 并发保护：downloadingCall 是单个字段，两次并发 installApk 会互相覆盖，
-        // 表现为「下载了多个安装包 / 进度乱跳 / 装的是上一个包」。
-        // JS 侧已有 dataset.busy 防重入，这里再兜一层——因为插件可能被
-        // 其他调用方（或旧版 JS 缓存）重复触发。
-        synchronized (downloadLock) {
-            if (downloadingCall != null) {
-                call.reject("已有一个更新包正在下载，请稍候");
-                return;
-            }
-            downloadingCall = call;
-        }
-
-        new Thread(() -> {
-            File dir = getContext().getExternalFilesDir("update");
-            if (dir == null) { rejectOnUi("storage unavailable"); return; }
-            if (!dir.exists()) dir.mkdirs();
-            File apk = new File(dir, "ddl-radar-update.apk");
-
-            Exception lastErr = null;
-            StringBuilder tried = new StringBuilder();
+        String single = call.getString("url", "");
+        if (single.startsWith("https://") && !urls.contains(single)) urls.add(single);
+        int code = call.getInt("versionCode", 0);
+        // 兼容尚未重载的旧前端，同时仍按构建号缓存，不能缓存一个固定文件名。
+        if (code <= 0) {
             for (String u : urls) {
-                try {
-                    long bytes = downloadTo(u, apk);
-                    // 同样必须在主线程发事件；失败不影响后续安装流程
-                    final long doneBytes = bytes;
-                    try {
-                        getBridge().executeOnMainThread(() -> {
-                            try {
-                                notifyListeners("downloaded", new JSObject().put("bytes", doneBytes));
-                            } catch (Exception ignore) {}
-                        });
-                    } catch (Exception ignore) {}
-                    openInstaller(apk);
-                    // openInstaller 内部投递到主线程；这里再投递一次 resolve。
-                    // 两者都进主线程队列、先进先出，所以安装界面一定先弹出。
-                    // 若 openInstaller 走了「缺权限」分支并 reject，downloadingCall
-                    // 已被清空，下面这次 resolve 会自动跳过（不报错）。
-                    resolveOnUi(new JSObject().put("bytes", bytes).put("path", apk.getAbsolutePath()));
-                    return;
-                } catch (Exception e) {
-                    lastErr = e;
-                    String host = u.split("/", 4).length > 3 ? u.split("/", 4)[2] : u;
-                    tried.append(host).append(": ")
-                            .append(e.getMessage() == null ? "failed" : e.getMessage()).append("; ");
+                Matcher m = Pattern.compile("ddl-radar-(\\d+)\\.apk(?:[?#].*)?$").matcher(u);
+                if (m.find()) {
+                    try { code = Integer.parseInt(m.group(1)); } catch (NumberFormatException ignored) { }
+                    if (code > 0) break;
                 }
             }
-            String detail = tried.toString();
-            if (detail.length() > 180) detail = detail.substring(0, 180) + "…";
-            rejectOnUi("已试 " + urls.size() + " 条线路：" + detail
-                    + "（最后错误：" + (lastErr == null ? "unknown" : lastErr.getMessage()) + "）");
+        }
+        synchronized (LOCK) {
+            ensureState(ctx);
+            if (busy) { call.resolve(snapshot(ctx)); return; }
+            if (code <= 0) code = targetCode;
+            if (urls.isEmpty() && code == targetCode) urls = new ArrayList<>(targetUrls);
+            if (code <= 0 || urls.isEmpty()) { call.reject("缺少更新构建号或下载地址"); return; }
+            // 系统界面刚打开时的排队点击也不能再次弹安装器/设置页。
+            if (code == targetCode && System.currentTimeMillis() - lastLaunchAt < 1500) {
+                call.resolve(snapshot(ctx)); return;
+            }
+            targetCode = code;
+            targetUrls = new ArrayList<>(urls);
+            busy = true;
+            bytes = total = 0;
+            error = "";
+            status = "preparing";
+            saveState(ctx);
+        }
+        final int requestedCode = code;
+        final List<String> requestedUrls = urls;
+        new Thread(() -> {
+            try {
+                if (requestedCode <= installedCode(ctx)) {
+                    finish(ctx, call, "installed", null);
+                    return;
+                }
+                // 在下载前请求授权。返回后继续同一版本，不会重复下载。
+                if (!canInstall(ctx)) { openSystemUi(ctx, call, requestedCode, false); return; }
+                File apk = apkFile(ctx, requestedCode);
+                boolean reused = hasApk(ctx, requestedCode);
+                if (!reused) {
+                    File dir = apk.getParentFile();
+                    if (!dir.isDirectory() && !dir.mkdirs()) throw new Exception("更新目录不可用");
+                    synchronized (LOCK) { status = "downloading"; saveState(ctx); emit("stateChanged", snapshot(ctx)); }
+                    File part = new File(dir, apk.getName() + ".part");
+                    StringBuilder failures = new StringBuilder();
+                    boolean downloaded = false;
+                    for (String url : requestedUrls) {
+                        try {
+                            downloadTo(url, part, requestedCode);
+                            validateApk(ctx, part, requestedCode);
+                            if (apk.exists() && !apk.delete()) throw new Exception("无法替换旧缓存");
+                            if (!part.renameTo(apk)) throw new Exception("无法保存完整安装包");
+                            downloaded = true;
+                            break;
+                        } catch (Exception e) {
+                            part.delete();
+                            failures.append(new URL(url).getHost()).append(": ").append(e.getMessage()).append("; ");
+                        }
+                    }
+                    if (!downloaded) throw new Exception("下载失败：" + failures.substring(0, Math.min(200, failures.length())));
+                }
+                synchronized (LOCK) {
+                    bytes = total = apk.length();
+                    status = "ready";
+                    saveState(ctx);
+                    emit("downloaded", snapshot(ctx).put("reused", reused));
+                }
+                openSystemUi(ctx, call, requestedCode, true);
+            } catch (Exception e) {
+                finish(ctx, call, "error", e.getMessage() == null ? "更新失败，请重试" : e.getMessage());
+            }
         }, "apk-download").start();
     }
 
-    /** 下载单条线路并校验产物；每 512KB 上报进度；失败抛异常由上层切下一条 */
-    private long downloadTo(String url, File apk) throws Exception {
+    private void downloadTo(String url, File part, int code) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         try {
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             conn.setInstanceFollowRedirects(true);
-            int code = conn.getResponseCode();
-            if (code < 200 || code >= 300) throw new Exception("http " + code);
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            int response = conn.getResponseCode();
+            if (response < 200 || response >= 300) throw new Exception("HTTP " + response);
             long expected = conn.getContentLength();
-
-            InputStream in = conn.getInputStream();
-            FileOutputStream out = new FileOutputStream(apk);
-            byte[] buf = new byte[16384];
-            int n;
             long got = 0, reported = 0;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-                got += n;
-                if (got - reported > 512 * 1024) {
-                    reported = got;
-                    // notifyListeners 必须在主线程调用。早前直接在下载线程里调，
-                    // 会抛异常并中断整个下载——被外层 catch 当成「这条线路失败」，
-                    // 于是每条线路都失败，最终表现为「手机上无法直接更新」。
-                    // 这里改为主线程投递，且进度上报失败绝不影响下载本身。
-                    final long g = got;
-                    final long exp = Math.max(0, expected);
-                    try {
-                        getBridge().executeOnMainThread(() -> {
-                            try {
-                                notifyListeners("progress",
-                                        new JSObject().put("bytes", g).put("total", exp));
-                            } catch (Exception ignore) { /* 进度只是 UI，失败忽略 */ }
-                        });
-                    } catch (Exception ignore) { /* 桥不可用时忽略进度 */ }
+            synchronized (LOCK) { bytes = 0; total = Math.max(0, expected); }
+            emit("progress", new JSObject().put("code", code).put("bytes", 0).put("total", Math.max(0, expected)));
+            try (InputStream in = conn.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                    got += n;
+                    synchronized (LOCK) { bytes = got; }
+                    if (got - reported >= 512 * 1024) {
+                        reported = got;
+                        emit("progress", new JSObject().put("code", code).put("bytes", got).put("total", Math.max(0, expected)));
+                    }
                 }
+                out.flush();
+                if (expected >= 0 && got != expected) throw new Exception("下载中断（文件长度不符）");
             }
-            out.flush();
-            out.close();
-            in.close();
-        } finally {
-            conn.disconnect();
-        }
-
-        // 完整性校验：体积 > 1MB 且以 ZIP 头（PK）开始，防止把错误页当安装包
-        if (apk.length() < 1024 * 1024) throw new Exception("file too small (" + apk.length() + "B)");
-        RandomAccessFile raf = new RandomAccessFile(apk, "r");
-        try {
-            byte[] head = new byte[2];
-            raf.readFully(head);
-            if (head[0] != 'P' || head[1] != 'K') throw new Exception("not an apk (bad header)");
-        } finally {
-            raf.close();
-        }
-        return apk.length();
+        } finally { conn.disconnect(); }
     }
 
-    /**
-     * 拉起系统安装界面。
-     *
-     * 注意两点（早前都有缺陷）：
-     * 1) 必须在主线程调用 startActivity，下载线程直接调会抛
-     *    RuntimeException("Can't create handler inside thread that has not called Looper.prepare()")。
-     * 2) Android 8+ 需要「安装未知应用」权限；未授予时 ACTION_VIEW 会静默无反应，
-     *    这里检测并跳转到授权页，否则用户会以为「点了没反应」。
-     */
-    private void openInstaller(File apk) {
-        final Context ctx = getContext();
-        getBridge().executeOnMainThread(() -> {
+    private void openSystemUi(Context ctx, PluginCall call, int code, boolean downloaded) {
+        MAIN.post(() -> {
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                        && !ctx.getPackageManager().canRequestPackageInstalls()) {
-                    Intent settings = new Intent(
-                            android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                boolean allowed = canInstall(ctx);
+                Intent intent;
+                if (!allowed) {
+                    intent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                             Uri.parse("package:" + ctx.getPackageName()));
-                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    ctx.startActivity(settings);
-                    rejectOnUi("需要先允许「安装未知应用」，已跳转设置页。开启后请再点一次更新");
+                } else if (downloaded) {
+                    File apk = apkFile(ctx, code);
+                    validateApk(ctx, apk, code);
+                    Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", apk);
+                    intent = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive");
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } else {
+                    // 授权恰在检查与进入主线程之间变化，用户再次点即可继续。
+                    finish(ctx, call, "available", null);
                     return;
                 }
-                Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", apk);
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "application/vnd.android.package-archive");
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 ctx.startActivity(intent);
+                synchronized (LOCK) { lastLaunchAt = System.currentTimeMillis(); }
+                finish(ctx, call, allowed ? "installerOpened" : "awaitingPermission", null);
             } catch (Exception e) {
-                rejectOnUi("拉起安装界面失败：" + (e.getMessage() == null ? "unknown" : e.getMessage()));
+                finish(ctx, call, "error", "打开安装或授权界面失败：" + e.getMessage());
             }
         });
     }
 
-    private void resolveOnUi(JSObject data) {
-        if (downloadingCall != null) {
-            PluginCall c = downloadingCall;
-            downloadingCall = null;
-            getBridge().executeOnMainThread(() -> c.resolve(data));
-        }
-    }
-
-    private void rejectOnUi(String msg) {
-        if (downloadingCall != null) {
-            PluginCall c = downloadingCall;
-            downloadingCall = null;
-            getBridge().executeOnMainThread(() -> c.reject(msg));
-        }
+    private static void finish(Context ctx, PluginCall call, String nextStatus, String failure) {
+        MAIN.post(() -> {
+            JSObject data;
+            synchronized (LOCK) {
+                status = nextStatus;
+                error = failure == null ? "" : failure;
+                busy = false;
+                saveState(ctx);
+                data = snapshot(ctx);
+            }
+            emit("stateChanged", data);
+            if (failure == null) call.resolve(data);
+            else call.reject(failure, "UPDATE_FAILED", data);
+        });
     }
 }

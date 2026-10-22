@@ -377,7 +377,7 @@
     var slots = [];
     var found = 0;
     blocks.forEach(function (b) {
-      var lines = b.lines || [];
+      var lines = b.lines && b.lines.length ? b.lines : [{ text: b.text }];
       lines.forEach(function (l) {
         // ⚠️ 这里不能用 norm()：norm 会去掉空格，把「1 8:00~8:50」
         // 压成「18:00~8:50」，节号和时间粘连后就再也分不开（实测就是这个 bug）。
@@ -388,8 +388,10 @@
         if (!m) return;
         var idx = parseInt(m[1], 10) - 1;
         if (idx < 0 || idx > 11) return;
+        var from = +m[2] * 60 + +m[3], to = +m[4] * 60 + +m[5];
+        if (+m[2] > 23 || +m[4] > 23 || +m[3] > 59 || +m[5] > 59 || to <= from) return;
+        if (!slots[idx]) found++;
         slots[idx] = pad2(m[2]) + ':' + m[3] + '-' + pad2(m[4]) + ':' + m[5];
-        found++;
       });
     });
     // 至少要认出 8 节才算有效（避免误把别的数字当节次）
@@ -412,7 +414,8 @@
     var out = [];
     var CN_NUM_RE = /^第?[一二三四五六七八九十\d]{1,3}节?$/;   // 「十一」「第十二节」「3」
     blocks.forEach(function (b) {
-      var texts = (b.lines || []).map(function (l) { return norm(l.text); }).filter(Boolean);
+      var lines = b.lines && b.lines.length ? b.lines : [{ text: b.text }];
+      var texts = lines.map(function (l) { return norm(l.text); }).filter(Boolean);
       var name = pickCourseName(texts);
       if (!name || name.length < 2) return;
       // 表头/说明类
@@ -439,6 +442,9 @@
 
   function render() {
     var tt = ensureState();
+    var termInput = document.getElementById('ttTermStart');
+    if (termInput) termInput.value = tt && tt.termStart ? String(tt.termStart).slice(0, 10) : '';
+    updateTermHint();
     var grid = document.getElementById('ttGrid');
     var empty = document.getElementById('ttEmpty');
     if (!grid) return;
@@ -449,33 +455,34 @@
     }
     if (empty) empty.classList.add('hidden');
 
-    var html = '<div class="tt-corner"></div>';
-    for (var d = 1; d <= 7; d++) html += '<div class="tt-dayhead">' + DAY_CN[d] + '</div>';
+    var html = '<div class="tt-corner" style="grid-row:1;grid-column:1"></div>';
+    for (var d = 1; d <= 7; d++) html += '<div class="tt-dayhead" style="grid-row:1;grid-column:' + (d + 1) + '">' + DAY_CN[d] + '</div>';
     for (var r = 1; r <= 12; r++) {
-      html += '<div class="tt-rowhead">' + r + '</div>';
+      html += '<div class="tt-rowhead" style="grid-row:' + (r + 1) + ';grid-column:1">' + r + '</div>';
       for (var dd = 1; dd <= 7; dd++) {
         // 同一格可能有多门课（典型：单周课 + 双周课共用同一时段）。
         // 早前只取 cs[0] 渲染，第二门课完全不可见 —— 用户会以为课丢了。
         // 现在把该格所有课程都画出来，各自可点。
         var cs = tt.courses.filter(function (c) { return c.day === dd && r >= c.start && r <= c.end; });
-        if (!cs.length) { html += '<div class="tt-cell"></div>'; continue; }
+        if (!cs.length) { html += '<div class="tt-cell" style="grid-row:' + (r + 1) + ';grid-column:' + (dd + 1) + '"></div>'; continue; }
         // 找出「从本节开始」的课；若本格只是某门课的延续（没有新课开始），
         // 让位给起始那一行渲染（避免重复占格）。
         var starts = cs.filter(function (c) { return c.start === r; });
-        if (!starts.length) { html += '<div class="tt-cell"></div>'; continue; }
+        if (!starts.length) continue;
         // 用其中跨度最大的那门决定 grid-row span
         var maxEnd = Math.max.apply(null, starts.map(function (c) { return c.end; }));
         var span = Math.max(1, maxEnd - r + 1);
         var inner = '';
         starts.forEach(function (c) {
           var wk = c.week === 'odd' ? '单周' : c.week === 'even' ? '双周' : '';
-          inner += '<div class="tt-course-item" data-cid="' + c.id + '">'
+          inner += '<div class="tt-course-item" data-cid="' + esc(c.id) + '">'
             + '<div class="tt-cname">' + esc(c.name) + '</div>'
             + (c.room ? '<div class="tt-croom">' + esc(c.room) + '</div>' : '')
             + (wk ? '<div class="tt-cweek">' + wk + '</div>' : '')
             + '</div>';
         });
-        html += '<div class="tt-cell has-course" style="grid-row:span ' + span + '">' + inner + '</div>';
+        // 明确行列坐标；跨节单元格会占位，自动排布会把后面的星期和节次挤错。
+        html += '<div class="tt-cell has-course" style="grid-row:' + (r + 1) + ' / span ' + span + ';grid-column:' + (dd + 1) + '">' + inner + '</div>';
       }
     }
     grid.innerHTML = html;
@@ -519,9 +526,9 @@
     var tt = ensureState();
     var name = document.getElementById('ttEdName').value.trim();
     if (!name) { if (window.toast) toast('⚠️ 课程名不能为空', ''); return; }
-    var day = +document.getElementById('ttEdDay').value || 1;
-    var start = Math.max(1, Math.min(12, +document.getElementById('ttEdStart').value || 1));
-    var end = Math.max(start, Math.min(12, +document.getElementById('ttEdEnd').value || start));
+    var day = Math.max(1, Math.min(7, Math.floor(+document.getElementById('ttEdDay').value || 1)));
+    var start = lessonNumber(document.getElementById('ttEdStart').value, 1);
+    var end = Math.max(start, lessonNumber(document.getElementById('ttEdEnd').value, start));
     var data = {
       name: name,
       room: document.getElementById('ttEdRoom').value.trim(),
@@ -532,7 +539,9 @@
     };
     if (editingId) {
       var c = tt.courses.find(function (x) { return x.id === editingId; });
-      if (c) Object.assign(c, data);
+      if (!c) { closeEditor(); return; }
+      data.remindMin = c.remindMin == null ? 15 : c.remindMin;
+      Object.assign(c, data);
     } else {
       data.id = 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       tt.courses.push(data);
@@ -558,8 +567,24 @@
   /* ---------------- OCR 导入流程 ---------------- */
 
   var pendingCourses = null;
+  var pendingSlots = null;
+  var importRequest = 0;
+
+  function lessonNumber(value, fallback) {
+    return Math.max(1, Math.min(12, Math.floor(+value || fallback)));
+  }
+
+  function cancelImport() {
+    importRequest++;
+    pendingCourses = null;
+    pendingSlots = null;
+    var review = document.getElementById('ttReview');
+    if (review) review.classList.add('hidden');
+  }
 
   async function importFromImage(source) {
+    cancelImport();
+    var request = importRequest;
     var status = document.getElementById('ttOcrStatus');
     function say(t) { if (status) status.textContent = t; }
     var ocr = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.DdlOcr;
@@ -574,22 +599,20 @@
       else if (typeof source === 'string') payload.path = source;
       else if (source && source.base64) payload.base64 = source.base64;
       var res = await ocr.recognize(payload);
+      if (request !== importRequest) return;
       say('📐 正在还原课表网格…');
       var parsed = parseBlocks(res.blocks || []);
       if (!parsed.courses.length) {
         say('❌ 没识别出课程。可能是图片太模糊，或不是课表截图。可改用「手动添加」。');
         return;
       }
-      // 若识别到了课程时间表，覆盖默认节次
-      if (parsed.slots) {
-        var tt0 = ensureState();
-        tt0.slots = parsed.slots;
-        if (window.save) save();
-      }
+      // 预览不修改现有作息；和课程一起确认后再保存，取消必须保持原状态。
+      pendingSlots = parsed.slots;
       pendingCourses = parsed.courses;
       renderReview(parsed.courses, parsed.degraded);
       say('✅ 识别到 ' + parsed.courses.length + ' 门课，请核对后确认导入');
     } catch (e) {
+      if (request !== importRequest) return;
       say('❌ 识别失败：' + (e && e.message ? e.message : e));
     }
   }
@@ -627,43 +650,59 @@
     list.querySelectorAll('[data-del]').forEach(function (b) {
       b.addEventListener('click', function () {
         var i = +b.dataset.del;
+        readReview();
         pendingCourses.splice(i, 1);
         renderReview(pendingCourses, degraded);
       });
     });
   }
 
+  function readReview() {
+    if (!pendingCourses) return;
+    document.getElementById('ttReviewList').querySelectorAll('.tt-rv-row').forEach(function (row) {
+      var c = pendingCourses[+row.dataset.i];
+      if (!c) return;
+      c.name = row.querySelector('.tt-rv-name').value.trim();
+      c.room = row.querySelector('.tt-rv-room').value.trim();
+      c.day = Math.max(1, Math.min(7, Math.floor(+row.querySelector('.tt-rv-day').value || 1)));
+      c.start = lessonNumber(row.querySelector('.tt-rv-start').value, 1);
+      c.end = Math.max(c.start, lessonNumber(row.querySelector('.tt-rv-end').value, c.start));
+      c.week = row.querySelector('.tt-rv-week').value;
+    });
+  }
+
   function confirmImport() {
     if (!pendingCourses || !pendingCourses.length) return;
+    readReview();
+    if (!pendingCourses.some(function (c) { return !!c.name; })) {
+      if (window.toast) toast('⚠️ 课程名不能为空', '请填写课程名后再确认导入');
+      return;
+    }
     var tt = ensureState();
-    var list = document.getElementById('ttReviewList');
-    var rows = list.querySelectorAll('.tt-rv-row');
     var added = 0;
-    rows.forEach(function (row) {
-      // ⚠️ 用行上携带的原始下标取 pendingCourses，而不是 forEach 的 i。
-      // 用户删掉一行后重渲染，DOM 顺序与数组顺序会错位，
-      // 早前用 i 索引会把 note 串到别的课程上（实测会「张冠李戴」）。
-      var idx = parseInt(row.dataset.i, 10);
-      var c = (isNaN(idx) ? null : pendingCourses[idx]) || {};
-      var name = row.querySelector('.tt-rv-name').value.trim();
+    pendingCourses.forEach(function (c) {
+      var name = c.name;
       if (!name) return;
-      var start = Math.max(1, Math.min(12, +row.querySelector('.tt-rv-start').value || 1));
-      var end = Math.max(start, Math.min(12, +row.querySelector('.tt-rv-end').value || start));
+      var duplicate = tt.courses.some(function (existing) {
+        return existing.name === name && existing.room === c.room && existing.day === c.day
+          && existing.start === c.start && existing.end === c.end && existing.week === c.week;
+      });
+      if (duplicate) return;
       tt.courses.push({
         id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: name,
-        room: row.querySelector('.tt-rv-room').value.trim(),
-        day: +row.querySelector('.tt-rv-day').value || 1,
-        start: start, end: end,
-        week: row.querySelector('.tt-rv-week').value,
+        room: c.room,
+        day: c.day,
+        start: c.start, end: c.end,
+        week: c.week,
         note: c.note || '',
         remindMin: 15
       });
       added++;
     });
+    if (pendingSlots) tt.slots = pendingSlots;
     if (window.save) save();
-    pendingCourses = null;
-    document.getElementById('ttReview').classList.add('hidden');
+    cancelImport();
     document.getElementById('ttImportHint').classList.add('hidden');
     document.getElementById('ttOcrStatus').textContent = '';
     render();
@@ -744,13 +783,17 @@
       fileInput.addEventListener('change', async function () {
         var f = fileInput.files && fileInput.files[0];
         if (!f) return;
-        var b64 = await blobToDataUrl(f);
-        await importFromImage(b64);
-        fileInput.value = '';
+        try {
+          var b64 = await blobToDataUrl(f);
+          await importFromImage(b64);
+        } catch (e) {
+          document.getElementById('ttOcrStatus').textContent = '读取图片失败，请重新选择图片。';
+        } finally { fileInput.value = ''; }
       });
     }
     var cancelBtn = document.getElementById('ttOcrCancel');
     if (cancelBtn) cancelBtn.addEventListener('click', function () {
+      cancelImport();
       document.getElementById('ttImportHint').classList.add('hidden');
       document.getElementById('ttOcrStatus').textContent = '';
     });
@@ -768,8 +811,8 @@
     if (confirmBtn) confirmBtn.addEventListener('click', confirmImport);
     var reviewCancel = document.getElementById('ttReviewCancel');
     if (reviewCancel) reviewCancel.addEventListener('click', function () {
-      pendingCourses = null;
-      document.getElementById('ttReview').classList.add('hidden');
+      cancelImport();
+      document.getElementById('ttOcrStatus').textContent = '';
     });
     var edClose = document.getElementById('ttEdClose');
     if (edClose) edClose.addEventListener('click', closeEditor);
@@ -798,12 +841,15 @@
       var tt = ensureState();
       if (!tt || !tt.courses.length) return [];
       var d = new Date(dayTs);
+      if (isNaN(d.getTime())) return [];
+      var termStart = localDate(tt.termStart);
+      if (termStart && new Date(d.getFullYear(), d.getMonth(), d.getDate()) < termStart) return [];
       var jsDay = d.getDay();          // 0=周日
       var myDay = jsDay === 0 ? 7 : jsDay;
       var weekNo = weekNumber(tt, d);  // 第几周（用于单双周判定）
       var out = [];
       tt.courses.forEach(function (c) {
-        if (c.day !== myDay) return;
+        if (!c || c.day !== myDay || !Number.isInteger(c.start) || c.start < 1 || c.start > 12) return;
         // 单双周过滤：早前只在界面上显示「单周/双周」标签，
         // 生成提醒时完全没判断 —— 结果单周课在双周也会提醒、反之亦然。
         // 这是「提醒有时准有时不准」的一个真实成因（周期性课表尤其明显）。
@@ -811,14 +857,17 @@
         if (c.week === 'even' && weekNo % 2 === 1) return;
         var slot = tt.slots[c.start - 1] || DEFAULT_SLOTS[c.start - 1];
         var m = String(slot).match(/(\d{1,2}):(\d{2})/);
-        if (!m) return;
+        if (!m || +m[1] > 23 || +m[2] > 59) return;
         var at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), +m[1], +m[2], 0).getTime();
-        var remind = at - (c.remindMin || 15) * 60000;
-        if (remind <= Date.now()) return;
+        var minutes = c.remindMin == null ? 15 : Number(c.remindMin);
+        if (!Number.isFinite(minutes) || minutes < 0) minutes = 15;
+        var remind = at - minutes * 60000;
+        // 前台也用这个函数取到点提醒，必须保留刚过去的补弹窗口。
+        if (remind < Date.now() - 15 * 60000) return;
         out.push({
           key: 'tt:' + c.id + ':' + at,
           at: remind,
-          title: '📚 ' + (c.remindMin || 15) + ' 分钟后上课',
+          title: minutes ? '📚 ' + minutes + ' 分钟后上课' : '📚 上课时间到',
           body: c.name + (c.room ? ' · ' + c.room : '') + ' · 第' + c.start + '-' + c.end + '节 ' + slot
             + (c.week === 'odd' ? '（单周）' : c.week === 'even' ? '（双周）' : ''),
           kind: 'daily'
@@ -827,6 +876,13 @@
       return out;
     }
   };
+
+  function localDate(value) {
+    var m = typeof value === 'string' && value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    var d = new Date(+m[1], +m[2] - 1, +m[3]);
+    return d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 && d.getDate() === +m[3] ? d : null;
+  }
 
   /**
    * 计算某天是学期第几周（用于单双周判定）。
@@ -842,8 +898,8 @@
   function weekNumber(tt, d) {
     var base = null;
     if (tt.termStart) {
-      base = new Date(tt.termStart);
-      if (!isNaN(base.getTime())) {
+      base = localDate(tt.termStart);
+      if (base) {
         // 归一到那一周的周一
         var bd = base.getDay() === 0 ? 7 : base.getDay();
         base = new Date(base.getFullYear(), base.getMonth(), base.getDate() - (bd - 1));

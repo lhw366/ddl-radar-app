@@ -6,6 +6,8 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.media.AudioAttributes;
 import android.net.Uri;
+import android.os.Build;
+import androidx.core.app.NotificationManagerCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -35,6 +37,7 @@ public class DdlNotifyPlugin extends Plugin {
         Integer importance = call.getInt("importance");
         Boolean vibration = call.getBoolean("vibration");
         String sound = call.getString("sound");
+        Boolean force = call.getBoolean("force", false);
 
         if (id == null || name == null || importance == null) {
             call.reject("id/name/importance required");
@@ -42,6 +45,10 @@ public class DdlNotifyPlugin extends Plugin {
         }
         try {
             Context ctx = getContext();
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                call.resolve(new JSObject().put("ok", true).put("reused", true));
+                return;
+            }
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) { call.reject("no notification manager"); return; }
 
@@ -50,15 +57,15 @@ public class DdlNotifyPlugin extends Plugin {
             // 对该通道的调整（静音、改成其他铃声、关闭横幅）全部作废，
             // 而且删通道会让已排定的提醒失去通道、到点静默。
             // 现在：通道已存在就复用，不删除；只有用户主动点「修复」才重建。
-            boolean force = Boolean.TRUE.equals(call.getBoolean("force", false));
             NotificationChannel existing = nm.getNotificationChannel(id);
-            if (existing != null && !force) {
+            if (existing != null && Boolean.TRUE.equals(force)) {
+                nm.deleteNotificationChannel(id);
+                existing = null;
+            }
+            if (existing != null) {
                 JSObject ret = new JSObject().put("ok", true).put("reused", true);
                 call.resolve(ret);
                 return;
-            }
-            if (existing != null) {
-                nm.deleteNotificationChannel(id);
             }
             NotificationChannel ch = new NotificationChannel(id, name, importance);
             ch.setShowBadge(true);
@@ -72,8 +79,9 @@ public class DdlNotifyPlugin extends Plugin {
             }
 
             if (sound != null && !sound.isEmpty()) {
+                int dot = sound.lastIndexOf('.');
                 Uri soundUri = Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/" +
-                        sound.substring(0, sound.lastIndexOf('.')));
+                        (dot > 0 ? sound.substring(0, dot) : sound));
                 // USAGE_NOTIFICATION：走通知/铃声音量流，音量键可直接调节。
                 // 早前用 USAGE_ALARM（闹钟音量流），音量键控制不了，
                 // 这是「提示音大小不能用音量键控制」的根因。
@@ -97,9 +105,7 @@ public class DdlNotifyPlugin extends Plugin {
     /** 通知是否可用（系统级真相，含 Android 13+ 运行时权限与用户手动关闭） */
     @PluginMethod
     public void notifyStatus(PluginCall call) {
-        NotificationManager nm = (NotificationManager) getContext()
-                .getSystemService(Context.NOTIFICATION_SERVICE);
-        boolean granted = nm != null && nm.areNotificationsEnabled();
+        boolean granted = NotificationManagerCompat.from(getContext()).areNotificationsEnabled();
         call.resolve(new JSObject().put("granted", granted));
     }
 
@@ -129,6 +135,10 @@ public class DdlNotifyPlugin extends Plugin {
     @PluginMethod
     public void openChannelSettings(PluginCall call) {
         try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                openAppDetails(call);
+                return;
+            }
             String id = call.getString("id", "ddlr_full");
             android.content.Intent i = new android.content.Intent(
                     android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
@@ -154,8 +164,8 @@ public class DdlNotifyPlugin extends Plugin {
                     .getSystemService(Context.NOTIFICATION_SERVICE);
             JSObject ret = new JSObject();
             List<String> ids = new ArrayList<>();
-            for (NotificationChannel ch : nm.getNotificationChannels()) {
-                ids.add(ch.getId());
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null) {
+                for (NotificationChannel ch : nm.getNotificationChannels()) ids.add(ch.getId());
             }
             ret.put("ids", ids);
             call.resolve(ret);

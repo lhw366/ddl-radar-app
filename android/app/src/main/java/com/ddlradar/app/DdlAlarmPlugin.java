@@ -53,12 +53,15 @@ public class DdlAlarmPlugin extends Plugin {
                 call.reject("alarms is required (use [] to clear)");
                 return;
             }
+            synchronized (AlarmScheduler.class) {
             JSONArray wanted = new JSONArray();
             HashMap<Long, JSONObject> wantedMap = new HashMap<>();
             long nextAt = 0;
 
             for (int i = 0; i < in.length(); i++) {
                 JSONObject w = normalize(in.optJSONObject(i));
+                if (w == null) continue;
+                w = AlarmScheduler.currentOccurrence(ctx, w, System.currentTimeMillis());
                 if (w == null) continue;
                 long id = w.optLong("id");
                 if (wantedMap.containsKey(id)) continue; // id 去重
@@ -101,6 +104,7 @@ public class DdlAlarmPlugin extends Plugin {
                 for (int i = 0; i < wanted.length(); i++) {
                     JSONObject w = wanted.getJSONObject(i);
                     JSONObject s = storedMap.get(w.optLong("id"));
+                    if (AlarmScheduler.wasDelivered(ctx, w.optLong("id"), w.optLong("at"))) continue;
                     boolean inActiveWindow = i < AlarmScheduler.MAX_ACTIVE_ALARMS;
                     boolean wasScheduled = s != null && s.optBoolean("scheduled", true);
                     if (inActiveWindow) {
@@ -127,28 +131,16 @@ public class DdlAlarmPlugin extends Plugin {
                 for (Long id : storedMap.keySet()) {
                     if (wantedMap.containsKey(id)) continue;
                     JSONObject s = storedMap.get(id);
-                    // 已到点（含即将到点）的保留：可能正在投递中，撤掉就丢提醒
-                    long at = s == null ? 0 : s.optLong("at", 0);
-                    if (at > nowMs + 3000) {
-                        if (s == null || s.optBoolean("scheduled", true)) {
-                            AlarmScheduler.cancel(ctx, id);
-                            cancelled++;
-                        }
+                    if (s == null || s.optBoolean("scheduled", true)) {
+                        AlarmScheduler.cancel(ctx, id);
+                        cancelled++;
                     }
                 }
                 // Persist both active alarms and their queued overflow.
                 JSONArray persist = new JSONArray();
-                for (int i = 0; i < wanted.length(); i++) persist.put(wanted.getJSONObject(i));
-                for (Long id : storedMap.keySet()) {
-                    if (wantedMap.containsKey(id)) continue;
-                    JSONObject s = storedMap.get(id);
-                    if (s == null) continue;
-                    long at = s.optLong("at", 0);
-                    if (at > nowMs + 3000) continue;
-                    if (at < nowMs - 120000) continue;
-                    if (!s.optBoolean("scheduled", true)) continue;
-                    try { s.put("scheduled", true); } catch (Exception ignore) {}
-                    persist.put(s);
+                for (int i = 0; i < wanted.length(); i++) {
+                    JSONObject item = wanted.getJSONObject(i);
+                    if (!AlarmScheduler.wasDelivered(ctx, item.optLong("id"), item.optLong("at"))) persist.put(item);
                 }
                 AlarmScheduler.save(ctx, persist);
             }
@@ -161,6 +153,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("queued", queued);
             ret.put("nextAt", nextAt);
             call.resolve(ret);
+            }
         } catch (Exception e) {
             call.reject("apply failed: " + e.getMessage());
         }
@@ -253,7 +246,7 @@ public class DdlAlarmPlugin extends Plugin {
             }
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
             long sysNextAt = 0;
-            if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            if (am != null) {
                 AlarmManager.AlarmClockInfo info = am.getNextAlarmClock();
                 if (info != null) sysNextAt = info.getTriggerTime();
             }
@@ -328,10 +321,17 @@ public class DdlAlarmPlugin extends Plugin {
         Object idv = in.opt("id");
         Object atv = in.opt("at");
         if (!(idv instanceof Number) || !(atv instanceof Number)) return null;
+        long id = ((Number) idv).longValue();
+        long at = ((Number) atv).longValue();
+        if (id < 0 || id >= Integer.MAX_VALUE || at <= 0) return null;
         try {
             JSONObject o = new JSONObject();
-            o.put("id", ((Number) idv).longValue());
-            o.put("at", ((Number) atv).longValue());
+            o.put("id", id);
+            o.put("at", at);
+            int repeatDays = in.optInt("repeatDays", 0);
+            if (repeatDays != 0 && repeatDays != 1 && repeatDays != 7 && repeatDays != 14) return null;
+            o.put("repeatDays", repeatDays);
+            o.put("repeatUntil", Math.max(0, in.optLong("repeatUntil", 0)));
             o.put("v", SCHED_VER);
             o.put("title", in.optString("title", ""));
             o.put("body", in.optString("body", ""));
@@ -347,6 +347,8 @@ public class DdlAlarmPlugin extends Plugin {
     /** 同 id 下比对规格版本、触发时刻与文案；任一变化都重排（更新 PendingIntent extras） */
     private boolean sameSpec(JSONObject a, JSONObject b) {
         return a.optInt("v", 1) == b.optInt("v", 1)
+                && a.optInt("repeatDays", 0) == b.optInt("repeatDays", 0)
+                && a.optLong("repeatUntil", 0) == b.optLong("repeatUntil", 0)
                 && a.optLong("at") == b.optLong("at")
                 && a.optString("title", "").equals(b.optString("title", ""))
                 && a.optString("body", "").equals(b.optString("body", ""))

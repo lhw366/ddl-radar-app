@@ -28,7 +28,7 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- 系统闹钟触发 → 前台服务弹提醒（O+ 直拉 FGS；pre-O 经广播委托） -->
+        <!-- 系统闹钟触发后直接在接收器投递通知，不依赖前台服务是否可启动。 -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
 
         <!-- specialUse：本服务不播放媒体，只做提醒守护与到点投递。
@@ -67,6 +67,7 @@
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
     </application>
