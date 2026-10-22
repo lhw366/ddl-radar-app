@@ -656,6 +656,7 @@ function saveEditor() {
   if (editingId) {
     Object.assign(S.tasks.find((x) => x.id === editingId), data);
     S.fired = S.fired.filter((k) => !k.startsWith(editingId + '|')); // 时间变了，提醒重新排
+    invalidateFiredCache(); // 过滤后长度可能不变，必须显式失效 Set 缓存
   } else {
     S.tasks.push(Object.assign({ id: uid(), done: false, createdAt: Date.now() }, data));
     askNotify();
@@ -790,15 +791,33 @@ function ymdOf(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/**
+ * 让 tickReminders 的 Set 缓存失效。
+ * 凡是「整体替换 S.fired」的地方都必须调用——因为替换后数组长度可能恰好
+ * 与替换前相同，而 tickReminders 的缓存判据包含长度，会误判为「没变」。
+ */
+function invalidateFiredCache() {
+  tickReminders._set = null;
+  tickReminders._setSize = -1;
+  tickReminders._arr = null;
+}
+
 function tickReminders() {
   const now = Date.now();
   const native = !!(window.NativeNotify && window.NativeNotify.available &&
     window.NativeNotify.available() && remindMode() !== 'silent');
   // S.fired 用 Set 索引：早前是数组 + includes()，O(n) 线性查找，
   // 且每轮都要扫全部任务 × 全部提醒点，任务一多就明显卡顿耗电。
-  if (!tickReminders._set || tickReminders._setSize !== S.fired.length) {
+  // ⚠️ 缓存失效判据必须用「引用 + 长度」而不是只看长度：
+  // 编辑任务时会执行 S.fired = S.fired.filter(...)（L658），过滤后长度
+  // 有可能与之前相同（比如删掉 1 个又补上 1 个），只看长度会漏掉内容变化，
+  // 导致已移除的 key 仍留在缓存里 → 该提醒永远不再弹。
+  // 因此每次外部整体替换 S.fired 时都会重置 tickReminders._set（见 invalidateFiredCache）。
+  if (!tickReminders._set || tickReminders._setSize !== S.fired.length
+      || tickReminders._arr !== S.fired) {
     tickReminders._set = new Set(S.fired);
     tickReminders._setSize = S.fired.length;
+    tickReminders._arr = S.fired;
   }
   const fired = tickReminders._set;
   let dirty = false;
@@ -870,7 +889,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1147,7 +1166,7 @@ function bindSettings() {
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('wipeBtn').addEventListener('click', () => {
     if (confirm('确定清空所有事项和数据吗？此操作不可恢复。')) {
-      S.tasks = []; S.fired = []; save(); renderAll(); toast('🧹 已清空', '一切从头开始');
+      S.tasks = []; S.fired = []; invalidateFiredCache(); save(); renderAll(); toast('🧹 已清空', '一切从头开始');
     }
   });
   $('demoBtn').addEventListener('click', loadDemo);
@@ -1212,7 +1231,7 @@ function loadDemo() {
     { id: uid(), name: '写周报', detail: '上周的周报模板在邮箱里。', quadrant: 'q3', isRange: false, startAt: null, dueAt: now - 6 * H, tiers: { 120: true, 60: true, 30: true, 5: true }, custom: [], daily: false, done: false, createdAt: now - 2 * D },
     { id: uid(), name: '给妈妈打电话', detail: '聊了半小时，她说家里桂花开了。', quadrant: 'q2', isRange: false, startAt: null, dueAt: now - D, tiers: { 120: false, 60: false, 30: false, 5: false }, custom: [], daily: false, done: true, doneAt: now - 20 * H, createdAt: now - 2 * D }
   ];
-  S.fired = []; save(); renderAll();
+  S.fired = []; invalidateFiredCache(); save(); renderAll();
   toast('🐟 示例数据已填入', '到处点点看看：展开细节、切象限、换皮肤、翻日历');
 }
 
