@@ -86,7 +86,7 @@ public class DdlOcrPlugin extends Plugin {
         getRecognizer().process(image)
                 .addOnSuccessListener(result -> {
                     try {
-                        call.resolve(toJs(result));
+                        call.resolve(toJs(result, finalBmp));
                     } catch (Exception e) {
                         call.reject("解析识别结果失败：" + msg(e));
                     } finally {
@@ -100,9 +100,11 @@ public class DdlOcrPlugin extends Plugin {
     }
 
     /** 把 ML Kit 结果转成 JS 结构（含坐标，供前端做网格还原） */
-    private JSObject toJs(Text result) {
+    private JSObject toJs(Text result, Bitmap source) {
         JSObject out = new JSObject();
         out.put("text", result.getText());
+        out.put("imageWidth", source.getWidth());
+        out.put("imageHeight", source.getHeight());
 
         JSArray blocks = new JSArray();
         for (Text.TextBlock blk : result.getTextBlocks()) {

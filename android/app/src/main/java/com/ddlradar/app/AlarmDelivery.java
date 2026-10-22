@@ -9,6 +9,10 @@ import android.content.Intent;
 import android.media.AudioAttributes;
 import android.net.Uri;
 import android.os.Build;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
+import android.util.Log;
 
 import org.json.JSONObject;
 
@@ -26,13 +30,42 @@ final class AlarmDelivery {
             JSONObject item = AlarmScheduler.findOccurrence(context, id, at);
             if (item == null || AlarmScheduler.wasDelivered(context, id, at)) return false;
             if (at > System.currentTimeMillis() + 1000) return false;
+            String channelId = item.optString("channel", "ddlr_full");
+            vibrateForMode(context, channelId);
             post(context, id, item.optString("title", "DDL雷达"),
-                    item.optString("body", ""), item.optString("channel", "ddlr_full"));
+                    item.optString("body", ""), channelId);
             AlarmScheduler.recordDelivered(context, id, at);
             AlarmScheduler.markFired(context, id,
                     intent.getIntExtra("slot", 0) == 1 ? "exact" : "clock");
             AlarmScheduler.completeOccurrence(context, item);
             return true;
+        }
+    }
+
+    /**
+     * Vibration is executed by the receiver itself. Notification-channel
+     * vibration is user-editable and several ColorOS builds silently ignore
+     * the channel pattern while allowing direct vibration from an exact alarm.
+     */
+    private static void vibrateForMode(Context context, String channelId) {
+        if ("ddlr_ring".equals(channelId)) return;
+        try {
+            Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager manager = (VibratorManager) context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager == null ? null : manager.getDefaultVibrator();
+            } else {
+                vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            long[] pattern = new long[]{0, 350, 150, 350, 150, 650};
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1));
+            } else {
+                vibrator.vibrate(pattern, -1);
+            }
+        } catch (Exception error) {
+            Log.w("DdlAlarm", "Reminder vibration unavailable", error);
         }
     }
 
@@ -124,5 +157,23 @@ final class AlarmDelivery {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         builder.addAction(action(context, "知道了", acknowledge));
         manager.notify(notificationId(id), builder.build());
+        launchFullScreenFallback(context, manager, alarm);
+    }
+
+    private static void launchFullScreenFallback(Context context, NotificationManager manager, Intent alarm) {
+        try {
+            if (Build.VERSION.SDK_INT >= 34 && !manager.canUseFullScreenIntent()) return;
+            android.os.PowerManager power = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            android.app.KeyguardManager keyguard =
+                    (android.app.KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+            boolean screenOff = power != null && !power.isInteractive();
+            boolean locked = keyguard != null && keyguard.isKeyguardLocked();
+            if (!screenOff && !locked) return;
+            alarm.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            context.startActivity(alarm);
+        } catch (Exception error) {
+            // The notification's full-screen PendingIntent remains the system-approved route.
+            Log.w("DdlAlarm", "Direct full-screen launch unavailable", error);
+        }
     }
 }

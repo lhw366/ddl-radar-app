@@ -1,6 +1,7 @@
 package com.ddlradar.app;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -101,6 +102,16 @@ public class AlarmActivity extends Activity {
             w.addFlags(WindowManagerFlags.keepScreenOn);
             w.setStatusBarColor(Color.parseColor("#1b2140"));
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // singleTask avoids duplicate lock-screen activities when both the
+        // notification route and direct fallback fire. Rebuild for the newest
+        // reminder when an activity is already visible.
+        recreate();
     }
 
     private int dp(int v) {

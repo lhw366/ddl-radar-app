@@ -42,7 +42,7 @@
    *  3) 其余文本块按中心点落格；同一格内多行合并成一门课
    *  4) 从合并文本里解析：课程名（首行）、教室（括号内）、单双周
    */
-  function parseBlocks(blocks) {
+  function parseBlocks(blocks, imageMeta) {
     if (!Array.isArray(blocks) || !blocks.length) return { courses: [], slots: null };
 
     // ── 1) 找星期表头 ──
@@ -52,7 +52,7 @@
     blocks.forEach(function (b) {
       var t = norm(b.text);
       var m = t.match(dayRe);
-      if (m) dayHeads.push({ day: cnNum[m[2]], cx: cxOf(b) });
+      if (m) dayHeads.push({ day: cnNum[m[2]], cx: cxOf(b), top: b.top, bottom: b.bottom });
     });
     // 去重（同一列可能有「星期一」和别的块）
     var dayMap = {};
@@ -62,18 +62,34 @@
 
     // ── 2) 找节次行标签 ──
     var rowHeads = [];
-    var jieRe = /^第?([一二三四五六七八九十]+)节?$/;
+    var jieRe = /^第?([一二三四五六七八九十]{1,3})(?:大)?节?$/;
     blocks.forEach(function (b) {
-      var t = norm(b.text);
-      var m = t.match(jieRe);
-      if (!m) return;
-      var n = cnToNum(m[1]);
-      if (n >= 1 && n <= 12) rowHeads.push({ n: n, y: cyOf(b) });
+      var candidates = [b.text];
+      if (b.lines && b.lines.length > 1) {
+        candidates.push(b.lines.map(function (line) { return line.text || ''; }).join(''));
+      }
+      candidates.forEach(function (value) {
+        var t = norm(value);
+        var m = t.match(jieRe);
+        if (!m) return;
+        // 单独一个「四」不能算行标签；必须带「第」前缀或「节」后缀。
+        if (!/^第/.test(t) && !/节$/.test(t)) return;
+        var n = cnToNum(m[1]);
+        if (n >= 1 && n <= 12) rowHeads.push({ n: n, y: cyOf(b) });
+      });
     });
     var rowMap = {};
     rowHeads.forEach(function (r) { if (rowMap[r.n] === undefined) rowMap[r.n] = r.y; });
     var rows = Object.keys(rowMap).map(function (n) { return { n: +n, y: rowMap[n] }; })
       .sort(function (a, b) { return a.y - b.y; });
+    var rowsInferred = false;
+    if (rows.length < 8 && cols.length >= 2) {
+      var inferred = inferRows(blocks, dayHeads, imageMeta);
+      if (inferred.length >= 2) {
+        rows = inferred;
+        rowsInferred = true;
+      }
+    }
 
     // ── 3) 解析「课程时间」表（若有），用于覆盖默认节次时刻 ──
     var slots = parseSlotTimes(blocks);
@@ -106,17 +122,29 @@
         if (/^\d{1,2}[:：]\d{2}\s*[~～\-—至]/.test(t)) return;
         // 步行时间/课间说明等杂项
         if (/(min|分钟|课间|下课|上课时间[:：])/.test(t)) return;
-        var x = cxOf(ln), y = cyOf(ln);
+        var x = cxOf(ln);
+        var rowCentreGap = rows.length > 1 ? Math.abs(rows[1].y - rows[0].y) : 0;
+        // Text usually starts inside its cell but a long wrapped line can cross
+        // the lower border. Assign by its top with a small tolerance so room
+        // and note lines stay with the course they were printed under.
+        var y = ln.top != null ? ln.top - rowCentreGap * 0.05 : cyOf(ln);
         var day = pickCol(cols, x, rows);
         if (!day) return;
         var rowIdx = pickRow(rows, y);
         if (rowIdx < 0) return;
         var key = day + '|' + rowIdx;
-        if (!cells[key]) cells[key] = { day: day, row: rows[rowIdx].n, texts: [], top: 1e9, bottom: -1, spanBottom: -1, blockId: bi, blockIds: {}, byBlock: {} };
+        if (!cells[key]) cells[key] = {
+          day: day, row: rows[rowIdx].n, texts: [], top: 1e9, bottom: -1,
+          spanBottom: -1, blockId: bi, blockIds: {}, byBlock: {}, byBlockBounds: {}
+        };
         cells[key].blockIds[bi] = 1;
         // 按 block 分别记文本：同一格里「单周课」和「双周课」是两个 block，
         // 各自有独立的课名/教室，混在一起会让 pickCourseName 只挑出一个。
         (cells[key].byBlock[bi] = cells[key].byBlock[bi] || []).push(t);
+        var blockBounds = cells[key].byBlockBounds[bi] || { top: 1e9, bottom: -1 };
+        blockBounds.top = Math.min(blockBounds.top, ln.top != null ? ln.top : y);
+        blockBounds.bottom = Math.max(blockBounds.bottom, ln.bottom != null ? ln.bottom : y);
+        cells[key].byBlockBounds[bi] = blockBounds;
         // 同一格内避免重复推入完全相同的文本
         if (cells[key].texts.indexOf(t) < 0) cells[key].texts.push(t);
         var bb = ln.bottom || y;
@@ -143,13 +171,63 @@
       // 按 block 拆成多条，避免后续按格合并把第二门课吞掉。
       var bIds = Object.keys(c.blockIds || {});
       if (bIds.length > 1) {
-        bIds.forEach(function (bid) {
+        var parts = bIds.map(function (bid) {
+          var texts = ((c.byBlock && c.byBlock[bid]) || []).slice();
+          var bounds = (c.byBlockBounds && c.byBlockBounds[bid]) || { top: c.top, bottom: c.bottom };
+          var name = pickCourseName(texts);
+          var meaningful = isMeaningfulCourseName(name);
+          return {
+            blockId: +bid,
+            texts: texts,
+            name: name,
+            meaningful: meaningful,
+            top: bounds.top,
+            bottom: bounds.bottom
+          };
+        });
+        var anchors = parts.filter(function (part) { return part.meaningful; });
+        if (anchors.length > 1) {
+          var groups = anchors.map(function (anchor) {
+            return {
+              day: c.day, row: c.row, top: anchor.top, bottom: anchor.bottom,
+              spanBottom: anchor.bottom, blockId: anchor.blockId, texts: []
+            };
+          });
+          parts.forEach(function (part) {
+            var bestIndex = 0, bestDistance = Number.MAX_VALUE;
+            anchors.forEach(function (anchor, index) {
+              var distance = Math.abs((part.top + part.bottom) / 2 - (anchor.top + anchor.bottom) / 2);
+              if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = index;
+              }
+            });
+            var group = groups[bestIndex];
+            group.texts = group.texts.concat(part.texts);
+            group.top = Math.min(group.top, part.top);
+            group.bottom = Math.max(group.bottom, part.bottom);
+          });
+          groups.forEach(function (group) {
+            (byDay[c.day] = byDay[c.day] || []).push(group);
+          });
+        } else {
+          // All fields belong to one course. Splitting by block made room and
+          // note lines become separate bogus courses on real ML Kit output.
+          var allTexts = [];
+          parts.forEach(function (part) {
+            part.texts.forEach(function (text) {
+              if (allTexts.indexOf(text) < 0) allTexts.push(text);
+            });
+          });
           (byDay[c.day] = byDay[c.day] || []).push({
             day: c.day, row: c.row, top: c.top, bottom: c.bottom,
-            spanBottom: c.spanBottom, blockId: +bid,
-            texts: ((c.byBlock && c.byBlock[bid]) || c.texts).slice()
+            // Only the text block that owns the course title is trusted for
+            // merged-cell height. Long wrapped notes may cross a row border.
+            spanBottom: anchors.length === 1 ? anchors[0].bottom : -1,
+            blockId: anchors.length === 1 ? anchors[0].blockId : null,
+            texts: allTexts
           });
-        });
+        }
       } else {
         (byDay[c.day] = byDay[c.day] || []).push(c);
       }
@@ -162,8 +240,7 @@
         var name = pickCourseName(c.texts);
         var prev = merged[merged.length - 1];
         // 「本格没有真正的课程名」= 只有教室/备注这类附属行。
-        var nameIsMeaningful = !!name && !/^[（(]/.test(name)
-          && !/^(备注|考试|每周|单周|双周)/.test(name);
+        var nameIsMeaningful = isMeaningfulCourseName(name);
         // 行号是否「够近」：中间行可能没有文字（合并单元格里文字垂直居中），
         // 所以不能要求严格 +1。同一 block 切出来的行天然属于同一门课。
         var sameBlock = prev && c.blockId != null && prev.blockId === c.blockId;
@@ -171,17 +248,16 @@
 
         if (prev && !nameIsMeaningful && (sameBlock || adjacent)) {
           // 附属行：并入上一门课
-          prev.end = Math.max(prev.end, c.row);
+          // A wrapped note can cross into the next visual row; auxiliary text
+          // must not turn a 1-period course into a multi-period course.
+          if (sameBlock) prev.end = Math.max(prev.end, c.row);
           prev.raw += ' ' + joined;
-          if (c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
+          if (sameBlock && c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
           c.texts.forEach(function (t) { if (prev.texts.indexOf(t) < 0) prev.texts.push(t); });
           return;
         }
         var sameName = prev && prev.name === name;
-        var shared = prev && prev.texts && c.texts.some(function (t) {
-          return prev.texts.indexOf(t) >= 0;
-        });
-        if (prev && (sameBlock || (adjacent && (sameName || shared)))) {
+        if (prev && (sameBlock || (adjacent && sameName))) {
           prev.end = Math.max(prev.end, c.row);
           prev.raw += ' ' + joined;
           if (c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
@@ -204,19 +280,13 @@
         // 只按「有文字的格」合并会少算节数（实测 5-8 节被算成 5-6 节）。
         // 这里看该课程最初那个 block 的底边落在哪一行，取更大者。
         if (m.spanBottom > 0) {
-          for (var ri = 0; ri < rows.length; ri++) {
-            // 行边界：当前行 y 与下一行 y 的中点
-            var nextY = (ri + 1 < rows.length) ? (rows[ri].y + rows[ri + 1].y) / 2 : rows[ri].y + 1e6;
-            if (m.spanBottom >= rows[ri].y && m.spanBottom < nextY) {
-              // 约束：不能越过下一门课的起始节
-              var cap = (m.nextStart || 13) - 1;
-              var target = Math.min(rows[ri].n, cap);
-              if (target > m.end) m.end = target;
-              break;
-            }
-          }
+          var spanIndex = pickRow(rows, m.spanBottom);
+          // 约束：不能越过下一门课的起始节
+          var cap = (m.nextStart || 13) - 1;
+          var target = Math.min(rows[spanIndex].n, cap);
+          if (target > m.end) m.end = target;
         }
-        var info = parseCourseInfo(m.raw, m.name);
+        var info = parseCourseInfo(m.raw, m.name, m.texts);
         courses.push({
           id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           name: info.name || m.name || '未命名课程',
@@ -240,7 +310,7 @@
       return true;
     });
     courses.sort(function (a, b) { return a.day - b.day || a.start - b.start; });
-    return { courses: courses, slots: slots, degraded: false };
+    return { courses: courses, slots: slots, degraded: false, rowsInferred: rowsInferred };
   }
 
   function cxOf(b) { return b.cx != null ? b.cx : ((b.left || 0) + (b.right || 0)) / 2; }
@@ -255,6 +325,30 @@
     if (ten === 0) return 10 + (({ 一:1, 二:2, 三:3, 四:4, 五:5 })[s[1]] || 0);
     if (ten > 0) return (({ 一:1, 二:2, 三:3 })[s[0]] || 0) * 10 + (({ 一:1, 二:2, 三:3, 四:4 })[s[1]] || 0);
     return 0;
+  }
+
+  /**
+   * Some web timetables render section labels as vertical individual glyphs.
+   * ML Kit may return those as separate lines/blocks and OCR can omit several.
+   * Once weekday columns are known, use the image's table extent and the app's
+   * fixed 12-period model to recover equal-height row centres.
+   */
+  function inferRows(blocks, dayHeads, imageMeta) {
+    var height = imageMeta && Number(imageMeta.height);
+    if (!(height > 100) || !dayHeads.length) return [];
+    var headerBottom = 0;
+    dayHeads.forEach(function (head) {
+      if (Number.isFinite(head.bottom)) headerBottom = Math.max(headerBottom, head.bottom);
+    });
+    var top = headerBottom > 0 ? headerBottom : height * 0.02;
+    var bottom = height * 0.97;
+    if (bottom <= top + 120) return [];
+    var rowHeight = (bottom - top) / 12;
+    var out = [];
+    for (var i = 0; i < 12; i++) {
+      out.push({ n: i + 1, y: top + rowHeight * (i + 0.5) });
+    }
+    return out;
   }
 
   /**
@@ -281,9 +375,12 @@
   /** 给定 y，返回落在哪一行（返回索引） */
   function pickRow(rows, y) {
     if (!rows.length) return -1;
-    if (y < rows[0].y) return 0;
+    // Assign by cell boundaries, not row-label centres. The old centre-to-
+    // centre interval put every line in the upper half of a cell into the
+    // previous period, collapsing second periods into the first.
+    if (y < (rows[0].y + rows[1].y) / 2) return 0;
     for (var i = 0; i < rows.length - 1; i++) {
-      if (y >= rows[i].y && y < rows[i + 1].y) return i;
+      if (y < (rows[i].y + rows[i + 1].y) / 2) return i;
     }
     return rows.length - 1;
   }
@@ -299,47 +396,118 @@
    * 策略：优先取「不以括号开头、不含备注/考试/每周等关键词」的最长行。
    */
   function pickCourseName(texts) {
-    var best = '';
     for (var i = 0; i < texts.length; i++) {
-      var t = texts[i];
+      var t = String(texts[i] == null ? '' : texts[i]).trim();
       if (!t) continue;
-      if (/^[（(]/.test(t)) continue;                       // 以括号开头：教室或备注
-      if (/^(备注|考试|上课|每周|单周|双周|考试方式|考试时间)/.test(t)) continue;
-      if (/^\d+$/.test(t)) continue;
-      if (/^[一二三四五六七八九十\d]+节/.test(t)) continue;
-      if (t.length > best.length) best = t;
+      if (!isMeaningfulCourseName(t)) continue;
+      // The first strong line is the title in a timetable cell. Choosing the
+      // longest line repeatedly promoted notes and room lists instead.
+      return t;
     }
-    // 全被过滤掉时退回第一行里最长的（总比空好）
-    if (!best) {
-      for (var j = 0; j < texts.length; j++) {
-        if (texts[j] && texts[j].length > best.length && !/^(备注|考试)/.test(texts[j])) best = texts[j];
-      }
-    }
-    return best || (texts[0] || '');
+    // Returning no name is safer than turning a room/note continuation into a
+    // fake course. The review screen then asks the user to correct the title.
+    return '';
+  }
+
+  function isMeaningfulCourseName(value) {
+    var t = norm(value);
+    if (!t || t.length < 2) return false;
+    if (/^[（(]/.test(t)) return false;
+    if (/(备注|考试|上课时间|上课教室|每周|单周|双周|学分|教师|教学班|课程代码)/.test(t)) return false;
+    if (/^\d+$/.test(t)) return false;
+    if (/^第?[一二三四五六七八九十\d]+(?:大)?节?$/.test(t)) return false;
+    // Room-list continuations such as "308、理教419、理教215）每周"
+    // are often longer than the actual course title.
+    if (/(教|楼|馆|室|机房|中心|厅|场|廊)/.test(t) && /[、，,）)]/.test(t)) return false;
+    if (/^\d{2,4}[、，,]/.test(t)) return false;
+    return /[\u3400-\u9fffA-Za-z]{2}/.test(t);
   }
 
   /** 从合并文本里抽教室、单双周、备注，并清理课程名里的附属内容 */
-  function parseCourseInfo(raw, name) {
-    var room = '';
-    // 教室通常在中文括号或半角括号里，且含「教/楼/馆/区/机房」等
-    var m = raw.match(/[（(]([^（()）]{1,24}?(?:教|楼|馆|室|机房|中心|厅|场|廊)[^（()）]{0,12})[）)]/);
-    if (m) room = m[1].trim();
-    if (!room) {
-      var m2 = raw.match(/([一二三四五六七八九十\d]+教[一二三四五六七八九十\d]*|\S{0,6}楼\S{0,4})/);
-      if (m2) room = m2[1];
-    }
-    if (/暂无上课教室/.test(room)) room = '';
-
-    var week = 'all';
-    if (/单周/.test(raw)) week = 'odd';
-    else if (/双周/.test(raw)) week = 'even';
+  function parseCourseInfo(raw, name, texts) {
+    var room = extractRoom(texts || [], raw);
+    var week = extractWeek(texts || [], raw);
 
     // 备注：抓「备注：...」片段
     var note = '';
-    var mn = raw.match(/备注[:：]?\s*([^）)]{0,60})/);
-    if (mn) note = mn[1].trim();
+    var noteRe = /备注[:：]?\s*([^）)]{0,60})/g;
+    var noteMatch;
+    while ((noteMatch = noteRe.exec(raw)) !== null) note = noteMatch[1].trim();
 
     return { name: cleanCourseName(name, room), room: room, week: week, note: note };
+  }
+
+  function extractRoom(texts, raw) {
+    var candidates = [];
+    texts.forEach(function (value, index) {
+      var t = norm(value);
+      if (!t) return;
+      if (/^(备注|考试|上课时间)/.test(t) || /暂无上课教室/.test(t)) return;
+      var exact = t.match(/^[（(]([^（()）]{1,32})[）)]$/);
+      var roomText = exact ? exact[1] : (/^(?:上课)?教室[:：]/.test(t) ? t.split(/[:：]/, 2)[1] : t);
+      if (!looksLikeRoom(roomText)) return;
+      candidates.push({ text: normalizeRoom(roomText), exact: !!exact, index: index });
+    });
+    candidates.sort(function (a, b) {
+      if (a.exact !== b.exact) return a.exact ? -1 : 1;
+      return a.index - b.index || a.text.length - b.text.length;
+    });
+    if (candidates.length) return firstRoom(candidates[0].text);
+
+    // A few systems put the only usable room in the note itself:
+    // "(暂无上课教室数据) (备注：计算中心二层7-10号机房)".
+    var noteRoom = String(raw || '').match(/(?:上课教室|教室)[:：]\s*([^；;）)]+)/);
+    if (noteRoom && !/暂无上课教室/.test(noteRoom[1])) {
+      var normalized = normalizeRoom(noteRoom[1]);
+      if (looksLikeRoom(normalized)) return firstRoom(normalized);
+    }
+    var noteRe = /备注[:：]?\s*([^）)]+)/g;
+    var noteBody;
+    while ((noteBody = noteRe.exec(raw)) !== null) {
+      var fromNote = normalizeRoom(noteBody[1]);
+      if (looksLikeRoom(fromNote)) return firstRoom(fromNote);
+    }
+    return '';
+  }
+
+  function looksLikeRoom(value) {
+    var t = norm(value);
+    if (!t || t.length > 32) return false;
+    if (/暂无|备注|考试|上课时间|每周|单周|双周/.test(t)) return false;
+    if (/^[A-Za-zⅠⅡⅢIVXivx]+$/.test(t)) return false;
+    return /(?:[一二三四五六七八九十\d]+教|教(?:室|学楼)?|楼|馆|室|机房|中心|厅|场|廊|校区|[^\d]{1,10}\d{2,4})/.test(t);
+  }
+
+  function normalizeRoom(value) {
+    var room = norm(value)
+      .replace(/^[（(]+|[）)]+$/g, '')
+      .replace(/^(?:上课)?教室[:：]?/, '')
+      .replace(/[。．]/g, '-')
+      .replace(/(\d)[－—–]/g, '$1-');
+    if (/\d/.test(room)) {
+      room = room.replace(/[Oo]/g, '0').replace(/[Il]/g, '1');
+    }
+    return room.trim();
+  }
+
+  function firstRoom(value) {
+    // Keep one room for the editable field; notes can list several alternatives.
+    return String(value || '').split(/[、，,]/)[0].replace(/[；;]$/, '').trim();
+  }
+
+  function extractWeek(texts, raw) {
+    var compact = texts.map(function (value) { return norm(value); }).filter(Boolean);
+    // The final "每周" on a note line is the course's actual recurrence;
+    // "单周周一10-11节" inside the same note only describes recitation time.
+    if (compact.some(function (t) { return /(?:^|[)）])每周/.test(t) || /^每周$/.test(t); })) return 'all';
+    var odd = compact.some(function (t) { return /^[（(]?\s*单周/.test(t); });
+    var even = compact.some(function (t) { return /^[（(]?\s*双周/.test(t); });
+    if (!odd && !even) {
+      odd = /单周/.test(raw) && !/每周/.test(raw);
+      even = /双周/.test(raw) && !/每周/.test(raw);
+    }
+    if (odd && even) return 'all';
+    return odd ? 'odd' : even ? 'even' : 'all';
   }
 
   /**
@@ -428,7 +596,7 @@
       if (/\d{1,2}[:：]\d{2}\s*[~～\-—至]\s*\d{1,2}[:：]\d{2}/.test(name)) return;
       // 步行/课间说明
       if (/(min|分钟|课间|下课)/.test(name)) return;
-      var info = parseCourseInfo(texts.join(' '), name);
+      var info = parseCourseInfo(texts.join(' '), name, texts);
       out.push({
         id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: info.name, room: info.room, day: 1, start: 1, end: 2,
@@ -601,7 +769,10 @@
       var res = await ocr.recognize(payload);
       if (request !== importRequest) return;
       say('📐 正在还原课表网格…');
-      var parsed = parseBlocks(res.blocks || []);
+      var parsed = parseBlocks(res.blocks || [], {
+        width: res.imageWidth,
+        height: res.imageHeight
+      });
       if (!parsed.courses.length) {
         say('❌ 没识别出课程。可能是图片太模糊，或不是课表截图。可改用「手动添加」。');
         return;
@@ -609,7 +780,7 @@
       // 预览不修改现有作息；和课程一起确认后再保存，取消必须保持原状态。
       pendingSlots = parsed.slots;
       pendingCourses = parsed.courses;
-      renderReview(parsed.courses, parsed.degraded);
+      renderReview(parsed.courses, parsed.degraded, parsed.rowsInferred);
       say('✅ 识别到 ' + parsed.courses.length + ' 门课，请核对后确认导入');
     } catch (e) {
       if (request !== importRequest) return;
@@ -617,7 +788,7 @@
     }
   }
 
-  function renderReview(courses, degraded) {
+  function renderReview(courses, degraded, rowsInferred) {
     var box = document.getElementById('ttReview');
     var list = document.getElementById('ttReviewList');
     if (!box || !list) return;
@@ -625,6 +796,9 @@
     if (degraded) {
       html += '<div class="tt-warn">⚠️ 没能定位到课表的行列结构，已按文字顺序提取课程名。'
         + '下面的「星期/节次」需要你手动修正。</div>';
+    } else if (rowsInferred) {
+      html += '<div class="tt-warn">⚠️ 课表的竖排行号无法稳定识别，已按图片中的 12 节网格自动对齐。'
+        + '请在确认前快速核对星期和节次。</div>';
     }
     courses.forEach(function (c, i) {
       html += '<div class="tt-rv-row" data-i="' + i + '">'
@@ -652,7 +826,7 @@
         var i = +b.dataset.del;
         readReview();
         pendingCourses.splice(i, 1);
-        renderReview(pendingCourses, degraded);
+        renderReview(pendingCourses, degraded, rowsInferred);
       });
     });
   }
@@ -836,6 +1010,7 @@
   window.Timetable = {
     render: render,
     ensureState: ensureState,
+    _parseBlocks: parseBlocks,
     /** 生成某天的课程提醒点：[{key, at, title, body}] */
     planFor: function (dayTs) {
       var tt = ensureState();

@@ -162,3 +162,76 @@ test('render refreshes the term control when imported state replaces the timetab
   assert.equal(h.el('ttTermStart').value, '2026-09-01');
   assert.match(h.el('ttTermHint').textContent, /本周第/);
 });
+
+function pkuBlock(text, cx, top, bottom) {
+  const line = { text, cx, cy: (top + bottom) / 2, top, bottom };
+  return { text, cx, cy: line.cy, top, bottom, lines: [line] };
+}
+
+test('PKU screenshot layout infers periods, keeps second periods, and prefers the listed classroom', () => {
+  const h = setup([]);
+  const headers = [324, 914, 1506, 2097, 2610].map((x, i) =>
+    pkuBlock(`星期${['一', '二', '三', '四', '五'][i]}`, x, 13, 37));
+  const blocks = headers.concat([
+    pkuBlock('线性代数A（I）', 360, 382, 404),
+    pkuBlock('（理教408）', 360, 411, 433),
+    pkuBlock('（备注：上课时间：单周周一10-11节，上课教室：三教508、理教419）每周', 360, 439, 491),
+    pkuBlock('线性代数A（I）', 360, 532, 554),
+    pkuBlock('（理教408）', 360, 561, 583),
+    pkuBlock('（备注：上课时间：单周周一10-11节，上课教室：三教508、理教419）每周', 360, 589, 641),
+
+    pkuBlock('高等数学A（一）', 944, 82, 105),
+    pkuBlock('（二教309）', 944, 112, 134),
+    pkuBlock('（备注：习题课每周）每周', 944, 140, 192),
+    pkuBlock('高等数学A（一）', 944, 232, 255),
+    pkuBlock('（二教309）', 944, 262, 284),
+    pkuBlock('（备注：习题课每周）每周', 944, 290, 342),
+
+    pkuBlock('线性代数A（I）', 1534, 83, 105),
+    pkuBlock('（理教408）', 1534, 112, 134),
+    pkuBlock('（备注：上课时间：单周周一10-11节）每周', 1534, 140, 192),
+    pkuBlock('线性代数A（I）', 1534, 233, 255),
+    pkuBlock('（理教408）', 1534, 262, 284),
+    pkuBlock('（备注：上课时间：单周周一10-11节）每周', 1534, 290, 342),
+
+    pkuBlock('太极拳', 2126, 98, 119),
+    pkuBlock('（暂无上课教室数据）', 2126, 126, 149),
+    pkuBlock('（备注：男生班）每周', 2126, 155, 178),
+    pkuBlock('太极拳', 2126, 247, 268),
+    pkuBlock('（暂无上课教室数据）', 2126, 275, 298),
+    pkuBlock('（备注：男生班）每周', 2126, 304, 327),
+
+    pkuBlock('计算概论A', 2640, 381, 403),
+    pkuBlock('（理教403）', 2640, 411, 433),
+    pkuBlock('（备注：同时选计算概论A上机实习课）每周', 2640, 439, 491),
+    pkuBlock('计算概论A', 2640, 531, 553),
+    pkuBlock('（理教403）', 2640, 561, 583),
+    pkuBlock('（备注：同时选计算概论A上机实习课）每周', 2640, 589, 641),
+
+    pkuBlock('计算概论A上机实习课', 2640, 600, 622),
+    pkuBlock('（暂无上课教室数据）', 2640, 629, 652),
+    pkuBlock('（备注：计算中心二层7-10号机房）每周', 2640, 658, 709),
+    pkuBlock('计算概论A上机实习课', 2640, 732, 754),
+    pkuBlock('（暂无上课教室数据）', 2640, 761, 784),
+    pkuBlock('（备注：计算中心二层7-10号机房）每周', 2640, 790, 841)
+  ]);
+
+  const parsed = h.context.Timetable._parseBlocks(blocks, { width: 3000, height: 1676 });
+  assert.equal(parsed.degraded, false);
+  assert.equal(parsed.rowsInferred, true);
+  assert.equal(parsed.courses.length, 6);
+
+  const highMath = parsed.courses.find((c) => c.name.startsWith('高等数学'));
+  assert.deepEqual([highMath.day, highMath.start, highMath.end], [2, 1, 2]);
+  assert.equal(highMath.room, '二教309');
+  assert.equal(highMath.week, 'all');
+
+  const linearAlgebra = parsed.courses.find((c) => c.day === 1);
+  assert.deepEqual([linearAlgebra.start, linearAlgebra.end], [3, 4]);
+  assert.equal(linearAlgebra.room, '理教408');
+  assert.equal(linearAlgebra.week, 'all');
+
+  const lab = parsed.courses.find((c) => c.name.includes('上机'));
+  assert.deepEqual([lab.day, lab.start, lab.end], [5, 5, 6]);
+  assert.equal(lab.room, '计算中心二层7-10号机房');
+});
