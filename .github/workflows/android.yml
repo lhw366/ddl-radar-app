@@ -48,6 +48,42 @@ jobs:
       - name: Sync web assets into Android
         run: npx cap sync android
 
+      - name: Run web regression tests
+        run: node --test tests/functional-*.cjs
+
+      - name: Build native runtime test APKs
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest -PtestAbi=x86_64 --no-daemon
+
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Verify background delivery and visible banners on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb install -r android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            python3 tests/android_runtime.py
+
+      - name: Upload native runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-runtime-evidence
+          path: runtime-evidence/
+          if-no-files-found: ignore
+
       - name: Build debug APK
         run: |
           cd android

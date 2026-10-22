@@ -42,7 +42,9 @@ final class AlarmDelivery {
             if (title == null || title.isEmpty()) title = "DDL雷达";
             if (body == null) body = "";
             if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
+            ReminderTrace.mark(context, id, "delivery", "lateMs=" + (System.currentTimeMillis() - at));
             vibrateForMode(context, channelId, vibrate);
+            ReminderTrace.mark(context, id, "vibration_requested", "enabled=" + vibrate);
             post(context, id, title, body, channelId);
             context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
                     .putLong("lastExpectedAt", at)
@@ -195,6 +197,7 @@ final class AlarmDelivery {
             // Notification permission and overlay permission are independent.
             Log.w("DdlAlarm", "System notification blocked", error);
         }
+        ReminderTrace.mark(context, id, "notification", "allowed=" + allowed + ";channel=" + channelId);
         if (channelId.startsWith("ddlr_high_")) {
             ReminderBanner.show(context, notificationId(id), title, body, autoDismiss);
         }

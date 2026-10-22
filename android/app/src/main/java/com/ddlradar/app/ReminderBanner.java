@@ -29,13 +29,23 @@ final class ReminderBanner {
     private static ScrollView window;
     private static LinearLayout stack;
 
+    private static final class BannerScroll extends ScrollView {
+        BannerScroll(Context context) { super(context); }
+        @Override protected void onMeasure(int width, int height) {
+            int maximum = Math.min(dp(getContext(), 320), getResources().getDisplayMetrics().heightPixels / 2);
+            super.onMeasure(width, View.MeasureSpec.makeMeasureSpec(maximum, View.MeasureSpec.AT_MOST));
+        }
+    }
+
     static boolean allowed(Context context) {
         return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(context);
     }
 
+    static int visibleCount() { return CARDS.size(); }
+
     static void show(Context context, int id, String title, String body, boolean autoDismiss) {
         Context app = context.getApplicationContext();
-        if (!allowed(app)) return; // The ordinary notification remains available.
+        if (!allowed(app)) { ReminderTrace.mark(app, id & Integer.MAX_VALUE, "overlay_blocked", "permission"); return; } // The ordinary notification remains available.
         MAIN.post(() -> {
             try {
                 if (window == null) {
@@ -43,7 +53,7 @@ final class ReminderBanner {
                     if (windows == null) return;
                     stack = new LinearLayout(app);
                     stack.setOrientation(LinearLayout.VERTICAL);
-                    window = new ScrollView(app);
+                    window = new BannerScroll(app);
                     window.setFillViewport(false);
                     window.addView(stack);
                     int width = Math.min(dp(app, 440), app.getResources().getDisplayMetrics().widthPixels - dp(app, 24));
@@ -54,7 +64,7 @@ final class ReminderBanner {
                             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
                     params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
                     params.y = dp(app, 12);
-                    windows.addView(window, params);
+                    window.setLayoutParams(params);
                 }
                 remove(id);
                 LinearLayout card = new LinearLayout(app);
@@ -85,14 +95,20 @@ final class ReminderBanner {
                 card.addView(close);
                 stack.addView(card);
                 CARDS.put(id, card);
-                // Limit the overlay's touch area even when many reminders arrive.
-                stack.post(() -> {
-                    if (window == null || windows == null) return;
-                    try {
-                        WindowManager.LayoutParams params = (WindowManager.LayoutParams) window.getLayoutParams();
-                        params.height = Math.min(stack.getHeight(), dp(app, 320));
-                        windows.updateViewLayout(window, params);
-                    } catch (Exception error) { clear(); }
+                if (!window.isAttachedToWindow()) {
+                    windows.addView(window, window.getLayoutParams());
+                }
+                ReminderTrace.mark(app, id & Integer.MAX_VALUE, "overlay_attached", "awaiting_layout");
+                final View shownCard = card;
+                card.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+                    @Override public boolean onPreDraw() {
+                        shownCard.getViewTreeObserver().removeOnPreDrawListener(this);
+                        android.graphics.Rect visible = new android.graphics.Rect();
+                        boolean drawn = shownCard.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
+                        ReminderTrace.mark(app, id & Integer.MAX_VALUE, drawn ? "overlay_visible" : "overlay_hidden",
+                                visible.width() + "x" + visible.height());
+                        return true;
+                    }
                 });
                 if (autoDismiss) {
                     Runnable timer = () -> dismiss(id);
@@ -101,6 +117,7 @@ final class ReminderBanner {
                 }
             } catch (Exception error) {
                 Log.w("DdlAlarm", "Top banner unavailable; notification retained", error);
+                ReminderTrace.mark(app, id & Integer.MAX_VALUE, "overlay_error", error.toString());
                 clear();
             }
         });

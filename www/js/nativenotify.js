@@ -164,6 +164,10 @@
         out.lastReceiverAt = p.lastReceiverAt || 0;
         out.guard = p.guard === true;
         out.sdk = p.sdk || null;
+        out.device = p.device || '';
+        out.androidRelease = p.androidRelease || '';
+        out.trace = p.trace || [];
+        out.overlayAllowed = p.overlayAllowed === true;
         // 新增诊断项：解释「为什么没横幅 / 为什么不准时」
         out.channelImportance = p.channelImportance;
         out.headsUp = p.headsUp;
@@ -181,7 +185,8 @@
 
     // 5 秒后由系统闹钟投递一条真实提醒，用于验证退 App 场景。
     // 自验证：排定后回读原生存储确认生效，toast 给出确定结论（单一出口）。
-    test: async function () {
+    test: async function (seconds) {
+      seconds = seconds === 60 ? 60 : 5;
       var ddl = DDL();
       if (!ddl) return false;
       var settings = (window.S && S.settings) || {};
@@ -191,7 +196,7 @@
         }, 5000);
         return true;
       }
-      var at = Date.now() + 5000;
+      var at = Date.now() + seconds * 1000;
       try {
         // 权限预检：被拒时系统会静默丢弃通知横幅（原生接收器仍会响铃/震动兜底）
         var granted = true;
@@ -200,15 +205,10 @@
           try { var st = await ddp.notifyStatus(); granted = !!(st && st.granted); } catch (e) {}
         }
         if (ddp && ddp.configureDisplay) await ddp.configureDisplay({ bannerDuration: settings.bannerDuration || 'manual' });
-        await ddl.scheduleOne({
-          id: 990000001,
-          at: at,
-          title: '🧪 测试提醒',
-          body: '收到这条 = 系统闹钟提醒链路通 ✓（退 App 也能到达）',
-          channelId: channelIdFor(settings),
-          vibrate: settingEnabled(settings, 'vibrate')
-        });
-        try { localStorage.setItem('ddlr_testAt', String(at)); } catch (e) {}
+        localStorage.setItem('ddlr_testAt', String(at));
+        this._sig = null;
+        // Exactly the same reconciliation and delivery route as a saved event.
+        if (await this.sync(window.S) === false) throw new Error('后台排定失败');
         // 回读验证：这条闹钟确实在原生存储里
         var ok = false;
         try {
@@ -217,8 +217,8 @@
         } catch (e) { /* 验证失败不否定排定，按已排定提示 */ ok = true; }
         if (ok) {
           if (window.toast) {
-            var head = granted ? '✅ 已排定，5 秒后应提醒'
-              : '✅ 已排定 · 5 秒后应响铃/震动（横幅需通知权限）';
+            var head = granted ? '✅ 已排定，' + seconds + ' 秒后应提醒'
+              : '✅ 已排定 · ' + seconds + ' 秒后应响铃/震动（横幅需通知权限）';
             window.toast(head, '验证中：退 App 也行。若毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
           }
           // +8s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
@@ -235,7 +235,7 @@
                 window.toast('⚠️ 闹钟到点未触发', '系统未派发广播：请把「运行诊断」截图反馈', 'tt-urgent');
               }
             }).catch(function () {});
-          }, 8000);
+          }, seconds * 1000 + 3000);
         } else if (window.toast) {
           window.toast('⚠️ 排定未生效', '点「运行诊断」查看系统闹钟状态', 'tt-urgent');
         }
@@ -363,7 +363,7 @@
                 id: 990000001,
                 at: testAt,
                 title: '🧪 测试提醒',
-                body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
+                body: '与正常事件使用同一派发机制，请在桌面或锁屏验收',
                 channelId: channelId,
                 vibrate: vibrate
               });

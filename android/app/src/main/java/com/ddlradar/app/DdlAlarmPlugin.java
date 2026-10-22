@@ -268,6 +268,10 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
+            ret.put("device", Build.MANUFACTURER + " " + Build.MODEL);
+            ret.put("androidRelease", Build.VERSION.RELEASE);
+            ret.put("overlayAllowed", ReminderBanner.allowed(ctx));
+            ret.put("trace", ReminderTrace.read(ctx));
 
             // ── 诊断增强：检查当前提醒模式实际使用的通知通道 ──
             // 通道重要性一旦被用户调低（或旧版建成了 LOW），App 改不回来，

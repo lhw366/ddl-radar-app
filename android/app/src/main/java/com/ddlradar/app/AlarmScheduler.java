@@ -37,7 +37,7 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 8;
+    public static final int SCHED_VER = 9;
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
@@ -285,6 +285,7 @@ public final class AlarmScheduler {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) throw new IllegalStateException("Alarm manager unavailable");
         cancelLegacy(ctx, id);
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 2)); // Retire v8 prewake.
 
         // showIntent：状态栏闹钟图标点按后打开 App
         PendingIntent show = null;
@@ -333,16 +334,8 @@ public final class AlarmScheduler {
                         operation(ctx, id, at, title, body, channelId, vibrate, 1));
             } catch (Exception ignore) { /* 主通道在即可 */ }
         }
-        // Briefly wake the service BEFORE the deadline. A Handler alone uses
-        // uptime and cannot wake a sleeping CPU, even in a foreground service.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && at > System.currentTimeMillis() + 5000) {
-            try {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at - 5000,
-                        operation(ctx, id, at, title, body, channelId, vibrate, 2));
-            } catch (SecurityException ignored) { /* The primary alarm remains registered. */ }
-        } else if (at > System.currentTimeMillis()) {
-            AlarmService.prepareDeadline(ctx, at);
-        }
+        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at);
+
     }
 
     /** 取消一条闹钟：主备两条都要注销（独立 requestCode 后不再共享身份） */

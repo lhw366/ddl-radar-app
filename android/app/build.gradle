@@ -17,7 +17,7 @@ android {
         // 全部是 arm64-v8a；保留 x86/x86_64 只会让安装包凭空大一倍多。
         // 这一项把 APK 从 ~28MB 降到 ~17MB。
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters (project.findProperty('testAbi') ?: 'arm64-v8a')
         }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

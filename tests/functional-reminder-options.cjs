@@ -59,10 +59,11 @@ test('native channel combines only banner and sound; vibration remains a separat
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:true,vibrate:true,banner:true,remindSilent:true})'), false);
 });
 
-test('test reminder is scheduled five seconds ahead with independent vibration', async () => {
+test('five-second reminder uses the same reconciliation as real events', async () => {
   let scheduled = null;
   const ddl = {
-    scheduleOne: async (payload) => { scheduled = payload; },
+    scheduleOne: async () => { throw new Error('test-only scheduling is forbidden'); },
+    apply: async (payload) => { scheduled = payload.alarms.find(item => item.id === 990000001); },
     pending: async () => ({ items: [{ id: 990000001 }] })
   };
   const h = harness(['nativenotify.js'], {
@@ -82,6 +83,18 @@ test('test reminder is scheduled five seconds ahead with independent vibration',
   assert.equal(scheduled.at - h.context.Date.now(), 5000);
   assert.equal(scheduled.channelId, 'ddlr_gentle_v2_silent');
   assert.equal(scheduled.vibrate, true);
+});
+
+test('sixty-second background verification uses the normal event scheduling path', async () => {
+  let scheduled;
+  const h = harness(['nativenotify.js'], { globals: {
+    Capacitor: { isNativePlatform: () => true, Plugins: { DdlAlarm: {
+      apply: async payload => { scheduled = payload.alarms.find(item => item.id === 990000001); },
+      pending: async () => ({ items: [{ id: 990000001 }] })
+    } } }
+  } });
+  assert.equal(await h.context.NativeNotify.test(60), true);
+  assert.equal(scheduled.at - h.context.Date.now(), 60000);
 });
 
 test('silent clears native alarms and vibration-only schedules a silent channel flag', async () => {

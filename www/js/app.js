@@ -1020,7 +1020,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.11';
+const APP_VERSION = '2.2.12';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1248,6 +1248,7 @@ async function renderDiag() {
   }
   box.innerHTML = '<div>🔍 诊断中…</div>';
   const d = await NativeNotify.diag();
+  window.lastReminderDiagnostics = { version: APP_VERSION, capturedAt: new Date().toISOString(), ...d };
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.overlayAllowed === true, d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：请点设置中的「允许顶部悬浮横幅」');
@@ -1298,6 +1299,16 @@ async function renderDiag() {
   html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
   html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：允许自启动 + 耗电管理 → 允许后台运行；后台任务卡片下拉「锁定」', 'appinfo');
   html += diagRow(null, '系统闹钟负责唤醒提醒；重启和更新后自动恢复，实际延迟见上方记录');
+  const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
+    delivery: '开始执行提醒', vibration_requested: '已请求震动', notification: '已提交系统通知',
+    overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
+    overlay_hidden: '横幅布局不可见', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
+  const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
+  trace.forEach(e => {
+    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed'].includes(e.stage),
+      escapeHtml(new Date(e.at).toLocaleTimeString() + ' · ' + (stageNames[e.stage] || e.stage) + ' · ' + e.detail));
+  });
+  if (d.device) html += '<div>' + escapeHtml(d.device + ' · Android ' + d.androidRelease) + '</div>';
   if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
@@ -1377,6 +1388,16 @@ function bindSettings() {
         beep(); vibe();
       }, 5000);
     }
+  });
+  $('backgroundTestBtn').addEventListener('click', async () => {
+    if (window.NativeNotify && NativeNotify.available()) await NativeNotify.test(60);
+  });
+  $('copyDiagBtn').addEventListener('click', async () => {
+    await renderDiag();
+    try {
+      await Capacitor.Plugins.DdlNotify.copyDiagnostics({ text: JSON.stringify(window.lastReminderDiagnostics, null, 2) });
+      toast('诊断已复制', '包含设备、权限和提醒各阶段记录，可直接粘贴反馈');
+    } catch (error) { toast('复制失败', '请运行诊断查看最后执行的阶段'); }
   });
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
 

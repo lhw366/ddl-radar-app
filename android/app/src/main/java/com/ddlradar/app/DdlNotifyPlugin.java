@@ -31,6 +31,16 @@ import java.util.List;
 public class DdlNotifyPlugin extends Plugin {
 
     @PluginMethod
+    public void copyDiagnostics(PluginCall call) {
+        try {
+            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                    getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("DDL雷达提醒诊断", call.getString("text", "")));
+            call.resolve(new JSObject().put("ok", true));
+        } catch (Exception error) { call.reject("无法复制诊断: " + error.getMessage()); }
+    }
+
+    @PluginMethod
     public void configureDisplay(PluginCall call) {
         getContext().getSharedPreferences("ddlr_display", Context.MODE_PRIVATE).edit()
                 .putBoolean("autoDismiss", "5s".equals(call.getString("bannerDuration", "manual"))).apply();

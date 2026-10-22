@@ -25,17 +25,28 @@ public class AlarmService extends Service {
     private static volatile boolean running;
     private static PowerManager.WakeLock deadlineWake;
 
-    static synchronized void prepareDeadline(Context context, long at) {
-        PowerManager power = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        if (power == null) return;
-        if (deadlineWake == null) {
-            deadlineWake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:deadline");
-            deadlineWake.setReferenceCounted(false);
+    static boolean dispatch(Context context, Intent source) {
+        Intent delivery = new Intent(source).setClass(context, AlarmService.class);
+        try {
+            PowerManager power = (PowerManager) context.getSystemService(POWER_SERVICE);
+            if (power != null) {
+                synchronized (AlarmService.class) {
+                    if (deadlineWake == null) {
+                        deadlineWake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:handoff");
+                        deadlineWake.setReferenceCounted(false);
+                    }
+                    deadlineWake.acquire(12000L);
+                }
+            }
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(delivery);
+            else context.startService(delivery);
+            return true;
+        } catch (Exception error) {
+            ReminderTrace.mark(context, source.getIntExtra("id", -1), "service_start_failed", error.toString());
+            return false;
         }
-        // Bounded to the imminent deadline; never hold a permanent wake lock.
-        deadlineWake.acquire(Math.max(1000L, Math.min(15000L, at - System.currentTimeMillis() + 3000L)));
-        start(context);
     }
+
     private boolean foregrounded;
     private String lastGuardText;
     private PendingIntent cachedContentPi;
@@ -78,6 +89,7 @@ public class AlarmService extends Service {
         if (!foregrounded) goForeground();
         // Handle an already dispatched v5 PendingIntent during an app upgrade.
         if (intent != null && intent.hasExtra("id")) {
+            ReminderTrace.mark(this, intent.getIntExtra("id", -1), "service", "foreground=" + foregrounded);
             try { AlarmDelivery.deliver(this, intent); }
             catch (Exception error) { Log.e("DdlAlarm", "Legacy reminder delivery failed", error); }
         }
