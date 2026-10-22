@@ -49,20 +49,21 @@ public class ReminderRuntimeTest {
 
     @Test public void homeScreenAlarmStartsServiceAndDrawsNonzeroManualBanner() throws Exception {
         schedule(11001, 8000, false);
+        assertFalse("Future events must not keep a service alive", AlarmService.isRunning());
         shell("input keyevent KEYCODE_HOME");
         awaitStage(11001, "overlay_visible", 16000);
         awaitCompositedBanner();
-        // A TIME_SET broadcast can restart the guard during emulator startup.
-        // Its due-time fallback may win and cancel the AlarmManager routes.
-        // ColdReminderFixture separately requires receiver + a new process.
+        assertTrue(hasStage(11001, "receiver"));
         assertTrue(hasStage(11001, "service"));
         assertTrue(hasStage(11001, "vibration_requested"));
         screenshot("runtime-manual.png");
         Thread.sleep(6000);
+        assertFalse("A retained banner must not retain a CPU wake lock", AlarmService.isWakeHeld());
         assertEquals("Manual banner must remain after five seconds", 1, visibleCards());
         ReminderBanner.dismiss(AlarmDelivery.notificationId(11001));
         instrumentation.waitForIdleSync();
         assertEquals(0, visibleCards());
+        assertFalse(AlarmService.isWakeHeld());
         int deliveries = 0;
         JSONArray trace = ReminderTrace.read(ctx);
         for (int i = 0; i < trace.length(); i++) {
@@ -81,6 +82,8 @@ public class ReminderRuntimeTest {
         Thread.sleep(6000);
         instrumentation.waitForIdleSync();
         assertEquals(0, visibleCards());
+        assertFalse("Expired banners must stop their foreground service", AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
         NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications()) {
             assertNotEquals(AlarmDelivery.notificationId(11002), notification.getId());

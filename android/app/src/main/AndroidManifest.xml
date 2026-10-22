@@ -42,7 +42,7 @@
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="reminder_guard" />
+                android:value="show_due_reminders_and_user_retained_banners" />
         </service>
 
         <!-- 闹钟式全屏提醒页（锁屏/灭屏由全屏 Intent 亮屏拉起） -->

@@ -96,7 +96,7 @@ try:
     events = []
     while time.monotonic() < until:
         events = [e for e in traces() if e['id'] == 11003]
-        if {'receiver', 'service', 'vibration_requested', 'notification'} <= {e['stage'] for e in events}:
+        if {'receiver', 'service', 'vibration_requested', 'notification', 'wake_released'} <= {e['stage'] for e in events}:
             break
         time.sleep(1)
     else:

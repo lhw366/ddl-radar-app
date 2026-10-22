@@ -18,6 +18,7 @@ public class AlarmReceiver extends BroadcastReceiver {
             ReminderBanner.dismiss(intent.getIntExtra("ackId", 0));
             return;
         }
+        if (AlarmScheduler.wasDelivered(context, intent.getIntExtra("id", -1), intent.getLongExtra("at", 0))) return;
         AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0),
                 intent.getIntExtra("slot", 0) == 1 ? "exact" : "clock");
         ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", intent.getDataString());

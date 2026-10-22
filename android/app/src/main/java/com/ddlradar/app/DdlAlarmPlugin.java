@@ -144,7 +144,7 @@ public class DdlAlarmPlugin extends Plugin {
                 }
                 AlarmScheduler.save(ctx, persist);
             }
-            AlarmService.start(ctx); // 守护服务刷新「下一条」显示（并确保常驻）
+            // Scheduling does not start or keep a foreground service alive.
 
             JSObject ret = new JSObject();
             ret.put("added", added);
@@ -173,7 +173,6 @@ public class DdlAlarmPlugin extends Plugin {
                 o.put("scheduled", true);
                 upsert(ctx, o);
             }
-            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("scheduleOne failed: " + e.getMessage());
@@ -192,7 +191,6 @@ public class DdlAlarmPlugin extends Plugin {
                 AlarmScheduler.remove(ctx, id);
                 AlarmScheduler.promoteQueued(ctx);
             }
-            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancel failed: " + e.getMessage());
@@ -211,7 +209,6 @@ public class DdlAlarmPlugin extends Plugin {
                 }
                 AlarmScheduler.save(ctx, new JSONArray());
             }
-            AlarmService.start(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancelAll failed: " + e.getMessage());
@@ -267,6 +264,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastReceiverId", lr[0]);
             ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
+            ret.put("wakeHeld", AlarmService.isWakeHeld());
             ret.put("sdk", Build.VERSION.SDK_INT);
             ret.put("device", Build.MANUFACTURER + " " + Build.MODEL);
             android.content.pm.PackageInfo installed = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0);

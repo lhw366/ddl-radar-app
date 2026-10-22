@@ -34,9 +34,7 @@ public class BootReceiver extends BroadcastReceiver {
         if (!hit) return;
         try {
             AlarmScheduler.reapplyAll(context);
-        } catch (Exception e) { /* 恢复失败不影响后续守护服务启动 */ }
-        try {
-            AlarmService.start(context); // 守护服务随开机/更新恢复常驻
-        } catch (Exception e) { /* Android 12+ 后台启动 FGS 受限时忽略，下次打开 App 会补 */ }
+        } catch (Exception e) { /* 恢复失败保留持久化队列，供下次启动重试 */ }
+
     }
 }

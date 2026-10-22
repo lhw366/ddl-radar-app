@@ -1020,7 +1020,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.13';
+const APP_VERSION = '2.2.14';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1296,13 +1296,13 @@ async function renderDiag() {
     html += diagRow(false, '关机/重启期间错过 ' + d.missed + ' 条提醒（已补记，不会再弹）');
   }
 
-  html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
-  html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：允许自启动 + 耗电管理 → 允许后台运行；后台任务卡片下拉「锁定」', 'appinfo');
+  html += diagRow(true, d.guard ? '派发服务正在处理提醒或显示横幅' : '派发服务已休眠：未来事件由系统闹钟唤醒');
+  html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不需要关闭电池优化。异常时请复制诊断。');
   html += diagRow(null, '系统闹钟负责唤醒提醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
     delivery: '开始执行提醒', vibration_requested: '已请求震动', notification: '已提交系统通知',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
-    overlay_hidden: '横幅布局不可见', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
+    overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
   trace.forEach(e => {
     html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed'].includes(e.stage),

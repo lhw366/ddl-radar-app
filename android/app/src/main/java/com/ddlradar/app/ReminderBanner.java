@@ -131,8 +131,10 @@ final class ReminderBanner {
     }
 
     static void dismiss(int id) {
-        MAIN.post(() -> { remove(id); if (CARDS.isEmpty()) clear(); });
+        MAIN.post(() -> { remove(id); if (CARDS.isEmpty()) clear(); AlarmService.bannerChanged(); });
     }
+
+    static void dismissAll() { MAIN.post(ReminderBanner::clear); }
 
     private static void clear() {
         for (Runnable timer : TIMERS.values()) MAIN.removeCallbacks(timer);

@@ -163,6 +163,7 @@
         out.lastReceiverId = p.lastReceiverId || 0;
         out.lastReceiverAt = p.lastReceiverAt || 0;
         out.guard = p.guard === true;
+        out.wakeHeld = p.wakeHeld === true;
         out.sdk = p.sdk || null;
         out.device = p.device || '';
         out.appVersion = p.appVersion;
