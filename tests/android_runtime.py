@@ -87,11 +87,22 @@ try:
     time.sleep(1)
     adb('shell', 'dumpsys', 'battery', 'unplug')
     adb('shell', 'input', 'keyevent', 'KEYCODE_SLEEP')
-    idle = adb('shell', 'dumpsys', 'deviceidle', 'force-idle')
-    (OUT / 'forced-idle.txt').write_text(idle, encoding='utf-8')
-    state = adb('shell', 'dumpsys', 'deviceidle', 'get', 'deep')
+    states = []
+    idle_until = time.monotonic() + 10
+    while time.monotonic() < idle_until:
+        forced = adb('shell', 'dumpsys', 'deviceidle', 'force-idle', 'deep')
+        state = adb('shell', 'dumpsys', 'deviceidle', 'get', 'deep').strip()
+        states.append({'command': forced, 'state': state})
+        if state == 'IDLE':
+            break
+        if state == 'IDLE_MAINTENANCE':
+            # Startup work may briefly enter a maintenance window. Advance
+            # out of it and require the real state, not a substring of output.
+            adb('shell', 'dumpsys', 'deviceidle', 'step', 'deep')
+        time.sleep(0.2)
+    (OUT / 'forced-idle.txt').write_text(json.dumps(states, indent=2), encoding='utf-8')
     (OUT / 'confirmed-idle-state.txt').write_text(state, encoding='utf-8')
-    assert state.strip() == 'IDLE', f'Device did not enter deep idle: {idle}; state={state}'
+    assert state == 'IDLE', f'Device did not enter deep idle: {states}'
     until = time.monotonic() + 65
     events = []
     while time.monotonic() < until:
