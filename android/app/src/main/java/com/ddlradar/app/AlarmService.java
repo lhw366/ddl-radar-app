@@ -99,6 +99,8 @@ public class AlarmService extends Service {
         if (intent != null && intent.hasExtra("id")) {
             lastId = intent.getIntExtra("id", -1);
             ReminderTrace.mark(this, lastId, "service", "foreground=true;on_demand=true");
+            // 正常路径下接收器已经同步投递过，这里 deliver() 会因 wasDelivered 直接返回；
+            // 保留这次调用是为了覆盖「服务被系统/测试单独拉起」的场景。
             try { AlarmDelivery.deliver(this, intent); }
             catch (Exception error) { Log.e("DdlAlarm", "Reminder delivery failed", error); }
             // Keep foreground priority through the short, finite vibration.

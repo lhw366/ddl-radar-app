@@ -27,7 +27,9 @@ final class AlarmDelivery {
         synchronized (AlarmScheduler.class) {
             JSONObject item = AlarmScheduler.findOccurrence(context, id, at);
             if (AlarmScheduler.wasDelivered(context, id, at)) return false;
-            if (at > System.currentTimeMillis()) return false;
+            // 少数 ROM 会提前几毫秒派发。早前用严格 now 比较，正好卡在窗口里时
+            // 会直接 return false —— 一次真实的提醒就这么被静默丢弃且无人重试。
+            if (at > System.currentTimeMillis() + 2000L) return false;
             // Persisted state can be reconciled a few milliseconds before the
             // alarm fires. The PendingIntent extras are the last known good
             // copy, so deliver them instead of silently dropping a real alarm.
@@ -51,8 +53,9 @@ final class AlarmDelivery {
                     .putLong("lastDelayMs", Math.max(0, System.currentTimeMillis() - at)).apply();
             AlarmScheduler.recordDelivered(context, id, at);
             int slot = intent.getIntExtra("slot", 0);
+            String mode = AlarmScheduler.lastSchedMode(context);
             AlarmScheduler.markFired(context, id,
-                    slot == 2 ? "service" : "exact");
+                    slot == 2 ? "service" : "clock".equals(mode) ? "clock" : "exact");
             if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;
         }
@@ -85,6 +88,23 @@ final class AlarmDelivery {
             }
         } catch (Exception error) {
             Log.w("DdlAlarm", "Reminder vibration unavailable", error);
+        }
+    }
+
+    /**
+     * 屏幕是否已熄灭。
+     *
+     * 只认「灭屏」，不认「锁屏」：亮着屏的锁屏界面本来就能显示 heads-up 通知，
+     * 此时再抢一层全屏页面纯属打扰。灭屏才是「用户根本看不见通知」的场景，
+     * 也是系统闹钟亮屏提醒的语义所在。
+     */
+    private static boolean screenOff(Context context) {
+        try {
+            android.os.PowerManager power =
+                    (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            return power != null && !power.isInteractive();
+        } catch (Exception error) {
+            return false;
         }
     }
 
@@ -175,6 +195,21 @@ final class AlarmDelivery {
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setWhen(System.currentTimeMillis());
+        // 灭屏时的「看得见」：挂全屏 Intent 让提醒页越过锁屏亮屏。
+        // 亮屏使用中绝不这样做（那是顶部横幅该做的事）。
+        // AlarmActivity 早前是纯死代码——manifest 里声明了、注释写着靠
+        // fullScreenIntent 拉起，但没有任何地方真的设置过它，所以灭屏/锁屏
+        // 从来没有亮屏提醒过。这里补上真正的调用点。
+        if (channelId.startsWith("ddlr_high_") && screenOff(context)) {
+            Intent page = new Intent(context, AlarmActivity.class);
+            page.setData(Uri.parse("ddlr://alarm-screen/" + id));
+            page.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            page.putExtra("title", title);
+            page.putExtra("body", body);
+            page.putExtra("notifId", notificationId(id));
+            builder.setFullScreenIntent(PendingIntent.getActivity(context, notificationId(id), page,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE), true);
+        }
         boolean autoDismiss = context.getSharedPreferences("ddlr_display", Context.MODE_PRIVATE)
                 .getBoolean("autoDismiss", false);
         if (autoDismiss && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(5000L);

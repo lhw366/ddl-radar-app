@@ -145,8 +145,38 @@ public class DdlNotifyPlugin extends Plugin {
     @PluginMethod
     public void notifyStatus(PluginCall call) {
         boolean granted = NotificationManagerCompat.from(getContext()).areNotificationsEnabled();
-        call.resolve(new JSObject().put("granted", granted)
-                .put("overlayAllowed", ReminderBanner.allowed(getContext())));
+        JSObject ret = new JSObject().put("granted", granted)
+                .put("overlayAllowed", ReminderBanner.allowed(getContext()));
+        // 锁屏/灭屏亮屏：Android 14+ 是独立的用户开关，关掉后全屏 Intent 会被折叠
+        boolean fullScreen = true;
+        if (Build.VERSION.SDK_INT >= 34) {
+            NotificationManager nm = (NotificationManager) getContext()
+                    .getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                try { fullScreen = nm.canUseFullScreenIntent(); } catch (Exception error) { fullScreen = true; }
+            }
+        }
+        ret.put("canFullScreen", fullScreen);
+        call.resolve(ret);
+    }
+
+    /** 直达「锁屏亮屏提醒 / 全屏通知」开关（Android 14+）；旧版本退化为应用详情页 */
+    @PluginMethod
+    public void openFullScreenSettings(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                android.content.Intent i = new android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                        Uri.parse("package:" + getContext().getPackageName()));
+                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+                call.resolve(new JSObject().put("opened", true));
+                return;
+            }
+        } catch (Exception error) {
+            // 个别 ROM 没有这个页面：落到下面的应用详情
+        }
+        openAppDetails(call);
     }
 
     /** 打开系统应用详情页（ColorOS 后台保活引导：自启动/耗电管理在此页内） */

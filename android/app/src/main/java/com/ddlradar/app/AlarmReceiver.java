@@ -18,18 +18,31 @@ public class AlarmReceiver extends BroadcastReceiver {
             ReminderBanner.dismiss(intent.getIntExtra("ackId", 0));
             return;
         }
-        if (AlarmScheduler.wasDelivered(context, intent.getIntExtra("id", -1), intent.getLongExtra("at", 0))) return;
-        AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0),
-                "exact");
+        // 去重：同一条事件被多条通道重复送达时，只有第一条会真正执行效果。
+        if (AlarmScheduler.wasDelivered(context, intent.getIntExtra("id", -1), intent.getLongExtra("at", 0))) {
+            ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", "already_delivered");
+            return;
+        }
+        AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0), "exact");
         ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", intent.getDataString());
-        // The service enters foreground before owning effects and overlay UI.
-        // Posting a Handler from a short-lived receiver is not UI delivery.
-        if (AlarmService.dispatch(context, intent)) return;
+        // ── 顺序很重要：先同步投递，再尝试前台服务 ──
+        // 早前是「交给 startForegroundService 成功就 return」。问题是前台服务的启动
+        // 与投递是两条独立的失败路径：Android 12+ 后台启动前台服务受限、进程刚被
+        // 系统冻结、startForeground 抛异常 —— 任何一种都会让这次提醒彻底静默，
+        // 既没有通知也没有人重试（闹钟已经响过了）。广播接收器执行期间系统持有
+        // 唤醒锁，在这里同步完成通知 + 震动是有保证的。
+        boolean delivered;
         try {
-            AlarmDelivery.deliver(context, intent);
+            delivered = AlarmDelivery.deliver(context, intent);
         } catch (Exception error) {
-            // Leave the occurrence pending for the backup to retry.
             Log.e("DdlAlarm", "Reminder delivery failed", error);
+            ReminderTrace.mark(context, intent.getIntExtra("id", -1), "overlay_error", error.toString());
+            delivered = false;
+        }
+        if (delivered) {
+            // 前台服务不再是投递链路的一环，只用来把悬浮横幅所在的进程留住。
+            // 没有悬浮窗权限时横幅根本不会挂载，起服务纯属白耗电 + 多一条常驻通知。
+            if (ReminderBanner.allowed(context)) AlarmService.dispatch(context, intent);
         }
     }
 }

@@ -245,11 +245,18 @@ function stripTags(s) {
     .replace(/&amp;/g, '&');
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    document.title = 'DDL雷达 · 不再错过任何死线';
-    // 切回前台立刻补查提醒（后台标签页的定时器会被浏览器节流）
+  if (document.hidden) return;
+  document.title = 'DDL雷达 · 不再错过任何死线';
+  // 切回前台立刻补查提醒（后台标签页的定时器会被浏览器节流）。
+  // 顺序必须是「先拉原生已投递日志，再补弹」：反了会把刚响过的提醒再弹一遍。
+  if (window.NativeNotify && NativeNotify.available()) {
+    NativeNotify.refreshDelivered()
+      .then(() => { try { tickReminders(); } catch (e) { console.warn('补弹失败', e); } })
+      .catch(() => { try { tickReminders(); } catch (e) { /* ignore */ } });
+    try { NativeNotify.sync(S).catch(function () {}); } catch (e) { /* ignore */ }
+    maybeAskOverlay();
+  } else {
     tickReminders();
-    if (window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} }
   }
 });
 
@@ -900,10 +907,36 @@ function invalidateFiredCache() {
   tickReminders._arr = null;
 }
 
+/**
+ * 补弹前的最后一道核对：这条到底是不是原生已经响过了？
+ *
+ * 判据来自原生投递日志（闹钟 id + 到点时刻同时匹配），不是靠「大概晚了几秒」去猜。
+ * · 原生已投递 → 只记账、不弹（这是「重复震动」的根治）
+ * · 原生没投递 → 补弹一条「· 补弹」（这是「切后台/锁屏漏了就再无提示」的兜底）
+ *
+ * 早前有两个极端版本：一是靠 5 秒宽限硬猜（会重复弹），二是干脆整体 return
+ * 把补弹关掉（切后台漏了就彻底静默）。两者都不对，因为缺的正是这份投递事实。
+ */
+function flushCatchUps(list) {
+  const show = (item) => {
+    if (remindBannerEnabled()) {
+      toast(item.r.title + (item.late ? ' · 补弹' : ''), item.r.body, item.r.kind);
+    }
+    beep(); vibe();
+  };
+  const notify = window.NativeNotify;
+  if (!notify || !notify.refreshDelivered) { list.forEach(show); return; }
+  notify.refreshDelivered().then(() => {
+    for (const item of list) {
+      let done = false;
+      try { done = notify.wasDeliveredNatively(notify.idOf(item.r.key), item.r.at); }
+      catch (e) { done = false; }
+      if (!done) show(item);
+    }
+  }).catch(() => list.forEach(show));
+}
+
 function tickReminders() {
-  // APK delivery belongs solely to the native scheduler. Replaying an expired
-  // event on resume masks background failures and produces duplicate vibration.
-  if (window.NativeNotify && NativeNotify.available()) return;
   // "静默（关闭提醒）" or all three outputs switched off means reminders are
   // intentionally disabled; do not consume them or fall back to a toast.
   if (!reminderOutputsEnabled()) return;
@@ -932,6 +965,10 @@ function tickReminders() {
   }
   const fired = tickReminders._set;
   let dirty = false;
+  // 本 tick 里「到点、但原生到底响没响还需要核对」的提醒。
+  // 统一放到最后核对一次原生投递日志再决定弹不弹：
+  // 原生响过 → 什么都不做；没响 → 补弹。这样既不会重复震动，也不会静默丢失。
+  const catchUps = [];
   for (const t of S.tasks) {
     // 逐任务 try/catch：planReminders 只要有一条任务的数据异常（比如
     // 时间戳为 null、字段缺失），异常会向上冒泡打断整个 tickReminders，
@@ -944,14 +981,16 @@ function tickReminders() {
       if (r.at > now) continue;
       // 超过 15 分钟：只标记不再打扰（避免堆积）
       if (now - r.at > 15 * 60000) { fired.add(r.key); S.fired.push(r.key); dirty = true; continue; }
+      const late = now - r.at > 5000;
+      // 原生刚该响、还没到晚点判定线：不消费也不弹，下一轮再判定。
+      // ⚠️ 早前在这一步之前就 fire-and-forget 标记了 fired，一旦原生其实
+      // 没送达（后台启动前台服务被拒、闹钟被 ROM 拦截），这条提醒就被
+      // 彻底吞掉、再也不会有任何提示。必须先判定、再消费。
+      if (native && !late) continue;
       fired.add(r.key);
       S.fired.push(r.key);
       dirty = true;
-      // 原生负责准点投递：留 5s 宽限，超过才前台补弹。
-      const late = now - r.at > 5000;
-      if (native && !late) continue;
-      if (remindBannerEnabled()) toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
-      beep(); vibe();
+      catchUps.push({ r, late });
     }
   }
   // ── 课表提醒的前台补弹 ──
@@ -966,16 +1005,16 @@ function tickReminders() {
         if (fired.has(r.key)) continue;
         if (r.at > now) continue;
         if (now - r.at > 15 * 60000) { fired.add(r.key); S.fired.push(r.key); dirty = true; continue; }
+        const late = now - r.at > 5000;
+        if (native && !late) continue;
         fired.add(r.key);
         S.fired.push(r.key);
         dirty = true;
-        const late = now - r.at > 5000;
-        if (native && !late) continue;
-        if (remindBannerEnabled()) toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
-        beep(); vibe();
+        catchUps.push({ r, late });
       }
     }
   } catch (e) { console.warn('课表补弹失败', e); }
+  if (catchUps.length) flushCatchUps(catchUps);
 
   // 只在真正有变化时写盘：早前无论有没有新提醒每 2s 都 save() 一次，
   // 这是 localStorage 频繁写入、进而拖慢主线程的元凶之一。
@@ -1021,9 +1060,31 @@ function refreshNotifyBtn() {
     p === 'denied' ? '🚫 通知被拒绝（请到系统设置里放开）' : '🔔 申请系统通知权限（状态：未开启）';
 }
 
+/* ---------------- 顶部悬浮横幅授权引导 ---------------- */
+/**
+ * 跨应用顶部横幅（悬浮窗）是普通权限之外的独立开关，系统不会自动授予，
+ * 而 App 早前只是「在设置页放了个按钮」——用户不去点就永远没有横幅，
+ * 却也没有任何提示。这是「横幅从来就没正常过」的直接原因：不是代码没生效，
+ * 是权限从来没拿到过。这里在启动/回前台时主动提醒一次（24 小时一次，不骚扰）。
+ */
+async function maybeAskOverlay() {
+  if (!(window.NativeNotify && NativeNotify.available())) return;
+  if (!remindBannerEnabled() || !reminderOutputsEnabled()) return;
+  let st = null;
+  try { st = await Capacitor.Plugins.DdlNotify.notifyStatus(); } catch (e) { return; }
+  if (!st || st.overlayAllowed) return;
+  const stamp = 'ddlr_overlayAskAt';
+  let last = 0;
+  try { last = parseInt(localStorage.getItem(stamp) || '0', 10) || 0; } catch (e) { /* ignore */ }
+  if (Date.now() - last < 24 * 3600 * 1000) return;
+  try { localStorage.setItem(stamp, String(Date.now())); } catch (e) { /* ignore */ }
+  toast('🔓 顶部横幅还差一步授权',
+    '系统未允许「显示在其他应用上层」，所以提醒只能发通知、不会从屏幕顶部弹出。到「我的 → 允许顶部悬浮横幅」开启即可', 'urgent');
+}
+
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.14';
+const APP_VERSION = '2.2.15';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1254,15 +1315,25 @@ async function renderDiag() {
   window.lastReminderDiagnostics = { version: APP_VERSION, capturedAt: new Date().toISOString(), ...d };
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
-  html += diagRow(d.overlayAllowed === true, d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：请点设置中的「允许顶部悬浮横幅」');
+  html += diagRow(d.overlayAllowed === true,
+    d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：没有它提醒不会从屏幕顶部弹出',
+    d.overlayAllowed ? '' : 'overlay');
   html += diagRow((d.channels || 0) >= 4, '提醒通道已创建（' + (d.channels || 0) + '/4）', d.channels >= 4 ? '' : 'reinit');
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
     '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
       (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''),
     (d.pending || 0) > 0 || queued > 0 ? '' : 'notask');
-  if (d.clockMode === false) {
-    html += diagRow(true, '按事件到点唤醒，不提前唤醒手机或常驻轮询');
+  if (d.clockMode === true) {
+    // setAlarmClock：系统闹钟同款，不参与 Doze/省电分桶推迟
+    html += diagRow(d.sysNextAt > 0,
+      d.sysNextAt > 0
+        ? '系统闹钟通道已登记，最近一条 ' + fmtDT(d.sysNextAt) + '（不参与省电推迟）'
+        : '系统闹钟通道在用，但系统当前没有登记中的闹钟（可能已被 ROM 撤销）',
+      d.sysNextAt > 0 ? '' : 'appinfo');
+  } else if (d.schedMode === 'exact_idle' || d.schedMode === 'inexact_idle') {
+    html += diagRow(false,
+      '已降级为「可推迟的闹钟」(' + d.schedMode + ')：Doze/省电模式下可能延迟数分钟到数小时。请在系统设置里允许「闹钟和提醒」', 'appinfo');
   } else if (((d.pending || 0) > 0 || queued > 0) && !(d.sysNextAt > 0)) {
     html += diagRow(false, '有待提醒内容，但系统当前没有接受任何闹钟（可能被 ROM 拦截）');
   } else if (d.sysNextAt > 0) {
@@ -1270,9 +1341,13 @@ async function renderDiag() {
   } else {
     html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
   }
+  // 锁屏/灭屏亮屏：Android 14+ 用户可单独关闭这个开关，关闭后锁屏不亮屏
+  if (d.canFullScreen === false) {
+    html += diagRow(false, '「锁屏亮屏提醒」被系统关闭：锁屏时不会亮屏弹出提醒页', 'fullscreen');
+  }
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0
     ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) +
-      (d.lastFireVia === 'exact' ? '（经系统精确提醒）' :
+      (d.lastFireVia === 'exact' ? '（经降级精确闹钟）' :
        d.lastFireVia === 'service' ? '（经守护服务兜底）' : '（经系统闹钟）')
     : '还没有触发记录（闹钟触发一次后出现）');
   if (d.lastDelayMs >= 0) {
@@ -1337,6 +1412,21 @@ async function renderDiag() {
       } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
     }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
+    if (f === 'overlay') {
+      try {
+        await Capacitor.Plugins.DdlNotify.openBannerPermission();
+        toast('🔓 已打开悬浮窗设置', '找到 DDL雷达，打开「显示在其他应用上层 / 允许顶部悬浮横幅」');
+      } catch (e) {
+        toast('请手动开启', '系统设置 → 应用 → DDL雷达 → 显示在其他应用上层');
+      }
+    }
+    if (f === 'fullscreen') {
+      try { await Capacitor.Plugins.DdlNotify.openFullScreenSettings(); }
+      catch (e) {
+        try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e2) { /* ignore */ }
+        toast('请手动开启', '应用信息 → 通知 → 允许「全屏通知 / 锁屏亮屏提醒」');
+      }
+    }
     setTimeout(renderDiag, 900);
   }));
 }
@@ -1533,7 +1623,7 @@ function init() {
   bindSettings();
   refreshNotifyBtn();
   if (window.NativeNotify && NativeNotify.available()) {
-    NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); }).catch(function (e) { console.warn('NativeNotify.init 失败', e); });
+    NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); maybeAskOverlay(); }).catch(function (e) { console.warn('NativeNotify.init 失败', e); });
   }
 
   // 隐藏文件选择器

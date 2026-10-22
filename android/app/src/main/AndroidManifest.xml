@@ -85,6 +85,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 锁屏/灭屏时越过锁屏拉起提醒页（AlarmActivity 的 fullScreenIntent）。
+         Android 14+ 上这是运行时开关，用户可关闭；诊断面板的「锁屏亮屏提醒」
+         一栏读的就是 NotificationManager.canUseFullScreenIntent()。 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

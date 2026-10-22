@@ -52,6 +52,15 @@
     _synced: false,
     _syncedAt: 0,
 
+    /** 提醒 key → 原生闹钟 id（与原生侧同一套 FNV-1a 哈希） */
+    idOf: hashId,
+
+    // 原生最近投递过的事件：Map<id, at>。
+    // tickReminders 用它区分「系统闹钟已经响过」和「系统闹钟真的漏了」，
+    // 从而既不重复震动、也不静默丢提醒。
+    _delivered: null,
+    _deliveredAt: 0,
+
     /**
      * 原生闹钟是否处于「已同步且新鲜」状态。
      * 超过 10 分钟没成功同步就视为不可信：可能任务变了但 sync 失败，
@@ -60,6 +69,31 @@
     isSynced: function () {
       if (!this._synced) return false;
       return (Date.now() - this._syncedAt) < 10 * 60 * 1000;
+    },
+
+    /**
+     * 拉取原生「已投递事件」日志。
+     * 失败时保留上一次的结果：宁可多弹一次，也不能因为一次查询失败就静默。
+     */
+    refreshDelivered: async function () {
+      var ddl = DDL();
+      if (!ddl) return;
+      try {
+        var p = await ddl.pending();
+        var log = (p && p.deliveredLog) || [];
+        var map = new Map();
+        for (var i = 0; i < log.length; i++) {
+          if (log[i] && log[i].length >= 2) map.set(log[i][0], log[i][1]);
+        }
+        this._delivered = map;
+        this._deliveredAt = Date.now();
+      } catch (e) { /* 保留旧值 */ }
+    },
+
+    /** 这条提醒点是否已经由原生投递过（id 与 at 必须同时相同）。 */
+    wasDeliveredNatively: function (id, at) {
+      if (!this._delivered || !id) return false;
+      return this._delivered.get(id) === at;
     },
 
     init: async function () {
@@ -73,9 +107,12 @@
       // 这里在每次冷启动时清掉签名，保证至少对账一次。
       this._sig = null;
       await this.sync(window.S);
+      await this.refreshDelivered();
       // 原生 BootReceiver 负责重启/覆盖安装后恢复；这里兜底：切回前台时对账一次
       document.addEventListener('visibilitychange', function () {
-        if (!document.hidden && window.S) N.sync(window.S);
+        if (document.hidden || !window.S) return;
+        // 先同步「已投递」日志，再对账：顺序反了会把刚响过的提醒算成漏掉。
+        N.refreshDelivered().then(function () { N.sync(window.S); });
       });
     },
 
@@ -149,7 +186,9 @@
         out.channelId = outputsEnabled(settings) ? (p.channelId || channelId) : null;
         out.nextAt = p.nextAt || 0;
         out.sysNextAt = p.sysNextAt || 0;
-        out.clockMode = p.clockMode !== false;
+        out.schedMode = p.schedMode || '';
+        out.clockMode = p.clockMode === true;
+        out.deliveredLog = (p.deliveredLog || []).slice(-12);
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
         out.lastFireVia = p.lastFireVia || '';

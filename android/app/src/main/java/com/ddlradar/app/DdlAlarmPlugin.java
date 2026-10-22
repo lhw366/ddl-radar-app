@@ -242,15 +242,20 @@ public class DdlAlarmPlugin extends Plugin {
                 if (at > now && (nextAt == 0 || at < nextAt)) nextAt = at;
             }
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            long sysNextAt = 0;
+            // 系统侧真实登记的闹钟时钟时刻（clock 模式下有值，降级模式下为 0）
+            long sysNextAt = AlarmScheduler.nextClockAt(ctx);
             long[] lf = AlarmScheduler.lastFire(ctx);
             long[] lr = AlarmScheduler.lastReceiver(ctx);
+            String schedMode = AlarmScheduler.lastSchedMode(ctx);
             JSObject ret = new JSObject();
             ret.put("items", items);
             ret.put("nextAt", nextAt);
             ret.put("queued", queued);
             ret.put("sysNextAt", sysNextAt);
-            ret.put("clockMode", false);
+            ret.put("schedMode", schedMode);
+            ret.put("clockMode", "clock".equals(schedMode));
+            // 原生已投递事件日志：JS 前台补弹前用它区分「原生已响」与「真的漏了」
+            ret.put("deliveredLog", AlarmScheduler.deliveredLog(ctx));
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
