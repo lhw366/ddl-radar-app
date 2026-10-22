@@ -92,7 +92,9 @@
     // 若按 block 中心点落格，整门课只会落进中间那一行 → 跨节信息全丢。
     // 按 line 落格能把每一行分配到它真正所在的行号，再靠「同名且行号连续」合并，
     // 才能正确还原 1-2 节、7-9 节这类跨节课程。
-    blocks.forEach(function (b) {
+    // blockId 用于后续判断「这两行是否来自同一个 OCR 块」——同一块内的行
+    // 必然属于同一门课，这比「行号连续」更可靠（中间行可能没有文字）。
+    blocks.forEach(function (b, bi) {
       var lines = (b.lines && b.lines.length) ? b.lines : [{ text: b.text, cx: cxOf(b), cy: cyOf(b), top: b.top, bottom: b.bottom }];
       lines.forEach(function (ln) {
         var t = norm(ln.text);
@@ -110,7 +112,11 @@
         var rowIdx = pickRow(rows, y);
         if (rowIdx < 0) return;
         var key = day + '|' + rowIdx;
-        if (!cells[key]) cells[key] = { day: day, row: rows[rowIdx].n, texts: [], top: 1e9, bottom: -1, spanBottom: -1 };
+        if (!cells[key]) cells[key] = { day: day, row: rows[rowIdx].n, texts: [], top: 1e9, bottom: -1, spanBottom: -1, blockId: bi, blockIds: {}, byBlock: {} };
+        cells[key].blockIds[bi] = 1;
+        // 按 block 分别记文本：同一格里「单周课」和「双周课」是两个 block，
+        // 各自有独立的课名/教室，混在一起会让 pickCourseName 只挑出一个。
+        (cells[key].byBlock[bi] = cells[key].byBlock[bi] || []).push(t);
         // 同一格内避免重复推入完全相同的文本
         if (cells[key].texts.indexOf(t) < 0) cells[key].texts.push(t);
         var bb = ln.bottom || y;
@@ -125,12 +131,28 @@
 
     // ── 5) 把同一列、相邻行的单元格合并成一门课（跨节课程） ──
     // 说明：按 line 落格后，一个跨节课程的不同行会分散到多个 row。
-    // 合并判据见下方（同名 or 共享文本行 + 行号相邻）。
+    // 合并判据见下方（同 block / 同名 / 共享文本行 + 行号相邻）。
+    // ⚠️ 但「同一格里来自多个不同 block」的情况必须拆开：
+    // 典型是「单周课」和「双周课」共用同一时段，OCR 会给出两个独立 block。
+    // 若按格合并，第二门课会被吞掉（实测只识别出单周课）。
     var courses = [];
     var byDay = {};
     Object.keys(cells).forEach(function (k) {
       var c = cells[k];
-      (byDay[c.day] = byDay[c.day] || []).push(c);
+      // 若这一格里混了多个 block 的文本（单周课+双周课同格），
+      // 按 block 拆成多条，避免后续按格合并把第二门课吞掉。
+      var bIds = Object.keys(c.blockIds || {});
+      if (bIds.length > 1) {
+        bIds.forEach(function (bid) {
+          (byDay[c.day] = byDay[c.day] || []).push({
+            day: c.day, row: c.row, top: c.top, bottom: c.bottom,
+            spanBottom: c.spanBottom, blockId: +bid,
+            texts: ((c.byBlock && c.byBlock[bid]) || c.texts).slice()
+          });
+        });
+      } else {
+        (byDay[c.day] = byDay[c.day] || []).push(c);
+      }
     });
     Object.keys(byDay).forEach(function (day) {
       var list = byDay[day].sort(function (a, b) { return a.row - b.row; });
@@ -140,14 +162,16 @@
         var name = pickCourseName(c.texts);
         var prev = merged[merged.length - 1];
         // 「本格没有真正的课程名」= 只有教室/备注这类附属行。
-        // 跨节课程按行切开后，第 2 行往往只有「（理教106）」（教室），
-        // 若把它当成独立课程，一门课会被拆成好几条（实测 13 门变 27 条）。
         var nameIsMeaningful = !!name && !/^[（(]/.test(name)
           && !/^(备注|考试|每周|单周|双周)/.test(name);
+        // 行号是否「够近」：中间行可能没有文字（合并单元格里文字垂直居中），
+        // 所以不能要求严格 +1。同一 block 切出来的行天然属于同一门课。
+        var sameBlock = prev && c.blockId != null && prev.blockId === c.blockId;
+        var adjacent = prev && c.row > prev.end && c.row <= prev.end + 3;
 
-        if (prev && !nameIsMeaningful && c.row === prev.end + 1) {
+        if (prev && !nameIsMeaningful && (sameBlock || adjacent)) {
           // 附属行：并入上一门课
-          prev.end = c.row;
+          prev.end = Math.max(prev.end, c.row);
           prev.raw += ' ' + joined;
           if (c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
           c.texts.forEach(function (t) { if (prev.texts.indexOf(t) < 0) prev.texts.push(t); });
@@ -157,15 +181,16 @@
         var shared = prev && prev.texts && c.texts.some(function (t) {
           return prev.texts.indexOf(t) >= 0;
         });
-        if (prev && c.row === prev.end + 1 && (sameName || shared)) {
-          prev.end = c.row;
+        if (prev && (sameBlock || (adjacent && (sameName || shared)))) {
+          prev.end = Math.max(prev.end, c.row);
           prev.raw += ' ' + joined;
           if (c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
           c.texts.forEach(function (t) { if (prev.texts.indexOf(t) < 0) prev.texts.push(t); });
         } else {
           merged.push({
             day: +day, start: c.row, end: c.row, name: name, raw: joined,
-            texts: c.texts.slice(), spanBottom: c.spanBottom || -1
+            texts: c.texts.slice(), spanBottom: c.spanBottom || -1,
+            blockId: c.blockId
           });
         }
       });
@@ -293,7 +318,7 @@
     return best || (texts[0] || '');
   }
 
-  /** 从合并文本里抽教室、单双周、备注 */
+  /** 从合并文本里抽教室、单双周、备注，并清理课程名里的附属内容 */
   function parseCourseInfo(raw, name) {
     var room = '';
     // 教室通常在中文括号或半角括号里，且含「教/楼/馆/区/机房」等
@@ -313,7 +338,32 @@
     var note = '';
     var mn = raw.match(/备注[:：]?\s*([^）)]{0,60})/);
     if (mn) note = mn[1].trim();
-    return { name: name, room: room, week: week, note: note };
+
+    return { name: cleanCourseName(name, room), room: room, week: week, note: note };
+  }
+
+  /**
+   * 清理课程名里混进来的附属内容。
+   *
+   * OCR 常把一行识别成「单周课（A101）单周」这种混合体。直接当课名很难看，
+   * 也不能无脑删所有括号 —— 「高等数学（B）（一）」里的括号是课程名的一部分。
+   * 策略：只删「内容是教室名（与抽出的 room 相同或含教室关键词）」的括号，
+   * 以及结尾的单周/双周/每周标记。
+   */
+  function cleanCourseName(name, room) {
+    if (!name) return '';
+    var out = String(name);
+    // 删掉与已识别教室一致的括号段
+    if (room) {
+      out = out.split('（' + room + '）').join('').split('(' + room + ')').join('');
+    }
+    // 删掉「含教室关键词」的括号段
+    out = out.replace(/[（(][^（()）]{0,20}?(?:教|楼|馆|室|机房|中心|厅|场|廊)[^（()）]{0,12}[）)]/g, '');
+    // 删掉结尾的单双周标记
+    out = out.replace(/[（(]?\s*(单周|双周|每周)\s*[）)]?\s*$/g, '');
+    out = out.trim();
+    // 全删空了就退回原名（宁可名字带括号，也不能空）
+    return out || String(name).trim();
   }
 
   /**
@@ -350,14 +400,31 @@
   }
   function pad2(s) { s = String(s); return s.length < 2 ? '0' + s : s; }
 
-  /** 找不到表头时的退化解析：只抽「看起来像课程」的行 */
+  /**
+   * 找不到表头时的退化解析：只抽「看起来像课程」的行。
+   *
+   * 这条路径很粗糙（星期/节次全是猜的），但必须尽量别把垃圾当课程：
+   * 早前只过滤了「节次/星期/课程时间/注意事项」四个关键词，
+   * 实测会把「十一」「十二」这类节次标签、纯数字、单字符当成课程录入，
+   * 用户导入后看到一堆莫名其妙的条目。
+   */
   function fallbackParse(blocks) {
     var out = [];
+    var CN_NUM_RE = /^第?[一二三四五六七八九十\d]{1,3}节?$/;   // 「十一」「第十二节」「3」
     blocks.forEach(function (b) {
-      var texts = (b.lines || []).map(function (l) { return norm(l.text); });
+      var texts = (b.lines || []).map(function (l) { return norm(l.text); }).filter(Boolean);
       var name = pickCourseName(texts);
       if (!name || name.length < 2) return;
-      if (/^(节次|星期|课程时间|注意事项)/.test(name)) return;
+      // 表头/说明类
+      if (/^(节次|星期|课程时间|注意事项|备注|时间)/.test(name)) return;
+      // 节次标签、纯数字、纯标点
+      if (CN_NUM_RE.test(name)) return;
+      if (/^[\d\s:：~～\-—.]+$/.test(name)) return;
+      if (/^[（(].*[）)]$/.test(name) && name.length < 8) return;  // 纯括号短文本
+      // 时间段行
+      if (/\d{1,2}[:：]\d{2}\s*[~～\-—至]\s*\d{1,2}[:：]\d{2}/.test(name)) return;
+      // 步行/课间说明
+      if (/(min|分钟|课间|下课)/.test(name)) return;
       var info = parseCourseInfo(texts.join(' '), name);
       out.push({
         id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -387,23 +454,36 @@
     for (var r = 1; r <= 12; r++) {
       html += '<div class="tt-rowhead">' + r + '</div>';
       for (var dd = 1; dd <= 7; dd++) {
+        // 同一格可能有多门课（典型：单周课 + 双周课共用同一时段）。
+        // 早前只取 cs[0] 渲染，第二门课完全不可见 —— 用户会以为课丢了。
+        // 现在把该格所有课程都画出来，各自可点。
         var cs = tt.courses.filter(function (c) { return c.day === dd && r >= c.start && r <= c.end; });
         if (!cs.length) { html += '<div class="tt-cell"></div>'; continue; }
-        var c = cs[0];
-        if (r === c.start) {
-          var span = Math.max(1, c.end - c.start + 1);
-          var wk = c.week === 'odd' ? ' · 单周' : c.week === 'even' ? ' · 双周' : '';
-          html += '<div class="tt-cell has-course" style="grid-row:span ' + span + '" data-cid="' + c.id + '">'
+        // 找出「从本节开始」的课；若本格只是某门课的延续（没有新课开始），
+        // 让位给起始那一行渲染（避免重复占格）。
+        var starts = cs.filter(function (c) { return c.start === r; });
+        if (!starts.length) { html += '<div class="tt-cell"></div>'; continue; }
+        // 用其中跨度最大的那门决定 grid-row span
+        var maxEnd = Math.max.apply(null, starts.map(function (c) { return c.end; }));
+        var span = Math.max(1, maxEnd - r + 1);
+        var inner = '';
+        starts.forEach(function (c) {
+          var wk = c.week === 'odd' ? '单周' : c.week === 'even' ? '双周' : '';
+          inner += '<div class="tt-course-item" data-cid="' + c.id + '">'
             + '<div class="tt-cname">' + esc(c.name) + '</div>'
             + (c.room ? '<div class="tt-croom">' + esc(c.room) + '</div>' : '')
-            + (wk ? '<div class="tt-cweek">' + wk.replace(' · ', '') + '</div>' : '')
+            + (wk ? '<div class="tt-cweek">' + wk + '</div>' : '')
             + '</div>';
-        }
+        });
+        html += '<div class="tt-cell has-course" style="grid-row:span ' + span + '">' + inner + '</div>';
       }
     }
     grid.innerHTML = html;
-    grid.querySelectorAll('.tt-cell.has-course').forEach(function (el) {
-      el.addEventListener('click', function () { openEditor(el.dataset.cid); });
+    grid.querySelectorAll('.tt-course-item').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openEditor(el.dataset.cid);
+      });
     });
   }
 
@@ -559,9 +639,12 @@
     var list = document.getElementById('ttReviewList');
     var rows = list.querySelectorAll('.tt-rv-row');
     var added = 0;
-    rows.forEach(function (row, i) {
-      var c = pendingCourses[i];
-      if (!c) return;
+    rows.forEach(function (row) {
+      // ⚠️ 用行上携带的原始下标取 pendingCourses，而不是 forEach 的 i。
+      // 用户删掉一行后重渲染，DOM 顺序与数组顺序会错位，
+      // 早前用 i 索引会把 note 串到别的课程上（实测会「张冠李戴」）。
+      var idx = parseInt(row.dataset.i, 10);
+      var c = (isNaN(idx) ? null : pendingCourses[idx]) || {};
       var name = row.querySelector('.tt-rv-name').value.trim();
       if (!name) return;
       var start = Math.max(1, Math.min(12, +row.querySelector('.tt-rv-start').value || 1));

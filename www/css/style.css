@@ -678,3 +678,12 @@ body.theme-cat .cal-cell{ border-radius:14px; }
   background:var(--card-strong); color:var(--text); border:1px solid var(--card-border);
 }
 .tt-termhint{ font-size:11px; color:var(--accent); }
+
+/* 同一格内多门课（如单周课+双周课共用时段） */
+.tt-course-item{
+  padding:4px 5px; border-radius:6px; cursor:pointer;
+  border-bottom:1px dashed rgba(255,255,255,.12);
+}
+.tt-course-item:last-child{ border-bottom:none; }
+.tt-course-item:active{ background:rgba(91,107,214,.18); }
+.tt-cell.has-course{ padding:3px; }
