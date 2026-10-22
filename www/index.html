@@ -134,6 +134,12 @@
           <button id="ttAddBtn" class="btn">✏️ 手动添加</button>
           <button id="ttClearBtn" class="btn ghost">清空</button>
         </div>
+        <!-- 开学日期：单双周判定的基准。不设也能用（按 ISO 周序），但可能与学校口径差一周 -->
+        <div class="tt-termrow">
+          <span>开学第一周周一</span>
+          <input type="date" id="ttTermStart" />
+          <span class="tt-termhint" id="ttTermHint"></span>
+        </div>
         <div id="ttImportHint" class="tt-hint hidden">
           <div>把课表截图贴进来（或选图），我会自动识别课程名/教室/节次。</div>
           <div class="tt-hint-sub">识别结果会先列出来让你确认修改，确认后才写入。</div>

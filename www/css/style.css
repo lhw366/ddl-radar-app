@@ -666,3 +666,15 @@ body.theme-cat .cal-cell{ border-radius:14px; }
   border:1px solid var(--card-border);
 }
 .tt-rv-start, .tt-rv-end{ width:52px; text-align:center; }
+
+/* 课表：开学日期行 */
+.tt-termrow{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin-top:10px; padding-top:10px; border-top:1px solid var(--card-border);
+  font-size:12px; color:var(--text-dim);
+}
+.tt-termrow input[type=date]{
+  padding:5px 8px; border-radius:8px; font-size:12px;
+  background:var(--card-strong); color:var(--text); border:1px solid var(--card-border);
+}
+.tt-termhint{ font-size:11px; color:var(--accent); }

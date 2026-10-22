@@ -872,6 +872,29 @@ function tickReminders() {
       beep(); vibe();
     }
   }
+  // ── 课表提醒的前台补弹 ──
+  // 课表提醒走的是 sync() → 原生闹钟，但 tickReminders 早前完全不看课表。
+  // 一旦原生没送达（Doze、权限被撤、闹钟被 ROM 拦截），课表提醒就静默丢失，
+  // 而任务提醒至少还有这里兜底 —— 这是「课程有时提醒有时不提醒」的成因。
+  // 现在把课表也纳入同一套 fired 去重与补弹逻辑。
+  try {
+    if (window.Timetable && window.Timetable.planFor) {
+      const todays = window.Timetable.planFor(now);
+      for (const r of todays) {
+        if (fired.has(r.key)) continue;
+        if (r.at > now) continue;
+        if (now - r.at > 15 * 60000) { fired.add(r.key); S.fired.push(r.key); dirty = true; continue; }
+        fired.add(r.key);
+        S.fired.push(r.key);
+        dirty = true;
+        const late = now - r.at > 5000;
+        if (native && !late) continue;
+        toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
+        beep(); vibe();
+      }
+    }
+  } catch (e) { console.warn('课表补弹失败', e); }
+
   // 只在真正有变化时写盘：早前无论有没有新提醒每 2s 都 save() 一次，
   // 这是 localStorage 频繁写入、进而拖慢主线程的元凶之一。
   if (dirty) {
@@ -918,7 +941,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.2';
+const APP_VERSION = '2.2.3';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {

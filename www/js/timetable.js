@@ -592,7 +592,43 @@
 
   /* ---------------- 绑定 ---------------- */
 
+  /** 显示「现在是第几周」，让用户能核对单双周是否与学校一致 */
+  function updateTermHint() {
+    var el = document.getElementById('ttTermHint');
+    if (!el) return;
+    var tt = ensureState();
+    if (!tt || !tt.termStart) {
+      el.textContent = '未设置时按自然周序算';
+      return;
+    }
+    var wn = weekNumber(tt, new Date());
+    el.textContent = wn > 0 ? ('本周第 ' + wn + ' 周 · ' + (wn % 2 ? '单周' : '双周')) : '';
+  }
+
   function bind() {
+    // 开学日期：单双周判定的基准
+    var termInput = document.getElementById('ttTermStart');
+    if (termInput) {
+      var tt0 = ensureState();
+      if (tt0 && tt0.termStart) {
+        // 存的是 ISO 字符串（yyyy-mm-dd），直接喂给 date input
+        termInput.value = String(tt0.termStart).slice(0, 10);
+      }
+      termInput.addEventListener('change', function () {
+        var tt = ensureState();
+        tt.termStart = termInput.value || null;
+        if (window.save) save();
+        updateTermHint();
+        render();
+        // 开学日期变了 → 单双周的奇偶可能整体翻转，必须重排提醒
+        if (window.NativeNotify && window.NativeNotify.syncTimetable) {
+          try { window.NativeNotify.syncTimetable(window.S); } catch (e) {}
+        }
+        if (window.toast) toast('📅 开学日期已更新', '单双周提醒已按新基准重排');
+      });
+    }
+    updateTermHint();
+
     var importBtn = document.getElementById('ttImportBtn');
     if (importBtn) importBtn.addEventListener('click', function () {
       document.getElementById('ttImportHint').classList.toggle('hidden');
@@ -681,9 +717,15 @@
       var d = new Date(dayTs);
       var jsDay = d.getDay();          // 0=周日
       var myDay = jsDay === 0 ? 7 : jsDay;
+      var weekNo = weekNumber(tt, d);  // 第几周（用于单双周判定）
       var out = [];
       tt.courses.forEach(function (c) {
         if (c.day !== myDay) return;
+        // 单双周过滤：早前只在界面上显示「单周/双周」标签，
+        // 生成提醒时完全没判断 —— 结果单周课在双周也会提醒、反之亦然。
+        // 这是「提醒有时准有时不准」的一个真实成因（周期性课表尤其明显）。
+        if (c.week === 'odd' && weekNo % 2 === 0) return;
+        if (c.week === 'even' && weekNo % 2 === 1) return;
         var slot = tt.slots[c.start - 1] || DEFAULT_SLOTS[c.start - 1];
         var m = String(slot).match(/(\d{1,2}):(\d{2})/);
         if (!m) return;
@@ -694,13 +736,46 @@
           key: 'tt:' + c.id + ':' + at,
           at: remind,
           title: '📚 ' + (c.remindMin || 15) + ' 分钟后上课',
-          body: c.name + (c.room ? ' · ' + c.room : '') + ' · 第' + c.start + '-' + c.end + '节 ' + slot,
+          body: c.name + (c.room ? ' · ' + c.room : '') + ' · 第' + c.start + '-' + c.end + '节 ' + slot
+            + (c.week === 'odd' ? '（单周）' : c.week === 'even' ? '（双周）' : ''),
           kind: 'daily'
         });
       });
       return out;
     }
   };
+
+  /**
+   * 计算某天是学期第几周（用于单双周判定）。
+   *
+   * 基准优先级：
+   *  1) 用户在课表里设置的学期开始日（tt.termStart）
+   *  2) 没设置时，退化为「该日期所在年的第几周」（ISO 周序）
+   *
+   * 说明：没有 termStart 时，单双周的绝对奇偶可能与学校口径不一致
+   * （不同学校开学周不同），但至少保证「同一周内一致、隔周交替」，
+   * 这比完全不过滤要正确得多。界面上应引导用户设置开学日期。
+   */
+  function weekNumber(tt, d) {
+    var base = null;
+    if (tt.termStart) {
+      base = new Date(tt.termStart);
+      if (!isNaN(base.getTime())) {
+        // 归一到那一周的周一
+        var bd = base.getDay() === 0 ? 7 : base.getDay();
+        base = new Date(base.getFullYear(), base.getMonth(), base.getDate() - (bd - 1));
+        var day0 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        var diffDays = Math.round((day0 - base) / 86400000);
+        return Math.floor(diffDays / 7) + 1;
+      }
+    }
+    // 退化：ISO 周序
+    var t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    var dayNum = t.getDay() === 0 ? 7 : t.getDay();
+    t = new Date(t.getFullYear(), t.getMonth(), t.getDate() + 4 - dayNum); // 该周周四
+    var yearStart = new Date(t.getFullYear(), 0, 1);
+    return Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  }
 
   window.addEventListener('DOMContentLoaded', function () {
     try { bind(); render(); } catch (e) { console.warn('课表模块初始化失败', e); }
