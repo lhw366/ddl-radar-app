@@ -2,13 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
 
-function nativeHarness(apply, extra = {}) {
-  return harness(['nativenotify.js', 'app.js'], { globals: {
+function nativeHarness(apply, extra = {}, alarm = {}) {
+  const h = harness(['nativenotify.js', 'app.js'], { globals: {
     Capacitor: { isNativePlatform: () => true, Plugins: {
-      DdlAlarm: { apply },
+      DdlAlarm: { apply, ...alarm },
       DdlNotify: { configureDisplay: async () => ({ overlayAllowed: true }), ...extra }
     } }
   } });
+  // app.js declares its own toast(), which shadows the fixture spy installed on
+  // the sandbox globals. Re-install the spy after load so toast assertions are real.
+  h.run('window.__toasts = []; toast = function () { window.__toasts.push(Array.prototype.slice.call(arguments)); };');
+  h.toasts = h.context.__toasts;
+  return h;
 }
 
 test('a real saved event reaches native scheduling before its deadline without opening it again', async () => {
@@ -117,10 +122,39 @@ test('the event editor waits for native acceptance before confirming a saved eve
   assert.equal(h.el('editorWrap').classList.contains('hidden'), true);
 });
 
-test('opening the APK does not replay a due event through JavaScript', () => {
-  const h = nativeHarness(async () => ({}));
+test('opening the APK does not replay a due event the native side already delivered', async () => {
+  // De-duplication must key off the native delivery log, not off a 5s time guess:
+  // the old heuristic either duplicated every delivered reminder or (when it was
+  // bypassed with a blanket return) silenced the only fallback entirely.
+  const log = [];
+  const h = nativeHarness(async () => ({}), {}, { pending: async () => ({ deliveredLog: log }) });
+  const dueAt = h.context.Date.now() - 6000;
   h.run(`S.settings.tiered = false; S.tasks.push({ id: 'native-owned', name: '已由原生处理',
+    dueAt: ${dueAt}, daily: false, quadrant: 'q2' });`);
+  log.push([h.run(`NativeNotify.idOf('native-owned|due')`), dueAt]);
+  h.run('tickReminders()');
+  await h.run('tickReminders._flush');
+  assert.equal(h.toasts.length, 0, 'a delivered occurrence must not be replayed');
+  assert.equal(h.context.S.fired.length, 1, 'the reminder is still consumed exactly once');
+});
+
+test('opening the APK replays a due event the native side never delivered', async () => {
+  const h = nativeHarness(async () => ({}), {}, { pending: async () => ({ deliveredLog: [] }) });
+  h.run(`S.settings.tiered = false; S.tasks.push({ id: 'missed', name: '原生漏送',
     dueAt: Date.now() - 6000, daily: false, quadrant: 'q2' }); tickReminders();`);
-  assert.equal(h.toasts.length, 0);
-  assert.equal(h.context.S.fired.length, 0, 'native delivery markers own APK de-duplication');
+  await h.run('tickReminders._flush');
+  assert.equal(h.toasts.length, 1, 'a missed occurrence must surface in the app');
+  assert.match(h.toasts[0][0], /补弹/);
+});
+
+test('a just-due event is not consumed while native delivery may still be in flight', () => {
+  // Regression: the old loop marked the reminder as fired *before* deciding
+  // whether native still had to deliver it, so a reminder the native side never
+  // delivered was swallowed permanently.
+  const h = nativeHarness(async () => ({}));
+  h.run(`NativeNotify._synced = true; NativeNotify._syncedAt = Date.now();
+    S.settings.tiered = false; S.tasks.push({ id: 'in-flight', name: '正在派发',
+      dueAt: Date.now() - 1000, daily: false, quadrant: 'q2' }); tickReminders();`);
+  assert.equal(h.context.S.fired.length, 0,
+    'a reminder inside the native delivery window stays pending for the next tick');
 });
