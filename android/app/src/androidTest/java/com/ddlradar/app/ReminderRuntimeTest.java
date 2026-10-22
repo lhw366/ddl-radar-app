@@ -51,6 +51,7 @@ public class ReminderRuntimeTest {
         schedule(11001, 8000, false);
         shell("input keyevent KEYCODE_HOME");
         awaitStage(11001, "overlay_visible", 16000);
+        awaitCompositedBanner();
         assertTrue(hasStage(11001, "receiver"));
         assertTrue(hasStage(11001, "service"));
         assertTrue(hasStage(11001, "vibration_requested"));
@@ -73,6 +74,7 @@ public class ReminderRuntimeTest {
         schedule(11002, 4000, true);
         shell("input keyevent KEYCODE_HOME");
         awaitStage(11002, "overlay_visible", 12000);
+        awaitCompositedBanner();
         assertEquals(1, visibleCards());
         Thread.sleep(6000);
         instrumentation.waitForIdleSync();
@@ -134,5 +136,29 @@ public class ReminderRuntimeTest {
             screen.compress(Bitmap.CompressFormat.PNG, 100, out);
         }
         screen.recycle();
+    }
+
+    private void awaitCompositedBanner() throws Exception {
+        // A pre-draw callback/visible rectangle is not proof of screen pixels.
+        long until = System.currentTimeMillis() + 3500;
+        while (System.currentTimeMillis() < until) {
+            Thread.sleep(200);
+            Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();
+            int pixels = 0;
+            if (screen != null) {
+                for (int y = 0; y < screen.getHeight() / 2; y++) {
+                    for (int x = 0; x < screen.getWidth(); x++) {
+                        int color = screen.getPixel(x, y);
+                        if (Math.abs(android.graphics.Color.red(color) - 35) <= 2
+                                && Math.abs(android.graphics.Color.green(color) - 42) <= 2
+                                && Math.abs(android.graphics.Color.blue(color) - 70) <= 2) pixels++;
+                    }
+                }
+                screen.recycle();
+            }
+            if (pixels > 3000) return;
+        }
+        screenshot("missing-banner.png");
+        fail("Overlay had a visible layout but its card was absent from the composited screen");
     }
 }

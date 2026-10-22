@@ -269,6 +269,9 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
             ret.put("device", Build.MANUFACTURER + " " + Build.MODEL);
+            android.content.pm.PackageInfo installed = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0);
+            ret.put("appVersion", installed.versionName);
+            ret.put("appBuild", Build.VERSION.SDK_INT >= 28 ? installed.getLongVersionCode() : installed.versionCode);
             ret.put("androidRelease", Build.VERSION.RELEASE);
             ret.put("overlayAllowed", ReminderBanner.allowed(ctx));
             ret.put("trace", ReminderTrace.read(ctx));

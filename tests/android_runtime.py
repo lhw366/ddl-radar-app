@@ -30,6 +30,10 @@ def capture(prefix):
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
     (OUT / f'{prefix}-screen.png').write_bytes(adb('exec-out', 'screencap', '-p', binary=True, check=False))
+    for name in ['runtime-manual.png', 'missing-banner.png']:
+        image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
+        if image.startswith(b'\x89PNG'):
+            (OUT / f'{prefix}-{name}').write_bytes(image)
 
 
 def traces():
@@ -76,11 +80,16 @@ try:
     adb('shell', 'am', 'kill', PKG)
     time.sleep(2)
     assert not adb('shell', 'pidof', PKG, check=False), 'Cold test must begin with no app process.'
+    adb('shell', 'device_config', 'put', 'device_idle', 'min_time_to_alarm', '0')
+    adb('shell', 'settings', 'put', 'global', 'device_idle_constants', 'min_time_to_alarm=0')
+    time.sleep(1)
     adb('shell', 'dumpsys', 'battery', 'unplug')
     adb('shell', 'input', 'keyevent', 'KEYCODE_SLEEP')
     idle = adb('shell', 'dumpsys', 'deviceidle', 'force-idle')
     (OUT / 'forced-idle.txt').write_text(idle, encoding='utf-8')
-    assert 'idle' in idle.lower(), idle
+    state = adb('shell', 'dumpsys', 'deviceidle', 'get', 'deep')
+    (OUT / 'confirmed-idle-state.txt').write_text(state, encoding='utf-8')
+    assert state.strip() == 'IDLE', f'Device did not enter deep idle: {idle}; state={state}'
     until = time.monotonic() + 65
     events = []
     while time.monotonic() < until:
@@ -96,7 +105,12 @@ try:
     capture('cold-doze')
     print('PASS: desktop banner layout, manual dismissal, 5-second expiry, cold process + Doze delivery')
 finally:
-    capture('final')
+    try:
+        capture('final')
+    except Exception as error:
+        print('Capture failed:', error)
+    adb('shell', 'device_config', 'delete', 'device_idle', 'min_time_to_alarm', check=False)
+    adb('shell', 'settings', 'delete', 'global', 'device_idle_constants', check=False)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
     adb('shell', 'pm', 'clear', PKG, check=False)

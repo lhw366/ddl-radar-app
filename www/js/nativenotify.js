@@ -165,6 +165,8 @@
         out.guard = p.guard === true;
         out.sdk = p.sdk || null;
         out.device = p.device || '';
+        out.appVersion = p.appVersion;
+        out.appBuild = p.appBuild;
         out.androidRelease = p.androidRelease || '';
         out.trace = p.trace || [];
         out.overlayAllowed = p.overlayAllowed === true;
