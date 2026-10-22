@@ -18,9 +18,9 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 系统闹钟调度核心：AlarmManager.setAlarmClock()（系统时钟同款 API）。
- * - 精确闹钟权限可用时使用 setAlarmClock；否则降级为允许休眠期间执行的闹钟
- * - 状态栏显示闹钟图标（点按直达 App），系统视为用户真正的闹钟
+ * 提醒调度核心：允许休眠的精确提醒，不使用会提前退出省电状态的闹钟时钟。
+ * - 精确提醒权限可用时使用 setExactAndAllowWhileIdle；否则显式记录降级
+ * - 每个事件只注册一个系统提醒，无提前唤醒与重复闹钟
  * - 闹钟列表持久化在 SharedPreferences，开机/改时间/替换安装后由
  *   BootReceiver 调 reapplyAll() 自动恢复（AlarmManager 闹钟不跨重启）
  */
@@ -33,11 +33,12 @@ public final class AlarmScheduler {
      * v5 = 系统只调度最近 120 条，其余保存在原生队列中逐条递补
      * v7 = 响铃/震动/横幅独立设置，旧版闹钟按新通道与震动标记重排
      * v8 = 同时刻备份、临期短唤醒、新版横幅通道
+     * v10 = 单路 exact-idle 提醒，退役闹钟时钟与预唤醒，保护系统休眠
      * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 9;
+    public static final int SCHED_VER = 10;
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
@@ -268,74 +269,25 @@ public final class AlarmScheduler {
         }
     }
 
-    /**
-     * 注册一条系统闹钟，双机制同发：
-     * 主：setAlarmClock（状态栏闹钟图标、免授权、Doze 准时）；
-     * 备：setExactAndAllowWhileIdle 在相同时间再发一次——个别 ROM 对闹钟时钟通道
-     * 的派发存在怪异拦截，两条独立通道指向同一接收器，只要一条到达即提醒。
-     *
-     * 注意备份通道必须用**独立 requestCode** 的 PendingIntent：
-     * 早前主备共用同一 PendingIntent，系统视为同一闹钟的重复设置，
-     * 后注册的 setExactAndAllowWhileIdle 会把 setAlarmClock 顶掉，
-     * 导致「状态栏闹钟图标消失 + 退化为精确闹钟（Doze 下有分钟级延迟）」，
-     * 这正是用户反馈「延迟有点高」的根因。
-     */
+    /** One user-facing exact reminder; no alarm-clock icon, prewake, or duplicate alarms. */
     public static synchronized void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId, boolean vibrate) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) throw new IllegalStateException("Alarm manager unavailable");
         cancelLegacy(ctx, id);
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 2)); // Retire v8 prewake.
-
-        // showIntent：状态栏闹钟图标点按后打开 App
-        PendingIntent show = null;
-        Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
-        if (open != null) {
-            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            show = PendingIntent.getActivity(ctx, (int) id, open,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        }
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
         PendingIntent op = operation(ctx, id, at, title, body, channelId, vibrate, 0);
-
+        String mode = "exact_idle";
         try {
-            am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show), op);
-        } catch (SecurityException e) {
-            // 降级路径：setAlarmClock 被拒（Android 12/12L 上用户撤销「闹钟和提醒」
-            // 权限，或个别 ROM 自定义拦截）。此时改用精确闹钟而非 set()：
-            // set() 是 inexact 闹钟，Doze 下会被推迟到下一个维护窗口（小时级），
-            // 而 setExactAndAllowWhileIdle 每个 Doze 窗口仍能保证触发一次。
-            // 此处 op 是「尚未注册成功」的身份，不存在与其他闹钟互相覆盖的问题。
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
-                } else {
-                    am.setExact(AlarmManager.RTC_WAKEUP, at, op);
-                }
-            } catch (SecurityException e2) {
-                // 精确闹钟同样被拒：最后退回 inexact。这一层必须自己兜住，
-                // 否则异常会冒出 schedule() 打断后续备份通道注册，并被
-                // DdlAlarmPlugin.apply() 的 try 捕获后 reject 整次调用——
-                // 那会导致整表闹钟一条都排不上，远比「不准时」严重。
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
-                } else {
-                    am.set(AlarmManager.RTC_WAKEUP, at, op);
-                }
-            }
+            if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
+            else am.setExact(AlarmManager.RTC_WAKEUP, at, op);
+        } catch (SecurityException denied) {
+            mode = "inexact_idle_permission_denied";
+            if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
+            else am.set(AlarmManager.RTC_WAKEUP, at, op);
         }
-        // 备份通道：同一截止时间兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
-        // （共用会让后注册的精确闹钟顶掉 setAlarmClock，反而失去 Doze 准时性）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                // 不用 canScheduleExactAlarms() 预判：该 API 仅 Android 12+ 存在，
-                // 且在「主通道刚被拒」的场景下必然返回 false，会导致最需要兜底时
-                // 反而跳过兜底。改为直接尝试、由异常决定是否可用。
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at,
-                        operation(ctx, id, at, title, body, channelId, vibrate, 1));
-            } catch (Exception ignore) { /* 主通道在即可 */ }
-        }
-        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at);
-
+        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode);
     }
 
     /** 取消一条闹钟：主备两条都要注销（独立 requestCode 后不再共享身份） */

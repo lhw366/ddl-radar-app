@@ -52,7 +52,7 @@ final class AlarmDelivery {
             AlarmScheduler.recordDelivered(context, id, at);
             int slot = intent.getIntExtra("slot", 0);
             AlarmScheduler.markFired(context, id,
-                    slot == 1 ? "exact" : slot == 2 ? "service" : "clock");
+                    slot == 2 ? "service" : "exact");
             if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;
         }

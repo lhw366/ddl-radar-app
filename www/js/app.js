@@ -1258,7 +1258,9 @@ async function renderDiag() {
     '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
       (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''),
     (d.pending || 0) > 0 || queued > 0 ? '' : 'notask');
-  if (((d.pending || 0) > 0 || queued > 0) && !(d.sysNextAt > 0)) {
+  if (d.clockMode === false) {
+    html += diagRow(true, '按事件到点唤醒，不提前唤醒手机或常驻轮询');
+  } else if (((d.pending || 0) > 0 || queued > 0) && !(d.sysNextAt > 0)) {
     html += diagRow(false, '有待提醒内容，但系统当前没有接受任何闹钟（可能被 ROM 拦截）');
   } else if (d.sysNextAt > 0) {
     html += diagRow(true, '系统已接受的最近闹钟 ' + fmtDT(d.sysNextAt));
@@ -1267,7 +1269,7 @@ async function renderDiag() {
   }
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0
     ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) +
-      (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' :
+      (d.lastFireVia === 'exact' ? '（经系统精确提醒）' :
        d.lastFireVia === 'service' ? '（经守护服务兜底）' : '（经系统闹钟）')
     : '还没有触发记录（闹钟触发一次后出现）');
   if (d.lastDelayMs >= 0) {
@@ -1298,7 +1300,7 @@ async function renderDiag() {
 
   html += diagRow(true, d.guard ? '派发服务正在处理提醒或显示横幅' : '派发服务已休眠：未来事件由系统闹钟唤醒');
   html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不需要关闭电池优化。异常时请复制诊断。');
-  html += diagRow(null, '系统闹钟负责唤醒提醒；重启和更新后自动恢复，实际延迟见上方记录');
+  html += diagRow(null, '系统精确提醒负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
     delivery: '开始执行提醒', vibration_requested: '已请求震动', notification: '已提交系统通知',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',

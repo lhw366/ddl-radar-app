@@ -68,21 +68,12 @@ assert adb('get-state') == 'device'
 assert adb('shell', 'getprop', 'ro.kernel.qemu') == '1', 'This script only runs on a disposable emulator.'
 try:
     prepare()
-    instrument('ReminderRuntimeTest', 2)
-    capture('desktop')
-    (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
-    (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
-
-    prepare()
     instrument('ColdReminderFixture', 1)
     registered = next(e for e in traces() if e['stage'] == 'scheduled' and e['id'] == 11003)
     adb('shell', 'input', 'keyevent', 'KEYCODE_HOME')
     adb('shell', 'am', 'kill', PKG)
     time.sleep(2)
     assert not adb('shell', 'pidof', PKG, check=False), 'Cold test must begin with no app process.'
-    # Use the user-setting override consumed by DeviceIdleController. Android
-    # 16 restricts shell writes to non-allowlisted DeviceConfig flags.
-    adb('shell', 'settings', 'put', 'global', 'device_idle_constants', 'min_time_to_alarm=0')
     adb('shell', 'dumpsys', 'deviceidle', 'enable')
     time.sleep(1)
     adb('shell', 'dumpsys', 'battery', 'unplug')
@@ -116,13 +107,20 @@ try:
     assert receiver['pid'] != registered['pid'], 'System must restart the process to deliver this event.'
     (OUT / 'cold-doze-trace.json').write_text(json.dumps(events, indent=2), encoding='utf-8')
     capture('cold-doze')
+    adb('shell', 'dumpsys', 'deviceidle', 'unforce')
+    adb('shell', 'dumpsys', 'battery', 'reset')
+    prepare()
+    instrument('ReminderRuntimeTest', 2)
+    capture('desktop')
+    (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
+    (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
+
     print('PASS: desktop banner layout, manual dismissal, 5-second expiry, cold process + Doze delivery')
 finally:
     try:
         capture('final')
     except Exception as error:
         print('Capture failed:', error)
-    adb('shell', 'settings', 'delete', 'global', 'device_idle_constants', check=False)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
     adb('shell', 'pm', 'clear', PKG, check=False)

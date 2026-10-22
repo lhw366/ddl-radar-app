@@ -22,7 +22,7 @@ import java.util.List;
 
 /**
  * DDL雷达 原生系统闹钟桥（替代 Capacitor LocalNotifications 的调度职责）。
- * 调度统一走 AlarmManager.setAlarmClock()（见 AlarmScheduler）。
+ * 调度统一走 AlarmManager.setExactAndAllowWhileIdle()（见 AlarmScheduler）。
  *
  * JS 侧每次任务/设置变化后调用 apply() 整表协调：
  * 以 JS 算出的期望列表为准，已存在且内容未变的跳过，多退少补，
@@ -243,10 +243,6 @@ public class DdlAlarmPlugin extends Plugin {
             }
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
             long sysNextAt = 0;
-            if (am != null) {
-                AlarmManager.AlarmClockInfo info = am.getNextAlarmClock();
-                if (info != null) sysNextAt = info.getTriggerTime();
-            }
             long[] lf = AlarmScheduler.lastFire(ctx);
             long[] lr = AlarmScheduler.lastReceiver(ctx);
             JSObject ret = new JSObject();
@@ -254,6 +250,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("nextAt", nextAt);
             ret.put("queued", queued);
             ret.put("sysNextAt", sysNextAt);
+            ret.put("clockMode", false);
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));

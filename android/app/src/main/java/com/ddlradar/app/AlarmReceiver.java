@@ -20,7 +20,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
         if (AlarmScheduler.wasDelivered(context, intent.getIntExtra("id", -1), intent.getLongExtra("at", 0))) return;
         AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0),
-                intent.getIntExtra("slot", 0) == 1 ? "exact" : "clock");
+                "exact");
         ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", intent.getDataString());
         // The service enters foreground before owning effects and overlay UI.
         // Posting a Handler from a short-lived receiver is not UI delivery.

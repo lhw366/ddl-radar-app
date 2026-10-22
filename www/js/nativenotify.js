@@ -1,12 +1,6 @@
-/* ============================================================
-   DDL雷达 · 原生系统提醒桥（v1.8：AlarmManager.setAlarmClock 原生闹钟）
-   - 调度/恢复全部走自研 DdlAlarm 原生插件（系统时钟同款 setAlarmClock API）
-     免精确闹钟授权、Doze 深度休眠保证准时、状态栏常驻闹钟图标，
-     杀后台/重启/覆盖安装后由原生 BootReceiver 自动恢复
-   - 响铃、震动、横幅相互独立；震动由接收器直接执行
-   - 通道创建仍用 DdlNotify 原生插件（插件自带的不支持 vibration）
-   网页版（file:// / http）自动跳过，走应用内引擎。
-   ============================================================ */
+/* DDL雷达原生提醒：正常事件和测试统一 apply → AlarmManager 精确提醒。
+   仅在事件到点时唤醒并短时启动服务；无预唤醒、常驻轮询或电池优化豁免。
+   顶部横幅需要用户授权悬浮窗，关闭后显示服务自动退出。 */
 (function () {
   'use strict';
 
@@ -155,6 +149,7 @@
         out.channelId = outputsEnabled(settings) ? (p.channelId || channelId) : null;
         out.nextAt = p.nextAt || 0;
         out.sysNextAt = p.sysNextAt || 0;
+        out.clockMode = p.clockMode !== false;
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
         out.lastFireVia = p.lastFireVia || '';
