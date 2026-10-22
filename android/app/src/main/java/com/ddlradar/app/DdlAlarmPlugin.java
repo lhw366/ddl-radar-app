@@ -113,7 +113,7 @@ public class DdlAlarmPlugin extends Plugin {
                             // 所以不需要先 cancel——这正是消除空窗的关键。
                             AlarmScheduler.schedule(ctx, w.optLong("id"), w.optLong("at"),
                                     w.optString("title", null), w.optString("body", null),
-                                    w.optString("channel", null));
+                                    w.optString("channel", null), w.optBoolean("vibrate", true));
                             added++;
                         }
                         w.put("scheduled", true);
@@ -169,7 +169,7 @@ public class DdlAlarmPlugin extends Plugin {
             synchronized (AlarmScheduler.class) {
                 AlarmScheduler.schedule(ctx, o.optLong("id"), o.optLong("at"),
                         o.optString("title", null), o.optString("body", null),
-                        o.optString("channel", null));
+                        o.optString("channel", null), o.optBoolean("vibrate", true));
                 o.put("scheduled", true);
                 upsert(ctx, o);
             }
@@ -251,6 +251,7 @@ public class DdlAlarmPlugin extends Plugin {
                 if (info != null) sysNextAt = info.getTriggerTime();
             }
             long[] lf = AlarmScheduler.lastFire(ctx);
+            long[] lr = AlarmScheduler.lastReceiver(ctx);
             JSObject ret = new JSObject();
             ret.put("items", items);
             ret.put("nextAt", nextAt);
@@ -259,6 +260,8 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
+            ret.put("lastReceiverId", lr[0]);
+            ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
 
@@ -267,10 +270,7 @@ public class DdlAlarmPlugin extends Plugin {
             // 只能引导用户去系统设置。这里把真实重要性暴露给诊断面板。
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            String channelId = call.getString("channelId", "ddlr_full");
-            if (!"ddlr_vib".equals(channelId) && !"ddlr_ring".equals(channelId)) {
-                channelId = "ddlr_full";
-            }
+            String channelId = normalizeChannelId(call.getString("channelId", "ddlr_high_sound"));
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
             ret.put("channelImportance", imp);
@@ -308,7 +308,8 @@ public class DdlAlarmPlugin extends Plugin {
             o.put("at", (Number) call.getData().get("at"));
             o.put("title", call.getString("title", ""));
             o.put("body", call.getString("body", ""));
-            o.put("channel", call.getString("channelId", "ddlr_full"));
+            o.put("channel", call.getString("channelId", "ddlr_high_sound"));
+            o.put("vibrate", call.getBoolean("vibrate", true));
             return o;
         } catch (Exception e) {
             return null;
@@ -336,8 +337,10 @@ public class DdlAlarmPlugin extends Plugin {
             o.put("title", in.optString("title", ""));
             o.put("body", in.optString("body", ""));
             String ch = in.optString("channel", "");
-            if (ch.isEmpty()) ch = in.optString("channelId", "ddlr_full");
+            if (ch.isEmpty()) ch = in.optString("channelId", "ddlr_high_sound");
+            ch = normalizeChannelId(ch);
             o.put("channel", ch);
+            o.put("vibrate", in.optBoolean("vibrate", true));
             return o;
         } catch (JSONException e) {
             return null;
@@ -352,7 +355,18 @@ public class DdlAlarmPlugin extends Plugin {
                 && a.optLong("at") == b.optLong("at")
                 && a.optString("title", "").equals(b.optString("title", ""))
                 && a.optString("body", "").equals(b.optString("body", ""))
-                && a.optString("channel", "").equals(b.optString("channel", ""));
+                && a.optString("channel", "").equals(b.optString("channel", ""))
+                && a.optBoolean("vibrate", true) == b.optBoolean("vibrate", true);
+    }
+
+    private String normalizeChannelId(String id) {
+        if ("ddlr_high_sound".equals(id) || "ddlr_high_silent".equals(id)
+                || "ddlr_gentle_sound".equals(id) || "ddlr_gentle_silent".equals(id)) {
+            return id;
+        }
+        if ("ddlr_vib".equals(id)) return "ddlr_high_silent";
+        if ("ddlr_full".equals(id) || "ddlr_ring".equals(id)) return "ddlr_high_sound";
+        return "ddlr_high_sound";
     }
 
     private void upsert(Context ctx, JSONObject o) {

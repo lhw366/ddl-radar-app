@@ -3,7 +3,7 @@
    - 调度/恢复全部走自研 DdlAlarm 原生插件（系统时钟同款 setAlarmClock API）
      免精确闹钟授权、Doze 深度休眠保证准时、状态栏常驻闹钟图标，
      杀后台/重启/覆盖安装后由原生 BootReceiver 自动恢复
-   - 声音/震动由通知通道携带：响铃+震动 / 仅震动 / 仅响铃 / 仅应用内横幅
+   - 响铃、震动、横幅相互独立；震动由接收器直接执行
    - 通道创建仍用 DdlNotify 原生插件（插件自带的不支持 vibration）
    网页版（file:// / http）自动跳过，走应用内引擎。
    ============================================================ */
@@ -23,12 +23,33 @@
     return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify) || null;
   }
 
-  var CHANNELS = ['ddlr_full', 'ddlr_vib', 'ddlr_ring'];
+  var CHANNELS = [
+    'ddlr_high_sound', 'ddlr_high_silent',
+    'ddlr_gentle_sound', 'ddlr_gentle_silent'
+  ];
+
+  function settingEnabled(settings, key) {
+    return !!(settings && settings[key] !== false);
+  }
+
+  function outputsEnabled(settings) {
+    if (!settings || settings.remindSilent === true) return false;
+    return settingEnabled(settings, 'sound') || settingEnabled(settings, 'vibrate') ||
+      settingEnabled(settings, 'banner');
+  }
+
+  function channelIdFor(settings) {
+    var banner = settingEnabled(settings, 'banner');
+    var sound = settingEnabled(settings, 'sound');
+    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_' + (sound ? 'sound' : 'silent');
+  }
 
   var N = {
     available: function () {
       return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform() && DDL());
     },
+    outputsEnabled: outputsEnabled,
+    channelIdFor: channelIdFor,
     _sig: null,
     // 最近一次 apply() 是否成功把闹钟真正排进系统。
     // 只有 true 时 tickReminders 才敢把「到点」完全交给原生、自己不弹；
@@ -68,12 +89,14 @@
     ensureChannels: async function (force) {
       var ddp = DDP();
       if (!ddp) return;
-      // 通道承载一切表现（系统闹钟模式）：HIGH 重要性弹横幅、铃声/震动由系统
-      // 在通知送达时播放（不依赖进程存活）；到点路径只负责把通知交给系统
+      // Four fixed channels encode only two independent system-level choices:
+      // heads-up banner on/off and chime on/off. Vibration is executed directly
+      // by the native receiver and is therefore independent of channel history.
       var defs = [
-        { id: 'ddlr_full', name: '提醒 · 响铃+震动', importance: 4, vibration: true, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_vib',  name: '提醒 · 仅震动',   importance: 4, vibration: true, sound: '' },
-        { id: 'ddlr_ring', name: '提醒 · 仅响铃',   importance: 4, vibration: false, sound: 'ddlr_chime.wav' }
+        { id: 'ddlr_high_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_high_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: '' },
+        { id: 'ddlr_gentle_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_gentle_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
       ];
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
       // 注意：原生侧现在默认复用已存在通道，force 才删重建——用户手动调整过的
@@ -124,17 +147,19 @@
       var ddp = DDP();
       try { var s = await ddp.notifyStatus(); out.notify = !!s.granted; } catch (e) { out.notify = null; }
       try {
-        var mode = (window.S && window.S.settings && window.S.settings.remindMode) || 'full';
-        var channelId = mode === 'silent' ? 'ddlr_full' : 'ddlr_' + mode;
+        var settings = (window.S && window.S.settings) || {};
+        var channelId = channelIdFor(settings);
         var p = await DDL().pending({ channelId: channelId });
         out.pending = (p.items || []).length;
         out.queued = p.queued || 0;
-        out.channelId = mode === 'silent' ? null : (p.channelId || channelId);
+        out.channelId = outputsEnabled(settings) ? (p.channelId || channelId) : null;
         out.nextAt = p.nextAt || 0;
         out.sysNextAt = p.sysNextAt || 0;
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
         out.lastFireVia = p.lastFireVia || '';
+        out.lastReceiverId = p.lastReceiverId || 0;
+        out.lastReceiverAt = p.lastReceiverAt || 0;
         out.guard = p.guard === true;
         out.sdk = p.sdk || null;
         // 新增诊断项：解释「为什么没横幅 / 为什么不准时」
@@ -152,19 +177,19 @@
       return out;
     },
 
-    // 10 秒后由系统闹钟弹一条真实通知，用于验证提醒链路（含退 App 场景）。
+    // 5 秒后由系统闹钟投递一条真实提醒，用于验证退 App 场景。
     // 自验证：排定后回读原生存储确认生效，toast 给出确定结论（单一出口）。
     test: async function () {
       var ddl = DDL();
       if (!ddl) return false;
-      var mode = (window.S && S.settings.remindMode) || 'full';
-      if (mode === 'silent') {
+      var settings = (window.S && S.settings) || {};
+      if (!outputsEnabled(settings)) {
         setTimeout(function () {
-          if (window.toast) toast('🧪 测试提醒', '静默模式：只显示应用内横幅，无系统通知', 'urgent');
-        }, 10000);
+          if (window.toast) toast('🧪 测试提醒', '提醒已关闭，因此不会响铃、震动或显示横幅', 'urgent');
+        }, 5000);
         return true;
       }
-      var at = Date.now() + 10000;
+      var at = Date.now() + 5000;
       try {
         // 权限预检：被拒时系统会静默丢弃通知横幅（原生接收器仍会响铃/震动兜底）
         var granted = true;
@@ -176,8 +201,9 @@
           id: 990000001,
           at: at,
           title: '🧪 测试提醒',
-          body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
-          channelId: 'ddlr_' + mode
+          body: '收到这条 = 系统闹钟提醒链路通 ✓（退 App 也能到达）',
+          channelId: channelIdFor(settings),
+          vibrate: settingEnabled(settings, 'vibrate')
         });
         try { localStorage.setItem('ddlr_testAt', String(at)); } catch (e) {}
         // 回读验证：这条闹钟确实在原生存储里
@@ -188,11 +214,11 @@
         } catch (e) { /* 验证失败不否定排定，按已排定提示 */ ok = true; }
         if (ok) {
           if (window.toast) {
-            var head = granted ? '✅ 已排定，10 秒后应响'
-              : '✅ 已排定 · 10 秒后应响铃/震动（横幅需通知权限）';
+            var head = granted ? '✅ 已排定，5 秒后应提醒'
+              : '✅ 已排定 · 5 秒后应响铃/震动（横幅需通知权限）';
             window.toast(head, '验证中：退 App 也行。若毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
           }
-          // +13s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
+          // +8s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
           setTimeout(function () {
             if (document.hidden) return; // 退到后台的验证场景以实际通知为准
             ddl.pending().then(function (p) {
@@ -206,7 +232,7 @@
                 window.toast('⚠️ 闹钟到点未触发', '系统未派发广播：请把「运行诊断」截图反馈', 'tt-urgent');
               }
             }).catch(function () {});
-          }, 13000);
+          }, 8000);
         } else if (window.toast) {
           window.toast('⚠️ 排定未生效', '点「运行诊断」查看系统闹钟状态', 'tt-urgent');
         }
@@ -231,7 +257,10 @@
     // 任务/设置变化后整表协调系统闹钟（带签名去抖；原生侧多退少补）
     sync: async function (S) {
       if (!this.available() || !S) return;
-      var mode = (S.settings && S.settings.remindMode) || 'full';
+      var settings = S.settings || {};
+      var enabled = outputsEnabled(settings);
+      var channelId = channelIdFor(settings);
+      var vibrate = settingEnabled(settings, 'vibrate');
       // 签名必须覆盖所有会影响 planReminders() 输出的因素：
       // · 日期/时刻档 —— planReminders 结果随时间推移变化（每日提醒按天生成），
       //   签名若不含时间，跨天不会重排，7 天窗口用完后提醒体系直接归零。
@@ -242,7 +271,7 @@
       var slot10 = Math.floor(nowMs / 600000); // 10 分钟一档
       var tiered = (S.settings && S.settings.tiered) ? 1 : 0;
       var dailyTime = (S.settings && S.settings.dailyTime) || '';
-      var sig = mode + '|' + tiered + '|' + dailyTime + '|' + dayKey + '|' + slot10 + '|'
+      var sig = enabled + '|' + channelId + '|' + vibrate + '|' + tiered + '|' + dailyTime + '|' + dayKey + '|' + slot10 + '|'
         + S.tasks.map(function (t) {
           return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
         }).join(',')
@@ -259,7 +288,7 @@
 
       try {
         var alarms = [];
-        if (mode !== 'silent') {
+        if (enabled) {
           var now = Date.now();
           // 关键：只排「近 7 天内」的提醒。
           // planReminders() 的远期每日提醒会为每个任务生成最多 400 天、
@@ -281,7 +310,8 @@
                 at: r.at,
                 title: r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
-                channelId: 'ddlr_' + mode
+                channelId: channelId,
+                vibrate: vibrate
               });
             }
           }
@@ -304,7 +334,8 @@
                     at: cr.at,
                     title: cr.title,
                     body: cr.body,
-                    channelId: 'ddlr_' + mode
+                    channelId: channelId,
+                    vibrate: vibrate
                   });
                 }
               }
@@ -313,17 +344,18 @@
           alarms.sort(function (a, b) { return a.at - b.at; });
         }
         // 未触发的测试闹钟并入对账列表，防止被 apply() 当作多余条目撤销
-        // （静默模式不并入：跟随当前模式被撤销，符合「不发系统通知」语义）
+        // （关闭提醒时不并入：跟随当前设置被撤销）
         try {
           var testAt = parseInt(localStorage.getItem('ddlr_testAt') || '0', 10);
-          if (mode !== 'silent' && testAt > Date.now() + 3000) {
+          if (enabled && testAt > Date.now() + 3000) {
             if (!scheduledIds.has(990000001)) {
               alarms.push({
                 id: 990000001,
                 at: testAt,
                 title: '🧪 测试提醒',
                 body: '看到这条 = 系统闹钟提醒链路通 ✓（退 App 也能弹）',
-                channelId: 'ddlr_' + mode
+                channelId: channelId,
+                vibrate: vibrate
               });
               alarms.sort(function (a, b) { return a.at - b.at; });
             }

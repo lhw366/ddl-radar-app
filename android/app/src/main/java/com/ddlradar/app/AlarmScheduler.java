@@ -31,11 +31,12 @@ public final class AlarmScheduler {
      * v3 = 主备通道改用独立 requestCode（修「备份通道顶掉 setAlarmClock 导致延迟」）
      * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
      * v5 = 系统只调度最近 120 条，其余保存在原生队列中逐条递补
+     * v7 = 响铃/震动/横幅独立设置，旧版闹钟按新通道与震动标记重排
      * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 6;
+    public static final int SCHED_VER = 7;
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
@@ -204,7 +205,7 @@ public final class AlarmScheduler {
             if (!scheduled && active < MAX_ACTIVE_ALARMS) {
                 schedule(ctx, item.optLong("id"), at,
                         item.optString("title", null), item.optString("body", null),
-                        item.optString("channel", null));
+                        item.optString("channel", null), item.optBoolean("vibrate", true));
                 try { item.put("scheduled", true); } catch (Exception ignore) {}
                 active++;
                 changed = true;
@@ -215,6 +216,17 @@ public final class AlarmScheduler {
     }
 
     /** 闹钟实际触发留痕（接收器去重后调用，后续任何失败都不影响此记录） */
+    public static void markReceiverHit(Context ctx, long id, String via) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            sp.edit()
+                    .putLong("lastReceiverId", id)
+                    .putLong("lastReceiverAt", System.currentTimeMillis())
+                    .putString("lastReceiverVia", via == null ? "" : via)
+                    .apply();
+        } catch (Exception e) { /* 诊断数据，失败忽略 */ }
+    }
+
     public static void markFired(Context ctx, long id, String via) {
         try {
             SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -246,6 +258,15 @@ public final class AlarmScheduler {
         }
     }
 
+    public static long[] lastReceiver(Context ctx) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            return new long[]{sp.getLong("lastReceiverId", 0), sp.getLong("lastReceiverAt", 0)};
+        } catch (Exception e) {
+            return new long[]{0, 0};
+        }
+    }
+
     /**
      * 注册一条系统闹钟，双机制同发：
      * 主：setAlarmClock（状态栏闹钟图标、免授权、Doze 准时）；
@@ -259,7 +280,7 @@ public final class AlarmScheduler {
      * 这正是用户反馈「延迟有点高」的根因。
      */
     public static synchronized void schedule(Context ctx, long id, long at,
-                                String title, String body, String channelId) {
+                                String title, String body, String channelId, boolean vibrate) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) throw new IllegalStateException("Alarm manager unavailable");
         cancelLegacy(ctx, id);
@@ -272,7 +293,7 @@ public final class AlarmScheduler {
             show = PendingIntent.getActivity(ctx, (int) id, open,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         }
-        PendingIntent op = operation(ctx, id, at, title, body, channelId, 0);
+        PendingIntent op = operation(ctx, id, at, title, body, channelId, vibrate, 0);
 
         try {
             am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, show), op);
@@ -308,7 +329,7 @@ public final class AlarmScheduler {
                 // 且在「主通道刚被拒」的场景下必然返回 false，会导致最需要兜底时
                 // 反而跳过兜底。改为直接尝试、由异常决定是否可用。
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 2000,
-                        operation(ctx, id, at, title, body, channelId, 1));
+                        operation(ctx, id, at, title, body, channelId, vibrate, 1));
             } catch (Exception ignore) { /* 主通道在即可 */ }
         }
     }
@@ -317,8 +338,8 @@ public final class AlarmScheduler {
     public static synchronized void cancel(Context ctx, long id) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
-        am.cancel(operation(ctx, id, 0, null, null, null, 0));
-        am.cancel(operation(ctx, id, 0, null, null, null, 1));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
         cancelLegacy(ctx, id);
     }
 
@@ -363,7 +384,7 @@ public final class AlarmScheduler {
             if (scheduled) {
                 schedule(ctx, o.optLong("id"), at,
                         o.optString("title", null), o.optString("body", null),
-                        o.optString("channel", null));
+                        o.optString("channel", null), o.optBoolean("vibrate", true));
                 active++;
                 if (nextAt == 0) nextAt = at;
             } else if (o.optBoolean("scheduled", true)) {
@@ -417,7 +438,8 @@ public final class AlarmScheduler {
      *             处理，后注册的会覆盖前一个闹钟（详见 schedule 注释）。
      */
     static PendingIntent operation(Context ctx, long id, long at,
-                                           String title, String body, String channelId, int slot) {
+                                           String title, String body, String channelId,
+                                           boolean vibrate, int slot) {
         Intent i = new Intent(ctx, AlarmReceiver.class);
         i.setAction("com.ddlradar.app.DELIVER_REMINDER");
         // Extras do not participate in PendingIntent identity. Preserve the full id,
@@ -429,6 +451,7 @@ public final class AlarmScheduler {
         if (title != null) i.putExtra("title", title);
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);
+        i.putExtra("vibrate", vibrate);
         return PendingIntent.getBroadcast(ctx, slot, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }

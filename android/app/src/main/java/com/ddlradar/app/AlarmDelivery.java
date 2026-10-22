@@ -25,19 +25,30 @@ final class AlarmDelivery {
         long at = intent.getLongExtra("at", 0);
         if (id < 0 || at <= 0) return false;
         synchronized (AlarmScheduler.class) {
-            // Check the persisted occurrence. A delayed backup must not repeat,
-            // or consume a new date for the same reminder id.
             JSONObject item = AlarmScheduler.findOccurrence(context, id, at);
-            if (item == null || AlarmScheduler.wasDelivered(context, id, at)) return false;
+            if (AlarmScheduler.wasDelivered(context, id, at)) return false;
             if (at > System.currentTimeMillis() + 1000) return false;
-            String channelId = item.optString("channel", "ddlr_full");
-            vibrateForMode(context, channelId);
-            post(context, id, item.optString("title", "DDL雷达"),
-                    item.optString("body", ""), channelId);
+            // Persisted state can be reconciled a few milliseconds before the
+            // alarm fires. The PendingIntent extras are the last known good
+            // copy, so deliver them instead of silently dropping a real alarm.
+            String title = item != null ? item.optString("title", "DDL雷达")
+                    : intent.getStringExtra("title");
+            String body = item != null ? item.optString("body", "")
+                    : intent.getStringExtra("body");
+            String channelId = item != null ? item.optString("channel", "ddlr_high_sound")
+                    : intent.getStringExtra("channelId");
+            boolean vibrate = item != null ? item.optBoolean("vibrate", true)
+                    : intent.getBooleanExtra("vibrate", true);
+            if (title == null || title.isEmpty()) title = "DDL雷达";
+            if (body == null) body = "";
+            if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
+            vibrateForMode(context, channelId, vibrate);
+            post(context, id, title, body, channelId);
             AlarmScheduler.recordDelivered(context, id, at);
+            int slot = intent.getIntExtra("slot", 0);
             AlarmScheduler.markFired(context, id,
-                    intent.getIntExtra("slot", 0) == 1 ? "exact" : "clock");
-            AlarmScheduler.completeOccurrence(context, item);
+                    slot == 1 ? "exact" : slot == 2 ? "service" : "clock");
+            if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;
         }
     }
@@ -47,8 +58,8 @@ final class AlarmDelivery {
      * vibration is user-editable and several ColorOS builds silently ignore
      * the channel pattern while allowing direct vibration from an exact alarm.
      */
-    private static void vibrateForMode(Context context, String channelId) {
-        if ("ddlr_ring".equals(channelId)) return;
+    private static void vibrateForMode(Context context, String channelId, boolean requested) {
+        if (!requested) return;
         try {
             Vibrator vibrator;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -70,22 +81,35 @@ final class AlarmDelivery {
     }
 
     static String ensureChannel(Context context, NotificationManager manager, String id) {
-        if (!"ddlr_vib".equals(id) && !"ddlr_ring".equals(id)) id = "ddlr_full";
+        id = normalizeChannelId(id);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return id;
         if (manager.getNotificationChannel(id) != null) return id;
-        boolean sound = !"ddlr_vib".equals(id);
-        boolean vibration = !"ddlr_ring".equals(id);
-        String name = !sound ? "提醒 · 仅震动" : !vibration ? "提醒 · 仅响铃" : "提醒 · 响铃+震动";
-        NotificationChannel channel = new NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH);
+        boolean sound = id.endsWith("_sound");
+        boolean banner = id.startsWith("ddlr_high_");
+        int importance = banner ? NotificationManager.IMPORTANCE_HIGH : NotificationManager.IMPORTANCE_DEFAULT;
+        String name = banner ? (sound ? "提醒 · 横幅+响铃" : "提醒 · 横幅静音")
+                : (sound ? "提醒 · 通知+响铃" : "提醒 · 静音通知");
+        NotificationChannel channel = new NotificationChannel(id, name, importance);
         channel.setShowBadge(true);
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        if (vibration) channel.setVibrationPattern(new long[]{0, 200, 120, 200});
-        channel.enableVibration(vibration);
+        // Vibration is executed by AlarmReceiver so it remains independent
+        // from the sound and banner channel settings.
+        channel.enableVibration(false);
         channel.setSound(sound ? Uri.parse("android.resource://" + context.getPackageName() + "/raw/ddlr_chime") : null,
                 sound ? new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build() : null);
         manager.createNotificationChannel(channel);
         return id;
+    }
+
+    private static String normalizeChannelId(String id) {
+        if (id != null && (id.equals("ddlr_high_sound") || id.equals("ddlr_high_silent")
+                || id.equals("ddlr_gentle_sound") || id.equals("ddlr_gentle_silent"))) {
+            return id;
+        }
+        if ("ddlr_vib".equals(id)) return "ddlr_high_silent";
+        if ("ddlr_full".equals(id) || "ddlr_ring".equals(id)) return "ddlr_high_sound";
+        return "ddlr_high_sound";
     }
 
     static int notificationId(int id) {
@@ -117,9 +141,7 @@ final class AlarmDelivery {
             builder = new Notification.Builder(context, channelId);
         } else {
             builder = new Notification.Builder(context);
-            int defaults = "ddlr_vib".equals(channelId) ? Notification.DEFAULT_VIBRATE
-                    : "ddlr_ring".equals(channelId) ? Notification.DEFAULT_SOUND
-                    : Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE;
+            int defaults = channelId.endsWith("_sound") ? Notification.DEFAULT_SOUND : 0;
             builder.setDefaults(defaults);
         }
         // System-owned sound survives process suspension and avoids double sound
@@ -129,7 +151,8 @@ final class AlarmDelivery {
                 .setContentText(body)
                 .setStyle(new Notification.BigTextStyle().bigText(body))
                 .setCategory(Notification.CATEGORY_REMINDER)
-                .setPriority(Notification.PRIORITY_HIGH)
+                .setPriority(channelId.startsWith("ddlr_high_")
+                        ? Notification.PRIORITY_HIGH : Notification.PRIORITY_DEFAULT)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setWhen(System.currentTimeMillis());
@@ -146,7 +169,8 @@ final class AlarmDelivery {
         alarm.putExtra("notifId", notificationId(id));
         alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         // A foreground service does not grant background Activity launch rights.
-        if (Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent()) {
+        if (channelId.startsWith("ddlr_high_") &&
+                (Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent())) {
             builder.setFullScreenIntent(activity(context, id, "fullscreen", alarm), true);
         }
         Intent ack = new Intent(context, AlarmReceiver.class);
@@ -157,7 +181,9 @@ final class AlarmDelivery {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         builder.addAction(action(context, "知道了", acknowledge));
         manager.notify(notificationId(id), builder.build());
-        launchFullScreenFallback(context, manager, alarm);
+        if (channelId.startsWith("ddlr_high_")) {
+            launchFullScreenFallback(context, manager, alarm);
+        }
     }
 
     private static void launchFullScreenFallback(Context context, NotificationManager manager, Intent alarm) {

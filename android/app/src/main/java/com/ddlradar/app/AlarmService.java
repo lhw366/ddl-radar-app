@@ -9,8 +9,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /** Optional foreground status; reminder delivery is owned by AlarmReceiver. */
 public class AlarmService extends Service {
@@ -20,6 +26,13 @@ public class AlarmService extends Service {
     private boolean foregrounded;
     private String lastGuardText;
     private PendingIntent cachedContentPi;
+    private final Handler alarmHandler = new Handler(Looper.getMainLooper());
+    private final Runnable alarmFallback = new Runnable() {
+        @Override public void run() {
+            deliverDueFromService();
+            scheduleNextServiceCheck();
+        }
+    };
 
     static boolean isRunning() { return running; }
 
@@ -42,6 +55,7 @@ public class AlarmService extends Service {
     }
 
     @Override public void onDestroy() {
+        alarmHandler.removeCallbacks(alarmFallback);
         running = false;
         foregrounded = false;
         super.onDestroy();
@@ -60,7 +74,25 @@ public class AlarmService extends Service {
         }
         if (!foregrounded) { stopSelf(); return START_NOT_STICKY; }
         refreshGuard();
+        scheduleNextServiceCheck();
         return START_STICKY;
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        // ColorOS sometimes treats removal from Recents as a freeze request.
+        // Re-registering here closes the gap even when the process survives the
+        // swipe; the actual delivery still belongs to AlarmManager.
+        try {
+            synchronized (AlarmScheduler.class) {
+                AlarmScheduler.reapplyAll(this);
+            }
+            refreshGuard();
+            scheduleNextServiceCheck();
+        } catch (Exception error) {
+            Log.w("DdlAlarm", "Task-removal reminder recovery failed", error);
+        }
     }
 
     private void goForeground() {
@@ -81,6 +113,7 @@ public class AlarmService extends Service {
             } else startForeground(FG_ID, notification);
             foregrounded = true;
             running = true;
+            scheduleNextServiceCheck();
         } catch (Exception error) {
             running = false;
             foregrounded = false;
@@ -122,6 +155,62 @@ public class AlarmService extends Service {
             manager.notify(FG_ID, notification);
             lastGuardText = text;
         } catch (Exception error) { Log.w("DdlAlarm", "Cannot refresh reminder status", error); }
+    }
+
+    private void scheduleNextServiceCheck() {
+        alarmHandler.removeCallbacks(alarmFallback);
+        if (!foregrounded) return;
+        long now = System.currentTimeMillis();
+        long nextAt = 0;
+        JSONArray items = AlarmScheduler.load(this);
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null || !item.optBoolean("scheduled", true)) continue;
+            long at = item.optLong("at", 0);
+            if (at > 0 && (nextAt == 0 || at < nextAt)) nextAt = at;
+        }
+        long delay = nextAt == 0 ? 60000L
+                : Math.max(250L, Math.min(60000L, nextAt - now + 150L));
+        alarmHandler.postDelayed(alarmFallback, delay);
+    }
+
+    /**
+     * In-process backup for ROMs that accept AlarmManager registration but
+     * fail to deliver its broadcast. Both native paths share the same delivery
+     * marker, so the slower route cannot duplicate the reminder.
+     */
+    private void deliverDueFromService() {
+        PowerManager.WakeLock wake = null;
+        try {
+            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+            if (power != null) {
+                wake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:serviceAlarm");
+                wake.acquire(10000L);
+            }
+            long now = System.currentTimeMillis();
+            JSONArray items = AlarmScheduler.load(this);
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item == null || !item.optBoolean("scheduled", true)) continue;
+                long at = item.optLong("at", 0);
+                if (at <= 0 || at > now + 1000) continue;
+                Intent intent = new Intent(this, AlarmReceiver.class);
+                intent.setAction("com.ddlradar.app.SERVICE_FALLBACK");
+                intent.putExtra("id", (int) item.optLong("id"));
+                intent.putExtra("at", at);
+                intent.putExtra("title", item.optString("title", "DDL雷达"));
+                intent.putExtra("body", item.optString("body", ""));
+                intent.putExtra("channelId", item.optString("channel", "ddlr_high_sound"));
+                intent.putExtra("vibrate", item.optBoolean("vibrate", true));
+                intent.putExtra("slot", 2);
+                AlarmDelivery.deliver(this, intent);
+            }
+            refreshGuard();
+        } catch (Exception error) {
+            Log.e("DdlAlarm", "Service alarm fallback failed", error);
+        } finally {
+            if (wake != null && wake.isHeld()) wake.release();
+        }
     }
 
     static int channelImportance(NotificationManager manager, String id) {

@@ -139,7 +139,7 @@ public class DdlNotifyPlugin extends Plugin {
                 openAppDetails(call);
                 return;
             }
-            String id = call.getString("id", "ddlr_full");
+            String id = call.getString("id", "ddlr_high_sound");
             android.content.Intent i = new android.content.Intent(
                     android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
             i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());

@@ -224,11 +224,23 @@
       <h3 class="sec-title">🔔 提醒偏好</h3>
       <div class="card pad">
         <label class="f-label" style="margin-top:0">提醒方式（全局，APK 系统提醒同样生效）</label>
-        <div class="quad-chips" id="setRemindMode">
-          <button data-m="full" class="on">🔊 响铃+震动</button>
-          <button data-m="vib">📳 仅震动</button>
-          <button data-m="ring">🔔 仅响铃</button>
-          <button data-m="silent">🔇 仅应用内横幅</button>
+        <div class="quad-chips" id="setRemindMode" style="grid-template-columns:1fr">
+          <div class="set-line" style="margin:0;padding:7px 0">
+            <div>🔔 响铃</div>
+            <label class="switch"><input type="checkbox" id="setSound" checked><i></i></label>
+          </div>
+          <div class="set-line" style="margin:0;padding:7px 0">
+            <div>📳 震动</div>
+            <label class="switch"><input type="checkbox" id="setVibrate" checked><i></i></label>
+          </div>
+          <div class="set-line" style="margin:0;padding:7px 0">
+            <div>💬 横幅通知</div>
+            <label class="switch"><input type="checkbox" id="setBanner" checked><i></i></label>
+          </div>
+          <div class="set-line" style="margin:0;padding:7px 0">
+            <div>🔇 静默（关闭提醒）</div>
+            <label class="switch"><input type="checkbox" id="setSilent"><i></i></label>
+          </div>
         </div>
         <div class="set-line" style="margin-top:10px">
           <div>远期 DDL 每日提醒时间</div>
@@ -240,9 +252,9 @@
         <div class="set-line"><div>提醒横幅 · 屏幕最上方一行</div>
           <label class="switch"><input type="checkbox" id="setCompact" checked><i></i></label>
         </div>
-        <button id="testRemBtn" class="btn full">🧪 测试提醒（10 秒后触发，验证链路）</button>
+        <button id="testRemBtn" class="btn full">🧪 测试提醒（5 秒后触发，验证链路）</button>
         <button id="notifyBtn" class="btn full">🔔 申请系统通知权限（状态：未知）</button>
-        <div class="tip">退 App 后的提醒由系统级闹钟（setAlarmClock）准时触发：只需开启通知权限（上面按钮），无需精确闹钟授权、无需电池白名单；重启手机或覆盖安装后闹钟自动恢复。用「测试提醒」验证：点完立即退 App，10 秒后应弹出系统通知。</div>
+        <div class="tip">响铃、震动、横幅可自由组合；全关或开启「静默」后不再提醒。退 App 后的提醒由系统级闹钟触发，只需允许通知；重启手机或覆盖安装后会自动恢复。点「测试提醒」后立即退 App，5 秒后验证。</div>
       </div>
 
       <h3 class="sec-title">🩺 提醒诊断</h3>

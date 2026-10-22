@@ -16,6 +16,8 @@ public class AlarmReceiver extends BroadcastReceiver {
             if (manager != null) manager.cancel(intent.getIntExtra("ackId", 0));
             return;
         }
+        AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0),
+                intent.getIntExtra("slot", 0) == 1 ? "exact" : "clock");
         try {
             AlarmDelivery.deliver(context, intent);
         } catch (Exception error) {

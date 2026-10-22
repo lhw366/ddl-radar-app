@@ -54,14 +54,31 @@ function defaultState() { return {
   settings: {
     theme: 'cat', bgImage: null, bgDim: 35,
     dailyTime: '12:00',
-    remindMode: 'full', // full=响铃+震动 / vib=仅震动 / ring=仅响铃 / silent=仅应用内横幅
+    sound: true,
+    vibrate: true,
+    banner: true,
+    remindSilent: false,
     tiered: true, toastCompact: true
   }
 }; }
 function normalizeState(data) {
   if (!data || typeof data !== 'object' || !Array.isArray(data.tasks)) throw new Error('无效事项列表');
   const next = Object.assign(defaultState(), data);
-  next.settings = Object.assign(defaultState().settings, data.settings || {});
+  const rawSettings = data.settings || {};
+  next.settings = Object.assign(defaultState().settings, rawSettings);
+  // Migrate the old four fixed presets once. New settings store each output
+  // independently, so sound/vibration/banner can be combined freely.
+  if (rawSettings.sound === undefined && rawSettings.vibrate === undefined && rawSettings.banner === undefined) {
+    const legacy = rawSettings.remindMode || 'full';
+    next.settings.sound = legacy !== 'vib' && legacy !== 'silent';
+    next.settings.vibrate = legacy === 'full' || legacy === 'vib';
+    next.settings.banner = legacy !== 'silent';
+    next.settings.remindSilent = legacy === 'silent';
+  }
+  next.settings.sound = next.settings.sound !== false;
+  next.settings.vibrate = next.settings.vibrate !== false;
+  next.settings.banner = next.settings.banner !== false;
+  next.settings.remindSilent = next.settings.remindSilent === true;
   const ids = new Set();
   next.tasks = data.tasks.map(t => {
     if (!t || typeof t.id !== 'string' || !t.id || ids.has(t.id) ||
@@ -77,7 +94,6 @@ function normalizeState(data) {
     return task;
   });
   next.fired = Array.isArray(data.fired) ? data.fired.filter(k => typeof k === 'string') : [];
-  if (!['full', 'vib', 'ring', 'silent'].includes(next.settings.remindMode)) next.settings.remindMode = 'full';
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(next.settings.dailyTime)) next.settings.dailyTime = '12:00';
   if (data.timetable != null) {
     const tt = data.timetable;
@@ -141,9 +157,21 @@ function save() {
 
 /* ---------------- 提示音 / 震动 ---------------- */
 let audioCtx = null;
-function remindMode() { return S.settings.remindMode || 'full'; }
+function reminderOutputsEnabled() {
+  return !S.settings.remindSilent &&
+    (S.settings.sound !== false || S.settings.vibrate !== false || S.settings.banner !== false);
+}
+function remindSoundEnabled() {
+  return reminderOutputsEnabled() && S.settings.sound !== false;
+}
+function remindVibrateEnabled() {
+  return reminderOutputsEnabled() && S.settings.vibrate !== false;
+}
+function remindBannerEnabled() {
+  return reminderOutputsEnabled() && S.settings.banner !== false;
+}
 function beep() {
-  if (remindMode() === 'vib' || remindMode() === 'silent') return;
+  if (!remindSoundEnabled()) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -160,7 +188,7 @@ function beep() {
   } catch (e) { /* 无声环境忽略 */ }
 }
 function vibe() {
-  if (remindMode() === 'ring' || remindMode() === 'silent') return;
+  if (!remindVibrateEnabled()) return;
   if (navigator.vibrate) navigator.vibrate([180, 90, 180]);
 }
 
@@ -865,6 +893,9 @@ function invalidateFiredCache() {
 }
 
 function tickReminders() {
+  // "静默（关闭提醒）" or all three outputs switched off means reminders are
+  // intentionally disabled; do not consume them or fall back to a toast.
+  if (!reminderOutputsEnabled()) return;
   const now = Date.now();
   // ⚠️ native 必须是「原生闹钟确实排上了」，而不只是「原生插件可用」。
   // 早前只判断 available()，于是 apply() 处于失败重试窗口（_sig 被置 null，
@@ -873,7 +904,7 @@ function tickReminders() {
   // 而重试只在 App 前台每 60s 跑一次，一退后台就退回 JS 轮询被系统节流，
   // 延迟重新变成小时级。所以必须用「最近一次 apply 是否成功」作为判据。
   const pluginReady = !!(window.NativeNotify && window.NativeNotify.available &&
-    window.NativeNotify.available() && remindMode() !== 'silent');
+    window.NativeNotify.available());
   const native = pluginReady && window.NativeNotify.isSynced();
   // S.fired 用 Set 索引：早前是数组 + includes()，O(n) 线性查找，
   // 且每轮都要扫全部任务 × 全部提醒点，任务一多就明显卡顿耗电。
@@ -908,7 +939,7 @@ function tickReminders() {
       // 原生负责准点投递：留 5s 宽限，超过才前台补弹。
       const late = now - r.at > 5000;
       if (native && !late) continue;
-      toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
+      if (remindBannerEnabled()) toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
       beep(); vibe();
     }
   }
@@ -929,7 +960,7 @@ function tickReminders() {
         dirty = true;
         const late = now - r.at > 5000;
         if (native && !late) continue;
-        toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
+        if (remindBannerEnabled()) toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
         beep(); vibe();
       }
     }
@@ -981,7 +1012,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.8';
+const APP_VERSION = '2.2.9';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1211,7 +1242,7 @@ async function renderDiag() {
   const d = await NativeNotify.diag();
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
-  html += diagRow((d.channels || 0) >= 3, '提醒通道已创建（' + (d.channels || 0) + '/3）', d.channels >= 3 ? '' : 'reinit');
+  html += diagRow((d.channels || 0) >= 4, '提醒通道已创建（' + (d.channels || 0) + '/4）', d.channels >= 4 ? '' : 'reinit');
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
     '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
@@ -1224,11 +1255,21 @@ async function renderDiag() {
   } else {
     html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
   }
-  html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) + (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' : '（经系统闹钟）') : '还没有触发记录（闹钟触发一次后出现）');
+  html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0
+    ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) +
+      (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' :
+       d.lastFireVia === 'service' ? '（经守护服务兜底）' : '（经系统闹钟）')
+    : '还没有触发记录（闹钟触发一次后出现）');
+  if (d.lastReceiverAt > 0) {
+    html += diagRow(true, '系统已把闹钟送到 App：' + fmtDT(d.lastReceiverAt) +
+      (d.lastFireAt > 0 ? '' : '，但提醒内容未完成展示'));
+  }
 
   // ── 新增：直接回答「为什么没横幅 / 为什么不准时」 ──
-  if (S.settings.remindMode === 'silent') {
-    html += diagRow(null, '静默模式只显示应用内提醒，不会发送系统通知横幅');
+  if (!reminderOutputsEnabled()) {
+    html += diagRow(null, '提醒已关闭：响铃、震动和横幅均未启用');
+  } else if (!remindBannerEnabled()) {
+    html += diagRow(null, '横幅已关闭；响铃和震动仍可由系统闹钟独立执行');
   } else if (d.headsUp === false) {
     html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {
@@ -1255,13 +1296,12 @@ async function renderDiag() {
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
-    if (f === 'reinit') { await NativeNotify.ensureChannels(true); toast('🔧 提醒通道已重建', '已恢复默认铃声与震动设置'); }
+    if (f === 'reinit') { await NativeNotify.ensureChannels(true); toast('🔧 提醒通道已重建', '响铃和横幅通道已恢复默认设置'); }
     if (f === 'channel') {
       // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
       try {
-        const mode = S.settings.remindMode || 'full';
-        const channelId = ['full', 'vib', 'ring'].includes(mode) ? 'ddlr_' + mode : 'ddlr_full';
-        const modeName = { full: '响铃+震动', vib: '仅震动', ring: '仅响铃' }[mode] || '提醒';
+        const channelId = NativeNotify.channelIdFor(S.settings);
+        const modeName = S.settings.banner !== false ? '横幅通知' : '无横幅通知';
         await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: channelId });
         toast('⚙️ 已打开通道设置', '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
       } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
@@ -1272,20 +1312,22 @@ async function renderDiag() {
 }
 
 function bindSettings() {
-  document.querySelectorAll('#setRemindMode button').forEach((b) =>
-    b.addEventListener('click', () => {
-      S.settings.remindMode = b.dataset.m;
-      save(); syncRemindModeUI();
-      toast('🔕 提醒方式已切换', '🔊 响铃+震动 / 📳 仅震动 / 🔔 仅响铃 / 🔇 仅横幅'.split(' / ')[['full','vib','ring','silent'].indexOf(b.dataset.m)]);
-      // 切模式后必须重排系统闹钟：旧闹钟带着旧 channelId，不重排就会
-      // 继续按「响铃+震动」响（用户选了仅震动却还有声音的成因之一）。
-      if (window.NativeNotify && NativeNotify.available()) {
-        NativeNotify._sig = null;   // 强制忽略签名去抖，确保真的重排
-        // 注意代价：_sig 置空会触发整表重算 + 全量 cancel/re-schedule，
-        // 在提醒条目多时是一次较重的操作。切换提醒方式本身不频繁，可接受。
-        try { NativeNotify.sync(S).catch(function () {}); } catch (e) {}
-      }
-    }));
+  const reminderToggle = (id, key) => $(id).addEventListener('change', () => {
+    if (S.settings.remindSilent) return;
+    S.settings[key] = $(id).checked;
+    save();
+    syncRemindModeUI();
+    resyncReminderSettings();
+  });
+  reminderToggle('setSound', 'sound');
+  reminderToggle('setVibrate', 'vibrate');
+  reminderToggle('setBanner', 'banner');
+  $('setSilent').addEventListener('change', () => {
+    S.settings.remindSilent = $('setSilent').checked;
+    save();
+    syncRemindModeUI();
+    resyncReminderSettings();
+  });
   syncRemindModeUI();
 
   $('setDailyTime').value = S.settings.dailyTime;
@@ -1304,11 +1346,11 @@ function bindSettings() {
       // 提示统一由 NativeNotify.test() 负责（含排定结果自验证与权限预检）
       await NativeNotify.test();
     } else {
-      toast('🧪 已排定测试', '10 秒后应用内提醒（此环境无系统级通知）');
+      toast('🧪 已排定测试', '5 秒后应用内提醒（此环境无系统级通知）');
       setTimeout(() => {
-        toast('🧪 测试提醒', '看到这条说明应用内链路正常', 'urgent');
+        if (remindBannerEnabled()) toast('🧪 测试提醒', '看到这条说明应用内链路正常', 'urgent');
         beep(); vibe();
-      }, 10000);
+      }, 5000);
     }
   });
   $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
@@ -1386,9 +1428,18 @@ function handleImport(f) {
   rd.readAsText(f);
 }
 function syncRemindModeUI() {
-  const m = S.settings.remindMode || 'full';
-  document.querySelectorAll('#setRemindMode button').forEach((b) =>
-    b.classList.toggle('on', b.dataset.m === m));
+  const silent = S.settings.remindSilent === true;
+  $('setSilent').checked = silent;
+  $('setSound').checked = !silent && S.settings.sound !== false;
+  $('setVibrate').checked = !silent && S.settings.vibrate !== false;
+  $('setBanner').checked = !silent && S.settings.banner !== false;
+  ['setSound', 'setVibrate', 'setBanner'].forEach((id) => { $(id).disabled = silent; });
+}
+
+function resyncReminderSettings() {
+  if (!(window.NativeNotify && NativeNotify.available())) return;
+  NativeNotify._sig = null;
+  try { NativeNotify.sync(S).catch(function () {}); } catch (e) {}
 }
 
 function bindSettingsValues() {
