@@ -75,7 +75,12 @@ public class AlarmService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        running = true;
+        // 注意：这里**不能**直接 running = true。
+        // running 的含义是「守护服务已成功进入前台」，是诊断面板判断保活
+        // 是否生效的依据。若在 startForeground 之前就置 true，一旦
+        // startForeground 失败（Android 14 上 FGS 类型非法、后台启动受限等），
+        // 诊断面板会显示 ✅ 绿勾，而服务其实没在跑 —— 假绿比红叉更危险，
+        // 会把人引向错误方向排查。真正的置位在 goForeground() 成功分支里。
         goForeground();
     }
 
@@ -124,18 +129,29 @@ public class AlarmService extends Service {
                 startForeground(FG_ID, n);
             }
             foregrounded = true;
+            running = true;
         } catch (Exception e) {
-            // 退化：不带类型再试一次；仍失败则仅保留普通通知，至少提醒逻辑继续跑
+            // 退化：不带类型再试一次
             try {
                 startForeground(FG_ID, n);
                 foregrounded = true;
+                running = true;
             } catch (Exception ignore) {
+                // 两次都失败：服务无法成为前台服务。
+                // Android 8+ 对 startForegroundService() 启动的服务有 5 秒宽限期，
+                // 到期仍未进入前台会抛 RemoteServiceException 直接崩掉进程。
+                // 所以这里必须主动 stopSelf() 退出，不能「什么都不做」硬扛。
+                // 同时不置 running，让诊断面板如实显示未运行。
+                running = false;
+                foregrounded = false;
                 try { if (nm != null) nm.notify(FG_ID, n); } catch (Exception ignore2) {}
+                try { stopSelf(); } catch (Exception ignore3) {}
             }
         }
     }
 
-    private Notification guardNotification() {        long nextAt = 0, now = System.currentTimeMillis();
+    private Notification guardNotification() {
+        long nextAt = 0, now = System.currentTimeMillis();
         org.json.JSONArray arr = AlarmScheduler.load(this);
         for (int i = 0; i < arr.length(); i++) {
             org.json.JSONObject o = arr.optJSONObject(i);
@@ -231,12 +247,25 @@ public class AlarmService extends Service {
 
     private void playChime() {
         try {
-            // 用 USAGE_NOTIFICATION 而非 USAGE_ALARM：
-            // USAGE_ALARM 走「闹钟音量」流，而手机音量键默认调的是媒体/铃声音量，
-            // 用户按音量键完全控制不了闹钟音量流 —— 这就是「提示声音大小不能用
-            // 音量键控制」的根因。改成通知音量流后，音量键即可直接调节。
+            // 音源选择（兼顾「音量键可控」与「静音档不静默」两个诉求）：
+            // · 默认用 USAGE_NOTIFICATION —— 走通知/铃声音量流，音量键可直接调，
+            //   这是「提示音大小不能用音量键控制」的修复。
+            // · 但该流受系统「铃声模式」约束：静音/震动档下会被系统直接吞掉，
+            //   于是选了「响铃+震动」却在静音模式下完全无声 —— 比调不动更糟。
+            //   检测到静音/震动档时改用 USAGE_ALARM（闹钟流不受铃声模式影响），
+            //   保证提醒一定能出声；此时音量由闹钟音量决定。
+            int ringer = -1;
+            try {
+                android.media.AudioManager am =
+                        (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) ringer = am.getRingerMode();
+            } catch (Exception ignore) {}
+            boolean ringerSilenced = ringer == android.media.AudioManager.RINGER_MODE_SILENT
+                    || ringer == android.media.AudioManager.RINGER_MODE_VIBRATE;
+
             AudioAttributes attrs = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setUsage(ringerSilenced ? AudioAttributes.USAGE_ALARM
+                                             : AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build();
             releasePlayer(); // 上一条还没放完就先释放，避免叠加播放

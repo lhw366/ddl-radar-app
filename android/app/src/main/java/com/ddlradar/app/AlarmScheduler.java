@@ -177,8 +177,13 @@ public final class AlarmScheduler {
             if (o == null) continue;
             long at = o.optLong("at", 0);
             if (at <= now) {
-                // 过期：计入错过统计（只统计 24 小时内的，更早的没意义）
-                if (now - at < 24 * 3600 * 1000L) {
+                // 过期：计入错过统计。
+                // 只统计「早于当前时间 1 分钟以上」的：刚过点几秒的条目可能
+                // 正在投递中（DdlAlarmPlugin 刻意保留 2 分钟窗口），
+                // 计成 missed 会造成「明明响了却说错过」的误报。
+                // 同时只统计 24 小时内的，更早的没意义。
+                long overdue = now - at;
+                if (overdue > 60000 && overdue < 24 * 3600 * 1000L) {
                     missed++;
                     if (at > missedLatest) missedLatest = at;
                 }
@@ -191,25 +196,40 @@ public final class AlarmScheduler {
             if (nextAt == 0 || at < nextAt) nextAt = at;
         }
         if (keep.length() != arr.length()) save(ctx, keep);
-        if (missed > 0) {
-            try {
-                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                        .putInt("missedCount", missed)
-                        .putLong("missedAt", missedLatest)
-                        .apply();
-            } catch (Exception ignore) {}
-        }
+        // 累加而不是覆盖：改时区可能连续收到两条广播，覆盖会丢掉前一次的计数。
+        // 另外只有「确实早于当前时间 1 分钟以上」的才算错过——刚过点几秒的
+        // 条目可能正在投递中（DdlAlarmPlugin 会刻意保留 2 分钟窗口），
+        // 计成 missed 会造成「明明响了却说错过」的误报。
+        if (missed > 0) addMissed(ctx, missed);
         return nextAt;
     }
 
-    /** 读取并清空「错过的提醒」计数（App 打开时调用，用于补弹提示） */
-    public static int takeMissed(Context ctx) {
+    /**
+     * 读取「错过的提醒」计数。
+     *
+     * @param consume true=读取后清零（App 启动时补弹一次用），
+     *                false=只读（诊断面板显示用，不清零）。
+     * 早前只有一个「读即清零」的版本，且唯一调用方是诊断面板的 pending()，
+     * 结果用户只是打开诊断看一眼，错过计数就被清掉了，
+     * 而承诺的「启动时补弹提示」根本没实现 —— 语义被消费方吃掉了。
+     */
+    public static int getMissed(Context ctx, boolean consume) {
         try {
             SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             int n = sp.getInt("missedCount", 0);
-            if (n > 0) sp.edit().putInt("missedCount", 0).apply();
+            if (n > 0 && consume) sp.edit().putInt("missedCount", 0).apply();
             return n;
         } catch (Exception e) { return 0; }
+    }
+
+    /** 累加错过计数（多次事件不互相覆盖） */
+    public static void addMissed(Context ctx, int delta) {
+        if (delta <= 0) return;
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            int cur = sp.getInt("missedCount", 0);
+            sp.edit().putInt("missedCount", cur + delta).apply();
+        } catch (Exception ignore) {}
     }
 
     /**

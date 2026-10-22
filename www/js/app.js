@@ -44,6 +44,9 @@ const LS_KEY = 'ddlr_v1';
 // 壁纸单独存放：base64 图片体积大，混在主状态里会导致每次 save() 都序列化
 // 整张图（拖动亮度滑块时每像素一次），是卡顿与耗电的主因之一。
 const LS_BG = 'ddlr_bg_v1';
+// 上一次已写入 localStorage 的壁纸引用：用于跳过重复写入
+// （save() 高频触发，尤其是拖动亮度滑块时每像素一次）
+let _lastBgWritten;
 let S = {
   onboarded: false,
   tasks: [],
@@ -91,16 +94,19 @@ function save() {
     const bg = S.settings.bgImage;
     const payload = JSON.stringify(S, (k, v) => (k === 'bgImage' ? undefined : v));
     localStorage.setItem(LS_KEY, payload);
-    if (bg) {
-      if (localStorage.getItem(LS_BG) !== bg) localStorage.setItem(LS_BG, bg);
-    } else {
-      localStorage.removeItem(LS_BG);
+    // 用「引用 + 脏标记」代替每次读回整个 base64 做字符串比较：
+    // 拖动亮度滑块时 save() 每像素触发一次，读回 1MB 字符串再全量比对
+    // 依然是可观的开销。只有壁纸对象本身变了才写。
+    if (bg !== _lastBgWritten) {
+      if (bg) localStorage.setItem(LS_BG, bg);
+      else localStorage.removeItem(LS_BG);
+      _lastBgWritten = bg;
     }
   } catch (e) { console.warn('存储失败', e); }
   // 保持 window.S 与内部 S 指向同一对象（防止某处整体替换了 S 的引用）
   window.S = S;
   // APK 内同步重排系统级精确提醒
-  if (window.NativeNotify) NativeNotify.sync(S);
+  if (window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} }
 }
 
 /* ---------------- 提示音 / 震动 ---------------- */
@@ -131,7 +137,16 @@ function vibe() {
 /* ---------------- Toast 横幅 ---------------- */
 function toast(title, body, kind) {
   const el = document.createElement('div');
-  el.className = 'toast' + (kind ? ' tt-' + kind : '') + (S.settings.toastCompact ? ' compact' : '');
+  // kind 有两种调用风格：'urgent' 和 'tt-urgent'（nativenotify.js 里混用了）。
+  // 早前无条件拼 'tt-' + kind，传入 'tt-urgent' 就变成 'tt-tt-urgent'，
+  // CSS 里没有这个类 → 红边框静默丢失，告警样式看起来和普通提醒一样。
+  // 这里统一归一化：无论带不带前缀都能正确映射。
+  let kindCls = '';
+  if (kind) {
+    const k = String(kind).replace(/^tt-/, '');
+    kindCls = ' tt-' + k;
+  }
+  el.className = 'toast' + kindCls + (S.settings.toastCompact ? ' compact' : '');
   // 用 textContent 赋值而非拼 innerHTML：任务名里若含 < > & 等字符，
   // 早前会把整段横幅结构破坏（用户反馈的「横幅显示有点小问题」即此类）。
   // 调用方传进来的 title/body 可能已做过 escapeHtml，这里统一按纯文本渲染，
@@ -173,7 +188,7 @@ document.addEventListener('visibilitychange', () => {
     document.title = 'DDL雷达 · 不再错过任何死线';
     // 切回前台立刻补查提醒（后台标签页的定时器会被浏览器节流）
     tickReminders();
-    if (window.NativeNotify) NativeNotify.sync(S);
+    if (window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} }
   }
 });
 
@@ -654,9 +669,16 @@ function saveEditor() {
     updatedAt: Date.now()
   };
   if (editingId) {
-    Object.assign(S.tasks.find((x) => x.id === editingId), data);
-    S.fired = S.fired.filter((k) => !k.startsWith(editingId + '|')); // 时间变了，提醒重新排
-    invalidateFiredCache(); // 过滤后长度可能不变，必须显式失效 Set 缓存
+    const target = S.tasks.find((x) => x.id === editingId);
+    // 只有「截止时间真的变了」才清掉该任务的 fired 记录（提醒需要重排）。
+    // 早前是无条件 filter：只改标题/细节也会清空，于是 15 分钟补弹窗口内
+    // 已经弹过的提醒会被再弹一遍 —— 用户感知就是「重复提醒 / 乱弹」。
+    const dueChanged = !target || target.dueAt !== dueAt;
+    Object.assign(target, data);
+    if (dueChanged) {
+      S.fired = S.fired.filter((k) => !k.startsWith(editingId + '|'));
+      invalidateFiredCache(); // 过滤后长度可能不变，必须显式失效 Set 缓存
+    }
   } else {
     S.tasks.push(Object.assign({ id: uid(), done: false, createdAt: Date.now() }, data));
     askNotify();
@@ -804,8 +826,15 @@ function invalidateFiredCache() {
 
 function tickReminders() {
   const now = Date.now();
-  const native = !!(window.NativeNotify && window.NativeNotify.available &&
+  // ⚠️ native 必须是「原生闹钟确实排上了」，而不只是「原生插件可用」。
+  // 早前只判断 available()，于是 apply() 处于失败重试窗口（_sig 被置 null，
+  // 等着下一次 sync）时，这里仍认为「原生会负责投递」，把到点提醒标记为
+  // 已处理却既不弹系统通知也不弹应用内横幅 —— 用户什么都收不到。
+  // 而重试只在 App 前台每 60s 跑一次，一退后台就退回 JS 轮询被系统节流，
+  // 延迟重新变成小时级。所以必须用「最近一次 apply 是否成功」作为判据。
+  const pluginReady = !!(window.NativeNotify && window.NativeNotify.available &&
     window.NativeNotify.available() && remindMode() !== 'silent');
+  const native = pluginReady && window.NativeNotify.isSynced();
   // S.fired 用 Set 索引：早前是数组 + includes()，O(n) 线性查找，
   // 且每轮都要扫全部任务 × 全部提醒点，任务一多就明显卡顿耗电。
   // ⚠️ 缓存失效判据必须用「引用 + 长度」而不是只看长度：
@@ -889,7 +918,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.0.2';
+const APP_VERSION = '2.1.0';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1032,7 +1061,9 @@ function bindSettings() {
       // 继续按「响铃+震动」响（用户选了仅震动却还有声音的成因之一）。
       if (window.NativeNotify && NativeNotify.available()) {
         NativeNotify._sig = null;   // 强制忽略签名去抖，确保真的重排
-        NativeNotify.sync(S);
+        // 注意代价：_sig 置空会触发整表重算 + 全量 cancel/re-schedule，
+        // 在提醒条目多时是一次较重的操作。切换提醒方式本身不频繁，可接受。
+        try { NativeNotify.sync(S).catch(function () {}); } catch (e) {}
       }
     }));
   syncRemindModeUI();
@@ -1248,7 +1279,7 @@ function init() {
   bindSettings();
   refreshNotifyBtn();
   if (window.NativeNotify && NativeNotify.available()) {
-    NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); });
+    NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); }).catch(function (e) { console.warn('NativeNotify.init 失败', e); });
   }
 
   // 隐藏文件选择器
@@ -1361,7 +1392,7 @@ function init() {
   setInterval(idleNudge, 60000);
   if (window.NativeNotify && NativeNotify.available()) {
     // 兜底重排：只在前台做。后台靠原生闹钟，不需要 JS 参与。
-    setInterval(() => { if (!document.hidden) NativeNotify.sync(S); }, 60000);
+    setInterval(() => { if (!document.hidden && window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} } }, 60000);
   }
 }
 document.addEventListener('DOMContentLoaded', init);

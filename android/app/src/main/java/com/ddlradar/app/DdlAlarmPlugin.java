@@ -237,8 +237,9 @@ public class DdlAlarmPlugin extends Plugin {
             } else {
                 ret.put("canFullScreen", true);
             }
-            // 错过的提醒数（重启/关机期间错过的）
-            ret.put("missed", AlarmScheduler.takeMissed(ctx));
+            // 错过的提醒数：诊断面板只读，不清零
+            // （清零由 JS 侧「启动补弹」显式消费，避免看一眼诊断就把计数吃掉）
+            ret.put("missed", AlarmScheduler.getMissed(ctx, false));
             // 精确闹钟权限状态（Android 12+ 用户可撤销，撤销后只能降级）
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am != null) {
                 try { ret.put("exactOk", am.canScheduleExactAlarms()); }

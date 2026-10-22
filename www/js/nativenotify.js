@@ -30,6 +30,22 @@
       return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform() && DDL());
     },
     _sig: null,
+    // 最近一次 apply() 是否成功把闹钟真正排进系统。
+    // 只有 true 时 tickReminders 才敢把「到点」完全交给原生、自己不弹；
+    // 否则（从未同步 / 上次失败 / 还没跑过）一律由应用内兜底弹窗，
+    // 宁可重复也不能静默丢失。
+    _synced: false,
+    _syncedAt: 0,
+
+    /**
+     * 原生闹钟是否处于「已同步且新鲜」状态。
+     * 超过 10 分钟没成功同步就视为不可信：可能任务变了但 sync 失败，
+     * 此时系统里排的还是旧闹钟，不能据此放弃应用内补弹。
+     */
+    isSynced: function () {
+      if (!this._synced) return false;
+      return (Date.now() - this._syncedAt) < 10 * 60 * 1000;
+    },
 
     init: async function () {
       if (!this.available()) return;
@@ -274,13 +290,18 @@
         var r = await DDL().apply({ alarms: alarms });
         // apply() 真正成功后才记账（见上方注释：先记账会导致一次失败永久静默）
         this._sig = sig;
+        this._synced = true;
+        this._syncedAt = Date.now();
         if (r && (r.added > 0 || r.cancelled > 0)) {
           console.log('[DDL雷达] 系统闹钟对账完成：+' + r.added + ' -' + r.cancelled +
             '，下一条 ' + (r.nextAt ? new Date(r.nextAt).toLocaleString() : '无'));
         }
       } catch (e) {
-        // 失败时清空签名，保证下次一定会重试（而不是被去抖挡掉）
+        // 失败时清空签名，保证下次一定会重试（而不是被去抖挡掉）；
+        // 同时把 _synced 置 false，让 tickReminders 立刻接管补弹——
+        // 否则会出现「系统没排上 + 应用内又不弹」的静默窗口。
         this._sig = null;
+        this._synced = false;
         console.warn('[DDL雷达] 系统闹钟调度失败', e);
       }
     }
