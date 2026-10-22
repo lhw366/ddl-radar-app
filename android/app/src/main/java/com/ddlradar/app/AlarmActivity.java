@@ -20,6 +20,9 @@ import android.widget.TextView;
  */
 public class AlarmActivity extends Activity {
 
+    /** 通知 id：用于用户点「知道了」后撤销对应提醒通知 */
+    private int notifId = -1;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -32,6 +35,7 @@ public class AlarmActivity extends Activity {
 
         String title = getIntent().getStringExtra("title");
         String body = getIntent().getStringExtra("body");
+        notifId = getIntent().getIntExtra("notifId", -1);
         if (title == null || title.isEmpty()) title = "DDL雷达 提醒";
         if (body == null) body = "";
 
@@ -73,7 +77,18 @@ public class AlarmActivity extends Activity {
         ok.setPadding(dp(40), dp(12), dp(40), dp(12));
         ok.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View v) { finish(); }
+            public void onClick(View v) {
+                // 顺手撤销对应的提醒通知：否则用户点完「知道了」，
+                // 通知栏里那条提醒还挂着，得再去划掉一次。
+                try {
+                    if (notifId != -1) {
+                        android.app.NotificationManager nm =
+                                (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                        if (nm != null) nm.cancel(notifId);
+                    }
+                } catch (Exception ignore) {}
+                finish();
+            }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);

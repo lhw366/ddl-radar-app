@@ -53,11 +53,18 @@
             android:turnScreenOn="true"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
 
-        <!-- 开机/改时间/覆盖安装后恢复闹钟（AlarmManager 闹钟不跨重启） -->
-        <receiver android:name=".BootReceiver" android:exported="false">
+        <!-- 开机/改时间/改时区/覆盖安装后恢复闹钟（AlarmManager 闹钟不跨重启）。
+             必须 exported="true"：这些是系统广播，Android 12+ 上
+             exported="false" 的 receiver 收不到，会导致开机后闹钟全丢。 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:directBootAware="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>

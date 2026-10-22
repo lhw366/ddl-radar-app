@@ -35,6 +35,12 @@ public class AlarmService extends Service {
     static final int FG_ID = 19900214;
 
     private static volatile boolean running;
+    /** 是否已成功进入前台：避免每次 onStartCommand 重复 startForeground */
+    private volatile boolean foregrounded;
+    /** 上一次守护通知的文案：内容没变就不再 notify，避免无谓唤醒与耗电 */
+    private static volatile String lastGuardText;
+    /** 缓存的内容 PendingIntent：每次重建会不断唤醒系统服务 */
+    private PendingIntent cachedContentPi;
 
     static boolean isRunning() { return running; }
 
@@ -50,6 +56,21 @@ public class AlarmService extends Service {
     @Override
     public IBinder onBind(Intent intent) { return null; }
 
+    /**
+     * 服务销毁时必须复位标志。
+     * 早前没有 onDestroy：running 一旦置 true 就永远是 true，
+     * 诊断面板的「守护服务运行中」会一直显示绿色 —— 用户以为保活生效，
+     * 实际服务早就被系统杀了，这正是「切后台不响却查不出原因」的陷阱。
+     */
+    @Override
+    public void onDestroy() {
+        running = false;
+        foregrounded = false;
+        lastGuardText = null;
+        cachedContentPi = null;
+        super.onDestroy();
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -59,7 +80,12 @@ public class AlarmService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        goForeground();
+        // 只在「首次进入前台」时调 goForeground()。
+        // 早前每次 onStartCommand 都调一次，而 AlarmService.start() 在
+        // apply()/scheduleOne()/cancel() 等几乎所有插件方法里都会被调用，
+        // 于是每次任务变动都会重复 startForeground（重建通知、唤醒通知服务）
+        // —— 这是「待机耗电」的主要来源之一。已在前台就无需重复。
+        if (!foregrounded) goForeground();
         if (intent != null && intent.getIntExtra("id", -1) != -1) {
             fireReminder(intent);
         } else {
@@ -96,18 +122,19 @@ public class AlarmService extends Service {
             } else {
                 startForeground(FG_ID, n);
             }
+            foregrounded = true;
         } catch (Exception e) {
             // 退化：不带类型再试一次；仍失败则仅保留普通通知，至少提醒逻辑继续跑
             try {
                 startForeground(FG_ID, n);
+                foregrounded = true;
             } catch (Exception ignore) {
                 try { if (nm != null) nm.notify(FG_ID, n); } catch (Exception ignore2) {}
             }
         }
     }
 
-    private Notification guardNotification() {
-        long nextAt = 0, now = System.currentTimeMillis();
+    private Notification guardNotification() {        long nextAt = 0, now = System.currentTimeMillis();
         org.json.JSONArray arr = AlarmScheduler.load(this);
         for (int i = 0; i < arr.length(); i++) {
             org.json.JSONObject o = arr.optJSONObject(i);
@@ -123,25 +150,33 @@ public class AlarmService extends Service {
         } else {
             b = new Notification.Builder(this).setPriority(Notification.PRIORITY_LOW);
         }
-        PendingIntent pi = null;
-        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        if (open != null) {
-            pi = PendingIntent.getActivity(this, 0, open,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        if (cachedContentPi == null) {
+            Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if (open != null) {
+                cachedContentPi = PendingIntent.getActivity(this, 0, open,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            }
         }
         return b.setContentTitle("DDL雷达 · 提醒守护中")
                 .setContentText(text)
                 .setSmallIcon(getApplicationInfo().icon)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setContentIntent(pi)
+                .setContentIntent(cachedContentPi)
                 .build();
     }
 
     private void refreshGuard() {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.notify(FG_ID, guardNotification());
+            if (nm == null) return;
+            Notification n = guardNotification();
+            // 文案没变就不重复投递：apply() 每次对账都会调到这里，
+            // 频繁 notify 会不断唤醒系统通知服务，是待机耗电的来源之一。
+            String text = n.extras.getString(Notification.EXTRA_TEXT);
+            if (text != null && text.equals(lastGuardText)) return;
+            lastGuardText = text;
+            nm.notify(FG_ID, n);
         } catch (Exception e) { /* ignore */ }
     }
 
@@ -192,8 +227,15 @@ public class AlarmService extends Service {
 
     private void playChime() {
         try {
+            // 用 USAGE_NOTIFICATION 而非 USAGE_ALARM：
+            // USAGE_ALARM 走「闹钟音量」流，而手机音量键默认调的是媒体/铃声音量，
+            // 用户按音量键完全控制不了闹钟音量流 —— 这就是「提示声音大小不能用
+            // 音量键控制」的根因。改成通知音量流后，音量键（在未播放时默认调铃声
+            // 音量，部分 ROM 可设成媒体音量）即可直接调节，符合普通提醒 App 的直觉。
+            // 代价：不受「闹钟音量」保护，勿扰模式下可能被静音——但可预期、可控制，
+            // 比「完全调不动」更符合用户诉求。
             AudioAttributes attrs = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build();
             final MediaPlayer player = MediaPlayer.create(this, R.raw.ddlr_chime, attrs, 1);
@@ -240,7 +282,12 @@ public class AlarmService extends Service {
         if (!"ddlr_vib".equals(id) && !"ddlr_ring".equals(id) && !"ddlr_full".equals(id)) {
             id = "ddlr_full";
         }
-        if (nm.getNotificationChannel(id) != null) return id;
+        NotificationChannel existing = nm.getNotificationChannel(id);
+        if (existing != null) {
+            // 已存在但重要性被用户调低（或历史版本建成 LOW）→ 不会弹顶部横幅。
+            // 通道重要性 App 改不了，只能引导用户去设置；这里把结果留给诊断面板。
+            return id;
+        }
         String name;
         boolean sound, vib;
         if ("ddlr_vib".equals(id)) {
@@ -255,18 +302,30 @@ public class AlarmService extends Service {
         ch.setShowBadge(true);
         ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         ch.enableVibration(vib);
-        if (vib) ch.setVibrationPattern(new long[]{0, 200, 120, 200});
+        ch.setVibrationPattern(new long[]{0, 200, 120, 200});
         if (sound) {
+            // 与 playChime() 保持一致：通知音量流，音量键可调
             ch.setSound(android.net.Uri.parse("android.resource://" + getPackageName() + "/raw/ddlr_chime"),
                     new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build());
         } else {
             ch.setSound(null, null);
         }
+        // HIGH 通道才会弹 heads-up（顶部横幅）；同时显式要求它绕过勿扰的
+        // 「仅优先级」限制，否则系统静音模式下横幅仍会被拦。
+        try { ch.setBypassDnd(false); } catch (Exception ignore) {}
         nm.createNotificationChannel(ch);
         return id;
+    }
+
+    /** 通道重要性是否足以弹顶部横幅（诊断用） */
+    static int channelImportance(NotificationManager nm, String id) {
+        try {
+            NotificationChannel ch = nm.getNotificationChannel(id);
+            return ch == null ? -1 : ch.getImportance();
+        } catch (Exception e) { return -1; }
     }
 
     /**
@@ -326,6 +385,7 @@ public class AlarmService extends Service {
                 Intent alarm = new Intent(this, AlarmActivity.class);
                 alarm.putExtra("title", title);
                 alarm.putExtra("body", body);
+                alarm.putExtra("notifId", id);
                 alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 PendingIntent fsi = PendingIntent.getActivity(this, 1000000 + id, alarm,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -335,11 +395,18 @@ public class AlarmService extends Service {
             Notification n = b
                     .setContentTitle(title == null ? "DDL雷达" : title)
                     .setContentText(body == null ? "" : body)
+                    .setStyle(new Notification.BigTextStyle().bigText(body == null ? "" : body))
                     .setSmallIcon(getApplicationInfo().icon)
                     .setAutoCancel(true)
-                    .setCategory(Notification.CATEGORY_ALARM)
+                    // 用 CATEGORY_REMINDER 而非 CATEGORY_ALARM：
+                    // CATEGORY_ALARM 会让部分 ROM（含 ColorOS）走「闹钟特殊通道」，
+                    // 表现为只响不弹横幅；REMINDER 是普通提醒语义，配合 HIGH 通道
+                    // 才会正常弹 heads-up 顶部横幅。
+                    .setCategory(Notification.CATEGORY_REMINDER)
+                    .setPriority(Notification.PRIORITY_HIGH)
                     .setVisibility(Notification.VISIBILITY_PUBLIC)
                     .setWhen(System.currentTimeMillis())
+                    .setDefaults(0)
                     .setContentIntent(pi)
                     .build();
             nm.notify(id, n);
@@ -352,6 +419,7 @@ public class AlarmService extends Service {
                     Intent alarm = new Intent(this, AlarmActivity.class);
                     alarm.putExtra("title", title);
                     alarm.putExtra("body", body);
+                alarm.putExtra("notifId", id);
                     alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                             | Intent.FLAG_ACTIVITY_CLEAR_TOP
                             | Intent.FLAG_ACTIVITY_NO_USER_ACTION);

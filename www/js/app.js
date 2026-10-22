@@ -58,8 +58,22 @@ try {
 } catch (e) { console.warn('状态读取失败', e); }
 if (S.settings.toastCompact === undefined) S.settings.toastCompact = true;
 
+// ⚠️ 必须显式暴露到 window：
+// `let S` 声明在模块顶层，不会自动挂到 window 上（只有 var 会）。
+// 而 nativenotify.js 是独立脚本，里面用 window.S 取状态——
+// 早前这里没赋值，导致 init() 里 sync(window.S) 传进去的是 undefined，
+// sync 第一行 `if (!this.available() || !S) return;` 直接返回，
+// 于是**原生系统闹钟从未被排定过**，所有提醒只能靠 JS 轮询兜底：
+//   · 后台被系统节流 → 延迟可达数十分钟到数小时（用户实测 1 小时）
+//   · 没有系统级通知 → 不弹顶部横幅
+//   · JS 高频轮询 → 耗电
+// 这一行是整个提醒链路能工作的前提。
+window.S = S;
+
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { console.warn('存储失败', e); }
+  // 保持 window.S 与内部 S 指向同一对象（防止某处整体替换了 S 的引用）
+  window.S = S;
   // APK 内同步重排系统级精确提醒
   if (window.NativeNotify) NativeNotify.sync(S);
 }
@@ -661,11 +675,15 @@ function planReminders(t) {
   const due = t.dueAt;
 
   // 当天分段提醒：设置页总开关 × 单事项细分开关
-  if (t.tiers) {
+  if (t.tiers && S.settings.tiered) {
+    const nowTs = Date.now();
     for (const min of TIER_MIN) {
-      if (!S.settings.tiered) break;
       if (t.tiers[min] === false) continue;
       const at = due - min * 60000;
+      // 已过期的分段提醒不再生成：早前这里没有这个判断，
+      // 截止时间一过，due-120min 等全是过去时刻，会生成一堆过期条目，
+      // 白白占用 sync 的 120 条配额、挤掉真正有效的提醒。
+      if (at <= nowTs) continue;
       out.push({
         key: `${t.id}|t${min}`, at,
         title: min > 60 ? `⏰ 还有 ${min / 60} 小时` : `⏰ 还有 ${min} 分钟`,
@@ -688,12 +706,18 @@ function planReminders(t) {
     });
   }
   // 远期每日提醒（截止日在未来且不是今天）
+  // 注意：这里最多往后排 30 天（原为 400 天）。
+  // planReminders 在 tickReminders(2s) 和 sync 里都会被调用，400 天意味着
+  // 每个任务每次调用要生成 400 个 Date 对象；几个任务就是上千个，
+  // 每秒多次 → 明显的 CPU 占用与耗电。30 天足够覆盖「远期提醒」的实际用途，
+  // 且更远的日期在临近时会重新计算，不会漏。
   if (t.daily !== false) {
     const dueDay = new Date(due); dueDay.setHours(0, 0, 0, 0);
     const todayDay = new Date(); todayDay.setHours(0, 0, 0, 0);
     if (dueDay > todayDay) {
       const [hh, mm] = (t.dailyTime || S.settings.dailyTime || '12:00').split(':').map(Number);
-      for (let i = 0; i < 400; i++) { // 最多往后排 400 天
+      const MAX_DAYS = 30;
+      for (let i = 0; i < MAX_DAYS; i++) {
         const day = new Date(todayDay.getTime() + i * 86400000);
         if (day > dueDay) break;
         if (day.getTime() === dueDay.getTime()) break; // 当天由分段提醒负责
@@ -710,12 +734,16 @@ function planReminders(t) {
     }
   }
   // 到点提醒
-  out.push({
-    key: `${t.id}|due`, at: due,
-    title: '🚨 时间到！',
-    body: `『${escapeHtml(t.name)}』就是现在 · ${QUAD_NAME[t.quadrant]}`,
-    kind: 'urgent'
-  });
+  // 保留「刚过期 15 分钟内」的条目：tickReminders 靠它做前台补弹
+  // （原生没送达时兜底）。更早的不再生成，避免过期条目长期占用配额。
+  if (due > Date.now() - 15 * 60000) {
+    out.push({
+      key: `${t.id}|due`, at: due,
+      title: '🚨 时间到！',
+      body: `『${escapeHtml(t.name)}』就是现在 · ${QUAD_NAME[t.quadrant]}`,
+      kind: 'urgent'
+    });
+  }
   return out;
 }
 
@@ -726,28 +754,42 @@ function ymdOf(ts) {
 
 function tickReminders() {
   const now = Date.now();
-  // APK 环境：准点投递由原生系统闹钟负责（锁屏/后台都可靠），
-  // 应用内引擎只做「补弹」——原生已投递的（fired 已记录或闹钟已出队）不再重复。
   const native = !!(window.NativeNotify && window.NativeNotify.available &&
     window.NativeNotify.available() && remindMode() !== 'silent');
+  // S.fired 用 Set 索引：早前是数组 + includes()，O(n) 线性查找，
+  // 且每轮都要扫全部任务 × 全部提醒点，任务一多就明显卡顿耗电。
+  if (!tickReminders._set || tickReminders._setSize !== S.fired.length) {
+    tickReminders._set = new Set(S.fired);
+    tickReminders._setSize = S.fired.length;
+  }
+  const fired = tickReminders._set;
+  let dirty = false;
   for (const t of S.tasks) {
     for (const r of planReminders(t)) {
-      if (S.fired.includes(r.key)) continue;
+      if (fired.has(r.key)) continue;
       if (r.at > now) continue;
-      if (now - r.at > 15 * 60000) { S.fired.push(r.key); continue; } // 超过15分钟才静默
+      // 超过 15 分钟：只标记不再打扰（避免堆积）
+      if (now - r.at > 15 * 60000) { fired.add(r.key); S.fired.push(r.key); dirty = true; continue; }
+      fired.add(r.key);
       S.fired.push(r.key);
-      // 原生负责准点投递：留 5s 宽限（系统闹钟正常在 2s 内到达），
-      // 超过才认为是原生没送达、由前台补弹。
-      // 早前这里是 60s —— 等于把「原生没响」的补弹硬生生推迟一分钟，
-      // 用户观感就是「延迟 1 分钟」。5s 既能避开与原生同时弹的双响，
-      // 又能在原生失效时迅速兜底。
+      dirty = true;
+      // 原生负责准点投递：留 5s 宽限，超过才前台补弹。
       const late = now - r.at > 5000;
-      if (native && !late) { save(); continue; }
+      if (native && !late) continue;
       toast(r.title + (late ? ' · 补弹' : ''), r.body, r.kind);
       beep(); vibe();
-      if (S.fired.length > 600) S.fired = S.fired.slice(-400);
-      save();
     }
+  }
+  // 只在真正有变化时写盘：早前无论有没有新提醒每 2s 都 save() 一次，
+  // 这是 localStorage 频繁写入、进而拖慢主线程的元凶之一。
+  if (dirty) {
+    if (S.fired.length > 600) {
+      S.fired = S.fired.slice(-400);
+      tickReminders._set = new Set(S.fired);
+      tickReminders._setSize = S.fired.length;
+    }
+    tickReminders._setSize = S.fired.length;
+    save();
   }
 }
 
@@ -784,7 +826,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '1.9.8';
+const APP_VERSION = '2.0.0';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -876,6 +918,23 @@ async function renderDiag() {
     html += diagRow(null, '系统当前无已接受的闹钟（未排定属正常）');
   }
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0 ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) + (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' : '（经系统闹钟）') : '还没有触发记录（闹钟触发一次后出现）');
+
+  // ── 新增：直接回答「为什么没横幅 / 为什么不准时」 ──
+  if (d.headsUp === false) {
+    html += diagRow(false, '提醒通道被系统降级（重要性 ' + d.channelImportance + '/4），不会弹顶部横幅', 'channel');
+  } else if (d.headsUp === true) {
+    html += diagRow(true, '顶部横幅可用（通道重要性 4/4）');
+  }
+  if (d.canFullScreen === false) {
+    html += diagRow(false, '「全屏通知」权限被关闭：锁屏时不会亮屏弹提醒页', 'appinfo');
+  }
+  if (d.exactOk === false) {
+    html += diagRow(false, '「闹钟和提醒」权限被关闭：提醒只能降级为普通闹钟，Doze 下可能延迟较久', 'appinfo');
+  }
+  if (d.missed > 0) {
+    html += diagRow(false, '关机/重启期间错过 ' + d.missed + ' 条提醒（已补记，不会再弹）');
+  }
+
   html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中（保活生效）' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
   html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：允许自启动 + 耗电管理 → 允许后台运行；后台任务卡片下拉「锁定」', 'appinfo');
   html += diagRow(null, '退后台必达由系统级闹钟（setAlarmClock）保证：免授权、Doze 准时、重启/更新后自动恢复');
@@ -888,6 +947,13 @@ async function renderDiag() {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
     if (f === 'reinit') { await NativeNotify.ensureChannels(true); toast('🔧 提醒通道已重建', '已恢复默认铃声与震动设置'); }
+    if (f === 'channel') {
+      // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
+      try {
+        await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: 'ddlr_full' });
+        toast('⚙️ 已打开通道设置', '把「提醒 · 响铃+震动」的重要性调回「重要/紧急」，并确认没被静音');
+      } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
+    }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
     setTimeout(renderDiag, 900);
   }));
@@ -1204,17 +1270,29 @@ function init() {
   tickReminders();
   tickCountdown();
 
-  // 心跳：提醒检查 2s / 顶栏与列表 30s / 倒计时秒表 1s / 闲逛提醒 60s
-  // 提醒检查用 2s：这是「前台补弹」的响应粒度。原生闹钟才是准点主通道，
-  // 这里只决定「万一原生没送达，前台多快补上」——2s 在用户感知上接近即时。
-  setInterval(tickReminders, 2000);
-  setInterval(() => { renderTop(); if (curView === 'home') renderHome(); }, 30000);
-  setInterval(tickCountdown, 1000);
+  // ── 心跳：全部按「前台/后台」分档，避免后台空转耗电 ──
+  // 背景：WebView 在后台本就会被系统节流（通常 60s 一次），但即便被节流，
+  // 每次唤醒仍要跑完 tickCountdown（遍历所有 DOM）和 tickReminders
+  // （遍历所有任务 × 所有提醒点，含 400 天 daily）。这是待机耗电的主要来源。
+  // 现在：隐藏时直接跳过重活，只保留最小限度的提醒补弹。
+  let tickCount = 0;
+  setInterval(() => {
+    if (document.hidden) return;   // 后台不跑倒计时（看不见，纯浪费）
+    tickCountdown();
+  }, 1000);
+  setInterval(() => {
+    // 提醒补弹：前台 2s 一次；后台降到 ~10s（靠计数跳过，不新增定时器）
+    if (document.hidden && (++tickCount % 5) !== 0) return;
+    tickReminders();
+  }, 2000);
+  setInterval(() => {
+    if (document.hidden) return;   // 后台不重绘
+    renderTop();
+    if (curView === 'home') renderHome();
+  }, 30000);
   setInterval(idleNudge, 60000);
   if (window.NativeNotify && NativeNotify.available()) {
-    // 兜底重排：只在前台做，且间隔不宜过短（每次都会与原生对账）。
-    // 注意：后台时 WebView 定时器会被节流到 60s 甚至暂停，所以准点投递
-    // 绝不能依赖这里——真正的可靠性来自 setAlarmClock 原生闹钟。
+    // 兜底重排：只在前台做。后台靠原生闹钟，不需要 JS 参与。
     setInterval(() => { if (!document.hidden) NativeNotify.sync(S); }, 60000);
   }
 }

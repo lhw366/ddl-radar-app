@@ -1,6 +1,7 @@
 package com.ddlradar.app;
 
 import android.app.AlarmManager;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.os.Build;
 
@@ -41,21 +42,26 @@ public class DdlAlarmPlugin extends Plugin {
         try {
             Context ctx = getContext();
             JSArray in = call.getArray("alarms");
+            // 防御：alarms 键缺失（而不是「传了空数组」）说明调用方出了 bug，
+            // 此时若照常按空列表对账，会把用户所有已排定闹钟全部 cancel。
+            // 明确区分「没传」与「传了空数组」——后者是合法语义（用户删光了任务）。
+            if (in == null) {
+                call.reject("alarms is required (use [] to clear)");
+                return;
+            }
             JSONArray wanted = new JSONArray();
             HashMap<Long, JSONObject> wantedMap = new HashMap<>();
             long nextAt = 0;
 
-            if (in != null) {
-                for (int i = 0; i < in.length(); i++) {
-                    JSONObject w = normalize(in.optJSONObject(i));
-                    if (w == null) continue;
-                    long id = w.optLong("id");
-                    if (wantedMap.containsKey(id)) continue; // id 去重
-                    wantedMap.put(id, w);
-                    wanted.put(w);
-                    long at = w.optLong("at");
-                    if (nextAt == 0 || at < nextAt) nextAt = at;
-                }
+            for (int i = 0; i < in.length(); i++) {
+                JSONObject w = normalize(in.optJSONObject(i));
+                if (w == null) continue;
+                long id = w.optLong("id");
+                if (wantedMap.containsKey(id)) continue; // id 去重
+                wantedMap.put(id, w);
+                wanted.put(w);
+                long at = w.optLong("at");
+                if (nextAt == 0 || at < nextAt) nextAt = at;
             }
 
             JSONArray stored = AlarmScheduler.load(ctx);
@@ -214,6 +220,32 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
             ret.put("guard", AlarmService.isRunning());
             ret.put("sdk", Build.VERSION.SDK_INT);
+
+            // ── 诊断增强：解释「为什么没弹横幅」 ──
+            // 通道重要性一旦被用户调低（或旧版建成了 LOW），App 改不回来，
+            // 只能引导用户去系统设置。这里把真实重要性暴露给诊断面板。
+            NotificationManager nm =
+                    (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            int imp = AlarmService.channelImportance(nm, "ddlr_full");
+            ret.put("channelImportance", imp);
+            // 4 = IMPORTANCE_HIGH，只有 >=4 才会弹 heads-up 顶部横幅
+            ret.put("headsUp", imp >= 4);
+            // 全屏 Intent 权限（Android 14+ 可被用户关闭，关闭后锁屏不亮屏）
+            if (Build.VERSION.SDK_INT >= 34 && nm != null) {
+                try { ret.put("canFullScreen", nm.canUseFullScreenIntent()); }
+                catch (Exception e) { ret.put("canFullScreen", true); }
+            } else {
+                ret.put("canFullScreen", true);
+            }
+            // 错过的提醒数（重启/关机期间错过的）
+            ret.put("missed", AlarmScheduler.takeMissed(ctx));
+            // 精确闹钟权限状态（Android 12+ 用户可撤销，撤销后只能降级）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am != null) {
+                try { ret.put("exactOk", am.canScheduleExactAlarms()); }
+                catch (Exception e) { ret.put("exactOk", true); }
+            } else {
+                ret.put("exactOk", true);
+            }
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("pending failed: " + e.getMessage());

@@ -158,17 +158,32 @@ public final class AlarmScheduler {
         am.cancel(operation(ctx, id, 0, null, null, null, 1));
     }
 
-    /** 开机/改时间/替换安装后恢复所有未来闹钟，返回最近的触发时刻（无则 0） */
+    /**
+     * 开机/改时间/替换安装后恢复所有未来闹钟，返回最近的触发时刻（无则 0）。
+     *
+     * 注意「已过期」的条目：早前直接丢弃，但用户如果因为关机/重启错过了提醒，
+     * 那条记录就彻底消失、也没有任何提示。现在把它们记进 missedAt，
+     * 由 App 打开时读取并补弹一条「你错过了 N 条提醒」，避免静默丢失。
+     */
     public static long reapplyAll(Context ctx) {
         JSONArray arr = load(ctx);
         long now = System.currentTimeMillis();
         JSONArray keep = new JSONArray();
         long nextAt = 0;
+        int missed = 0;
+        long missedLatest = 0;
         for (int i = 0; i < arr.length(); i++) {
             JSONObject o = arr.optJSONObject(i);
             if (o == null) continue;
             long at = o.optLong("at", 0);
-            if (at <= now) continue; // 已过期：丢弃（App 内引擎会自行补弹错过提示）
+            if (at <= now) {
+                // 过期：计入错过统计（只统计 24 小时内的，更早的没意义）
+                if (now - at < 24 * 3600 * 1000L) {
+                    missed++;
+                    if (at > missedLatest) missedLatest = at;
+                }
+                continue;
+            }
             keep.put(o);
             schedule(ctx, o.optLong("id"), at,
                     o.optString("title", null), o.optString("body", null),
@@ -176,7 +191,25 @@ public final class AlarmScheduler {
             if (nextAt == 0 || at < nextAt) nextAt = at;
         }
         if (keep.length() != arr.length()) save(ctx, keep);
+        if (missed > 0) {
+            try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                        .putInt("missedCount", missed)
+                        .putLong("missedAt", missedLatest)
+                        .apply();
+            } catch (Exception ignore) {}
+        }
         return nextAt;
+    }
+
+    /** 读取并清空「错过的提醒」计数（App 打开时调用，用于补弹提示） */
+    public static int takeMissed(Context ctx) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            int n = sp.getInt("missedCount", 0);
+            if (n > 0) sp.edit().putInt("missedCount", 0).apply();
+            return n;
+        } catch (Exception e) { return 0; }
     }
 
     /**

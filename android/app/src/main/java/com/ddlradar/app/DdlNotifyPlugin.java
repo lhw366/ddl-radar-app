@@ -74,9 +74,11 @@ public class DdlNotifyPlugin extends Plugin {
             if (sound != null && !sound.isEmpty()) {
                 Uri soundUri = Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/" +
                         sound.substring(0, sound.lastIndexOf('.')));
-                // USAGE_ALARM：走闹钟音量、免勿扰干扰，与系统闹钟同语义
+                // USAGE_NOTIFICATION：走通知/铃声音量流，音量键可直接调节。
+                // 早前用 USAGE_ALARM（闹钟音量流），音量键控制不了，
+                // 这是「提示音大小不能用音量键控制」的根因。
                 AudioAttributes attrs = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build();
                 ch.setSound(soundUri, attrs);
@@ -113,6 +115,35 @@ public class DdlNotifyPlugin extends Plugin {
             call.resolve(new JSObject().put("opened", true));
         } catch (Exception e) {
             call.reject("open failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 直达「本应用的某个通知通道」设置页。
+     *
+     * 为什么需要：通道的重要性/声音/震动一经创建就归用户所有，App 改不了。
+     * 如果用户曾把它调成「静音」或降低重要性，提醒就不会弹横幅——
+     * 此时唯一的修法是引导用户到该通道的设置页手动调回来。
+     * Android 8+ 用 ACTION_CHANNEL_NOTIFICATION_SETTINGS 可精确跳转。
+     */
+    @PluginMethod
+    public void openChannelSettings(PluginCall call) {
+        try {
+            String id = call.getString("id", "ddlr_full");
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
+            i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+            i.putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, id);
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            // 个别 ROM 不支持直达通道页，退化为应用详情页
+            try {
+                openAppDetails(call);
+            } catch (Exception e2) {
+                call.reject("open channel settings failed: " + e.getMessage());
+            }
         }
     }
 

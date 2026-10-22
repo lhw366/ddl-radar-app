@@ -35,6 +35,12 @@
       if (!this.available()) return;
       await this.ensureChannels();
       await this.ensureNotifyPermission();
+      // 启动时强制重排一次：SCHED_VER（原生调度规格版本）升级后，
+      // 旧版排定的闹钟带着旧的 PendingIntent 结构，必须整表重排才会生效。
+      // 但 sync() 有签名去抖，签名没变就直接 return → apply() 永远不被调用
+      // → 版本迁移形同虚设（这是「装了新版还是老毛病」的隐藏成因）。
+      // 这里在每次冷启动时清掉签名，保证至少对账一次。
+      this._sig = null;
       await this.sync(window.S);
       // 原生 BootReceiver 负责重启/覆盖安装后恢复；这里兜底：切回前台时对账一次
       document.addEventListener('visibilitychange', function () {
@@ -105,6 +111,12 @@
         out.lastFireVia = p.lastFireVia || '';
         out.guard = p.guard === true;
         out.sdk = p.sdk || null;
+        // 新增诊断项：解释「为什么没横幅 / 为什么不准时」
+        out.channelImportance = p.channelImportance;
+        out.headsUp = p.headsUp;
+        out.canFullScreen = p.canFullScreen;
+        out.exactOk = p.exactOk;
+        out.missed = p.missed || 0;
       } catch (e) { out.pending = -1; out.nextAt = 0; }
       try {
         var l = await ddp.listChannelIds();
@@ -184,7 +196,16 @@
     sync: async function (S) {
       if (!this.available() || !S) return;
       var mode = (S.settings && S.settings.remindMode) || 'full';
-      var sig = mode + '|' + S.tasks.map(function (t) {
+      // 签名里必须带上「当前日期」与「时刻档位」：
+      // planReminders() 的结果随日期推移而变（每日提醒按天生成），
+      // 若签名只看任务 id/updatedAt/done，跨天之后签名不变 →
+      // sync 直接 return → 原生侧永远停在昨天的闹钟列表，
+      // 新的一天根本没有排上任何闹钟（这正是「要等很久才响」的成因之一）。
+      // 用「当天日期 + 10 分钟档」做签名：跨天必重排，同一天内也不会太频繁。
+      var nowMs = Date.now();
+      var dayKey = new Date(nowMs).toDateString();
+      var slot10 = Math.floor(nowMs / 600000); // 10 分钟一档
+      var sig = mode + '|' + dayKey + '|' + slot10 + '|' + S.tasks.map(function (t) {
         return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
       }).join(',');
       if (this._sig === sig) return;
@@ -194,14 +215,21 @@
         var alarms = [];
         if (mode !== 'silent') {
           var now = Date.now();
+          // 关键：只排「近 7 天内」的提醒。
+          // planReminders() 的远期每日提醒会为每个任务生成最多 400 天、
+          // 每天一条的条目，几个任务就能凑出上千条；再被下面的 120 条上限
+          // 截断——而截断是按 at 升序取前 120 条，本身没问题，但真正的坑是：
+          // 每次 sync 都重算全部条目、逐条 hashId 去重、再整表发给原生做对账，
+          // 任务多时这一步会卡住主线程，且原生侧大量 schedule/cancel
+          // 反复唤醒 AlarmManager —— 这是「耗电」和「越用越慢」的来源。
+          // 限 7 天窗口后条目数从千级降到几十条，且近期提醒永远不会被远期条目挤掉。
+          var HORIZON = 7 * 86400000;
           for (var i = 0; i < S.tasks.length; i++) {
             var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i]) : [];
             for (var j = 0; j < list.length; j++) {
               var r = list[j];
-              // 只跳过「已过期」的（留 1s 容差）。早前是 now+3000，
-              // 会把 3 秒内就要响的提醒排除出期望列表，配合原生 apply()
-              // 的对账逻辑可能把临期闹钟撤掉 —— 改成 1s 后临期提醒仍会被保留。
-              if (r.at <= now - 1000) continue;
+              if (r.at <= now - 1000) continue;      // 已过期
+              if (r.at > now + HORIZON) continue;    // 超出 7 天窗口
               var id = hashId(r.key);
               var dup = alarms.some(function (a) { return a.id === id; });
               if (dup) continue;
@@ -215,6 +243,7 @@
             }
           }
           alarms.sort(function (a, b) { return a.at - b.at; });
+          // 上限只截「最远」的，最近的必定保留
           if (alarms.length > 120) alarms = alarms.slice(0, 120);
         }
         // 未触发的测试闹钟并入对账列表，防止被 apply() 当作多余条目撤销
