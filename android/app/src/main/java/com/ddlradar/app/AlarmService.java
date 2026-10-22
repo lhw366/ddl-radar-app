@@ -23,6 +23,19 @@ public class AlarmService extends Service {
     static final String GUARD_CHANNEL = "ddlr_guard";
     static final int FG_ID = 19900214;
     private static volatile boolean running;
+    private static PowerManager.WakeLock deadlineWake;
+
+    static synchronized void prepareDeadline(Context context, long at) {
+        PowerManager power = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        if (power == null) return;
+        if (deadlineWake == null) {
+            deadlineWake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:deadline");
+            deadlineWake.setReferenceCounted(false);
+        }
+        // Bounded to the imminent deadline; never hold a permanent wake lock.
+        deadlineWake.acquire(Math.max(1000L, Math.min(15000L, at - System.currentTimeMillis() + 3000L)));
+        start(context);
+    }
     private boolean foregrounded;
     private String lastGuardText;
     private PendingIntent cachedContentPi;
@@ -170,7 +183,7 @@ public class AlarmService extends Service {
             if (at > 0 && (nextAt == 0 || at < nextAt)) nextAt = at;
         }
         long delay = nextAt == 0 ? 60000L
-                : Math.max(250L, Math.min(60000L, nextAt - now + 150L));
+                : nextAt <= now ? 1000L : Math.min(60000L, nextAt - now);
         alarmHandler.postDelayed(alarmFallback, delay);
     }
 
@@ -193,7 +206,7 @@ public class AlarmService extends Service {
                 JSONObject item = items.optJSONObject(i);
                 if (item == null || !item.optBoolean("scheduled", true)) continue;
                 long at = item.optLong("at", 0);
-                if (at <= 0 || at > now + 1000) continue;
+                if (at <= 0 || at > now) continue;
                 Intent intent = new Intent(this, AlarmReceiver.class);
                 intent.setAction("com.ddlradar.app.SERVICE_FALLBACK");
                 intent.putExtra("id", (int) item.optLong("id"));

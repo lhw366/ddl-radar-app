@@ -1012,7 +1012,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.9';
+const APP_VERSION = '2.2.10';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1260,6 +1260,10 @@ async function renderDiag() {
       (d.lastFireVia === 'exact' ? '（经精确闹钟备份）' :
        d.lastFireVia === 'service' ? '（经守护服务兜底）' : '（经系统闹钟）')
     : '还没有触发记录（闹钟触发一次后出现）');
+  if (d.lastDelayMs >= 0) {
+    html += diagRow(d.lastDelayMs < 1000, '上次提醒到点后延迟 ' + (d.lastDelayMs / 1000).toFixed(2) + ' 秒');
+    if (d.lastNotificationAllowed === false) html += diagRow(false, '上次提醒的系统通知被权限或通道开关阻止', 'notify');
+  }
   if (d.lastReceiverAt > 0) {
     html += diagRow(true, '系统已把闹钟送到 App：' + fmtDT(d.lastReceiverAt) +
       (d.lastFireAt > 0 ? '' : '，但提醒内容未完成展示'));
@@ -1285,9 +1289,9 @@ async function renderDiag() {
     html += diagRow(false, '关机/重启期间错过 ' + d.missed + ' 条提醒（已补记，不会再弹）');
   }
 
-  html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中（保活生效）' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
+  html += diagRow(d.guard === true, d.guard === true ? '守护服务运行中' : '守护服务未运行：请重新打开 App，并到系统设置开启自启动', d.guard ? '' : 'appinfo');
   html += diagRow(null, 'ColorOS 后台保活（若切后台不响务必做）：允许自启动 + 耗电管理 → 允许后台运行；后台任务卡片下拉「锁定」', 'appinfo');
-  html += diagRow(null, '退后台必达由系统级闹钟（setAlarmClock）保证：免授权、Doze 准时、重启/更新后自动恢复');
+  html += diagRow(null, '系统闹钟负责唤醒提醒；重启和更新后自动恢复，实际延迟见上方记录');
   if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
@@ -1296,7 +1300,11 @@ async function renderDiag() {
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
-    if (f === 'reinit') { await NativeNotify.ensureChannels(true); toast('🔧 提醒通道已重建', '响铃和横幅通道已恢复默认设置'); }
+    if (f === 'reinit') {
+      await NativeNotify.ensureChannels(true);
+      await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: NativeNotify.channelIdFor(S.settings) });
+      toast('🔧 已检查提醒通道', '请确认允许通知，并开启横幅；系统保留的开关需在此修改');
+    }
     if (f === 'channel') {
       // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
       try {

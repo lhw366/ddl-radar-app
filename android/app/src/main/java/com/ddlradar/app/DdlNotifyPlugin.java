@@ -51,6 +51,14 @@ public class DdlNotifyPlugin extends Plugin {
             }
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) { call.reject("no notification manager"); return; }
+            if (id.startsWith("ddlr_high_") || id.startsWith("ddlr_gentle_")) {
+                // One native definition for JS initialization, boot recovery,
+                // and actual delivery. Do not delete/recreate the same ID:
+                // Android restores its former settings, including blocks.
+                String actualId = AlarmDelivery.ensureChannel(ctx, nm, id);
+                call.resolve(new JSObject().put("ok", true).put("id", actualId));
+                return;
+            }
 
             // 通道一经创建，重要性/声音/震动就归用户所有，系统不允许 App 改写。
             // 早前这里「先删后建」强制生效，代价是：每删一次，用户在系统设置里

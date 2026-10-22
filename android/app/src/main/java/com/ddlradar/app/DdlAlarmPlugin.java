@@ -260,6 +260,10 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastFireId", lf[0]);
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
+            android.content.SharedPreferences diagnostics = ctx.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE);
+            ret.put("lastExpectedAt", diagnostics.getLong("lastExpectedAt", 0));
+            ret.put("lastDelayMs", diagnostics.getLong("lastDelayMs", -1));
+            ret.put("lastNotificationAllowed", diagnostics.getBoolean("lastNotificationAllowed", false));
             ret.put("lastReceiverId", lr[0]);
             ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
@@ -275,7 +279,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("channelId", channelId);
             ret.put("channelImportance", imp);
             // 4 = IMPORTANCE_HIGH，只有 >=4 才会弹 heads-up 顶部横幅
-            ret.put("headsUp", imp >= 4);
+            ret.put("headsUp", imp >= 4 && androidx.core.app.NotificationManagerCompat.from(ctx).areNotificationsEnabled());
             // 全屏 Intent 权限（Android 14+ 可被用户关闭，关闭后锁屏不亮屏）
             if (Build.VERSION.SDK_INT >= 34 && nm != null) {
                 try { ret.put("canFullScreen", nm.canUseFullScreenIntent()); }
@@ -360,13 +364,7 @@ public class DdlAlarmPlugin extends Plugin {
     }
 
     private String normalizeChannelId(String id) {
-        if ("ddlr_high_sound".equals(id) || "ddlr_high_silent".equals(id)
-                || "ddlr_gentle_sound".equals(id) || "ddlr_gentle_silent".equals(id)) {
-            return id;
-        }
-        if ("ddlr_vib".equals(id)) return "ddlr_high_silent";
-        if ("ddlr_full".equals(id) || "ddlr_ring".equals(id)) return "ddlr_high_sound";
-        return "ddlr_high_sound";
+        return AlarmDelivery.normalizeChannelId(id);
     }
 
     private void upsert(Context ctx, JSONObject o) {

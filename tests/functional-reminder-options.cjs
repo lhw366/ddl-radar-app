@@ -54,7 +54,7 @@ test('native channel combines only banner and sound; vibration remains a separat
     banner: false,
     remindSilent: false
   })`);
-  assert.equal(channel, 'ddlr_gentle_sound');
+  assert.equal(channel, 'ddlr_gentle_v2_sound');
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:false,vibrate:true,banner:false,remindSilent:false})'), true);
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:true,vibrate:true,banner:true,remindSilent:true})'), false);
 });
@@ -80,7 +80,7 @@ test('test reminder is scheduled five seconds ahead with independent vibration',
   const ok = await h.context.NativeNotify.test();
   assert.equal(ok, true);
   assert.equal(scheduled.at - h.context.Date.now(), 5000);
-  assert.equal(scheduled.channelId, 'ddlr_gentle_silent');
+  assert.equal(scheduled.channelId, 'ddlr_gentle_v2_silent');
   assert.equal(scheduled.vibrate, true);
 });
 
@@ -108,6 +108,50 @@ test('silent clears native alarms and vibration-only schedules a silent channel 
   h.context.S.settings = { sound: false, vibrate: true, banner: false, remindSilent: false };
   h.context.NativeNotify._sig = null;
   await h.context.NativeNotify.sync(h.context.S);
-  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_silent');
+  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v2_silent');
   assert.equal(applied[1].alarms[0].vibrate, true);
+});
+
+test('reconciliation retains imminent and just-due test reminders', async () => {
+  for (const offset of [2999, 0, -1001]) {
+    let alarms;
+    const h = harness(['nativenotify.js'], { globals: {
+      Capacitor: { isNativePlatform: () => true, Plugins: {
+        DdlAlarm: { apply: async (payload) => { alarms = payload.alarms; } }
+      } }
+    } });
+    const at = h.context.Date.now() + offset;
+    h.context.localStorage.setItem('ddlr_testAt', String(at));
+    await h.context.NativeNotify.sync(h.context.S);
+    assert.equal(alarms.length, 1, 'must retain test at offset ' + offset);
+    assert.equal(alarms[0].at, at);
+  }
+});
+
+test('reconciliation retains an event crossing its deadline while JS is busy', async () => {
+  let alarms;
+  const h = harness(['nativenotify.js'], { globals: {
+    Capacitor: { isNativePlatform: () => true, Plugins: {
+      DdlAlarm: { apply: async (payload) => { alarms = payload.alarms; } }
+    } },
+    planReminders: () => [{ key: 'deadline', at: 1000, title: '到点', body: '' }]
+  } });
+  h.now(2500);
+  h.context.S.tasks = [{ id: 'event' }];
+  await h.context.NativeNotify.sync(h.context.S);
+  assert.equal(alarms.length, 1);
+  assert.equal(alarms[0].at, 1000);
+});
+
+test('banner-only reminders use the migrated high importance silent channel', async () => {
+  const created = [];
+  const h = harness(['nativenotify.js'], { globals: {
+    Capacitor: { Plugins: { DdlNotify: { ensureChannel: async (definition) => created.push(definition) } } }
+  } });
+  await h.context.NativeNotify.ensureChannels();
+  const channelId = h.context.NativeNotify.channelIdFor({ sound: false, vibrate: false, banner: true });
+  const definition = created.find((item) => item.id === channelId);
+  assert.equal(definition.importance, 4);
+  assert.equal(definition.vibration, false);
+  assert.equal(definition.sound, 'ddlr_silence.wav');
 });

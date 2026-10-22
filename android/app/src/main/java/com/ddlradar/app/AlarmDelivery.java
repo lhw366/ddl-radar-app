@@ -27,7 +27,7 @@ final class AlarmDelivery {
         synchronized (AlarmScheduler.class) {
             JSONObject item = AlarmScheduler.findOccurrence(context, id, at);
             if (AlarmScheduler.wasDelivered(context, id, at)) return false;
-            if (at > System.currentTimeMillis() + 1000) return false;
+            if (at > System.currentTimeMillis()) return false;
             // Persisted state can be reconciled a few milliseconds before the
             // alarm fires. The PendingIntent extras are the last known good
             // copy, so deliver them instead of silently dropping a real alarm.
@@ -44,6 +44,9 @@ final class AlarmDelivery {
             if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
             vibrateForMode(context, channelId, vibrate);
             post(context, id, title, body, channelId);
+            context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                    .putLong("lastExpectedAt", at)
+                    .putLong("lastDelayMs", Math.max(0, System.currentTimeMillis() - at)).apply();
             AlarmScheduler.recordDelivered(context, id, at);
             int slot = intent.getIntExtra("slot", 0);
             AlarmScheduler.markFired(context, id,
@@ -95,21 +98,27 @@ final class AlarmDelivery {
         // Vibration is executed by AlarmReceiver so it remains independent
         // from the sound and banner channel settings.
         channel.enableVibration(false);
-        channel.setSound(sound ? Uri.parse("android.resource://" + context.getPackageName() + "/raw/ddlr_chime") : null,
-                sound ? new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build() : null);
+        // Some ROMs suppress heads-up for channels with neither sound nor
+        // channel vibration. A silent PCM cue keeps banner-only reminders
+        // alerting without adding audible sound or changing direct vibration.
+        Uri cue = (sound || banner) ? Uri.parse("android.resource://" + context.getPackageName()
+                + (sound ? "/raw/ddlr_chime" : "/raw/ddlr_silence")) : null;
+        channel.setSound(cue, cue == null ? null : new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
         manager.createNotificationChannel(channel);
         return id;
     }
 
-    private static String normalizeChannelId(String id) {
+    static String normalizeChannelId(String id) {
+        if (id != null && (id.equals("ddlr_high_v2_sound") || id.equals("ddlr_high_v2_silent")
+                || id.equals("ddlr_gentle_v2_sound") || id.equals("ddlr_gentle_v2_silent"))) return id;
         if (id != null && (id.equals("ddlr_high_sound") || id.equals("ddlr_high_silent")
                 || id.equals("ddlr_gentle_sound") || id.equals("ddlr_gentle_silent"))) {
-            return id;
+            return id.replace("_sound", "_v2_sound").replace("_silent", "_v2_silent");
         }
-        if ("ddlr_vib".equals(id)) return "ddlr_high_silent";
-        if ("ddlr_full".equals(id) || "ddlr_ring".equals(id)) return "ddlr_high_sound";
-        return "ddlr_high_sound";
+        if ("ddlr_vib".equals(id)) return "ddlr_high_v2_silent";
+        return "ddlr_high_v2_sound";
     }
 
     static int notificationId(int id) {
@@ -136,6 +145,11 @@ final class AlarmDelivery {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) throw new IllegalStateException("Notification manager unavailable");
         channelId = ensureChannel(context, manager, channelId);
+        boolean allowed = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+                && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                || manager.getNotificationChannel(channelId).getImportance() != NotificationManager.IMPORTANCE_NONE);
+        context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                .putBoolean("lastNotificationAllowed", allowed).apply();
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = new Notification.Builder(context, channelId);

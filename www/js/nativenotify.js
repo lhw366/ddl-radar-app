@@ -24,8 +24,8 @@
   }
 
   var CHANNELS = [
-    'ddlr_high_sound', 'ddlr_high_silent',
-    'ddlr_gentle_sound', 'ddlr_gentle_silent'
+    'ddlr_high_v2_sound', 'ddlr_high_v2_silent',
+    'ddlr_gentle_v2_sound', 'ddlr_gentle_v2_silent'
   ];
 
   function settingEnabled(settings, key) {
@@ -41,7 +41,7 @@
   function channelIdFor(settings) {
     var banner = settingEnabled(settings, 'banner');
     var sound = settingEnabled(settings, 'sound');
-    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_' + (sound ? 'sound' : 'silent');
+    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v2_' + (sound ? 'sound' : 'silent');
   }
 
   var N = {
@@ -85,7 +85,7 @@
       });
     },
 
-    // force=true 时强制删旧建新（用户在诊断面板点「修复通道」才会走到）
+    // force=true 重新核对通道；已有通道的用户设置由系统保留。
     ensureChannels: async function (force) {
       var ddp = DDP();
       if (!ddp) return;
@@ -93,13 +93,13 @@
       // heads-up banner on/off and chime on/off. Vibration is executed directly
       // by the native receiver and is therefore independent of channel history.
       var defs = [
-        { id: 'ddlr_high_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_high_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: '' },
-        { id: 'ddlr_gentle_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_gentle_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
+        { id: 'ddlr_high_v2_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_high_v2_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
+        { id: 'ddlr_gentle_v2_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_chime.wav' },
+        { id: 'ddlr_gentle_v2_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
       ];
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
-      // 注意：原生侧现在默认复用已存在通道，force 才删重建——用户手动调整过的
+      // 注意：原生侧复用已存在通道，用户手动调整过的
       // 通道设置（静音/换铃声）不再被每次启动抹掉。
       var chSig = JSON.stringify(defs.map(function (d) { return [d.id, d.importance, d.vibration, d.sound]; }));
       var chSigStored = null;
@@ -158,6 +158,8 @@
         out.lastFireAt = p.lastFireAt || 0;
         out.lastFireId = p.lastFireId || 0;
         out.lastFireVia = p.lastFireVia || '';
+        out.lastDelayMs = p.lastDelayMs;
+        out.lastNotificationAllowed = p.lastNotificationAllowed;
         out.lastReceiverId = p.lastReceiverId || 0;
         out.lastReceiverAt = p.lastReceiverAt || 0;
         out.guard = p.guard === true;
@@ -300,7 +302,7 @@
             var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i]) : [];
             for (var j = 0; j < list.length; j++) {
               var r = list[j];
-              if (r.at <= now - 1000) continue;      // 已过期
+              if (r.at < now - 15 * 60000) continue;      // 已过期
               if (r.at > now + HORIZON) continue;    // 超出 7 天窗口
               var id = hashId(r.key);
               if (scheduledIds.has(id)) continue;
@@ -325,7 +327,7 @@
                 var cs = window.Timetable.planFor(dayTs);
                 for (var ci = 0; ci < cs.length; ci++) {
                   var cr = cs[ci];
-                  if (cr.at <= now - 1000 || cr.at > now + HORIZON) continue;
+                  if (cr.at < now - 15 * 60000 || cr.at > now + HORIZON) continue;
                   var cid = hashId(cr.key);
                   if (scheduledIds.has(cid)) continue;
                   scheduledIds.add(cid);
@@ -347,7 +349,7 @@
         // （关闭提醒时不并入：跟随当前设置被撤销）
         try {
           var testAt = parseInt(localStorage.getItem('ddlr_testAt') || '0', 10);
-          if (enabled && testAt > Date.now() + 3000) {
+          if (enabled && testAt > 0 && testAt >= Date.now() - 15 * 60000) {
             if (!scheduledIds.has(990000001)) {
               alarms.push({
                 id: 990000001,

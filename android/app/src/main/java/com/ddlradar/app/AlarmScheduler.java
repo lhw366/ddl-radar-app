@@ -32,11 +32,12 @@ public final class AlarmScheduler {
      * v4 = apply() 不再撤销临期闹钟（修「到点前被撤、60s 后才补弹」）
      * v5 = 系统只调度最近 120 条，其余保存在原生队列中逐条递补
      * v7 = 响铃/震动/横幅独立设置，旧版闹钟按新通道与震动标记重排
+     * v8 = 同时刻备份、临期短唤醒、新版横幅通道
      * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 7;
+    public static final int SCHED_VER = 8;
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
@@ -270,7 +271,7 @@ public final class AlarmScheduler {
     /**
      * 注册一条系统闹钟，双机制同发：
      * 主：setAlarmClock（状态栏闹钟图标、免授权、Doze 准时）；
-     * 备：setExactAndAllowWhileIdle 在 +2s 再发一次——个别 ROM 对闹钟时钟通道
+     * 备：setExactAndAllowWhileIdle 在相同时间再发一次——个别 ROM 对闹钟时钟通道
      * 的派发存在怪异拦截，两条独立通道指向同一接收器，只要一条到达即提醒。
      *
      * 注意备份通道必须用**独立 requestCode** 的 PendingIntent：
@@ -321,16 +322,26 @@ public final class AlarmScheduler {
                 }
             }
         }
-        // 备份通道：+2s 兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
+        // 备份通道：同一截止时间兜底。用独立 requestCode，绝不与主闹钟共用 PendingIntent
         // （共用会让后注册的精确闹钟顶掉 setAlarmClock，反而失去 Doze 准时性）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 // 不用 canScheduleExactAlarms() 预判：该 API 仅 Android 12+ 存在，
                 // 且在「主通道刚被拒」的场景下必然返回 false，会导致最需要兜底时
                 // 反而跳过兜底。改为直接尝试、由异常决定是否可用。
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at + 2000,
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at,
                         operation(ctx, id, at, title, body, channelId, vibrate, 1));
             } catch (Exception ignore) { /* 主通道在即可 */ }
+        }
+        // Briefly wake the service BEFORE the deadline. A Handler alone uses
+        // uptime and cannot wake a sleeping CPU, even in a foreground service.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && at > System.currentTimeMillis() + 5000) {
+            try {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at - 5000,
+                        operation(ctx, id, at, title, body, channelId, vibrate, 2));
+            } catch (SecurityException ignored) { /* The primary alarm remains registered. */ }
+        } else if (at > System.currentTimeMillis()) {
+            AlarmService.prepareDeadline(ctx, at);
         }
     }
 
@@ -340,6 +351,7 @@ public final class AlarmScheduler {
         if (am == null) return;
         am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
         cancelLegacy(ctx, id);
     }
 
