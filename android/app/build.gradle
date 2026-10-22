@@ -10,6 +10,15 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // 只打包 arm64-v8a 的原生库。
+        // 引入 ML Kit OCR 后，每个 ABI 都带一个 11MB 的 libmlkit_google_ocr_pipeline.so，
+        // 四个 ABI 合计 41MB —— 但每台设备只会用其中一个。
+        // 现代安卓手机（2017 年后的中高端机型，含目标设备 OPPO Find X5 Pro）
+        // 全部是 arm64-v8a；保留 x86/x86_64 只会让安装包凭空大一倍多。
+        // 这一项把 APK 从 ~28MB 降到 ~17MB。
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
