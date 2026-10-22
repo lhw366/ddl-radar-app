@@ -228,6 +228,7 @@ public class AlarmService extends Service {
                 intent.putExtra("channelId", item.optString("channel", "ddlr_high_sound"));
                 intent.putExtra("vibrate", item.optBoolean("vibrate", true));
                 intent.putExtra("slot", 2);
+                ReminderTrace.mark(this, item.optLong("id"), "service", "fallback foreground=" + foregrounded);
                 AlarmDelivery.deliver(this, intent);
             }
             refreshGuard();
