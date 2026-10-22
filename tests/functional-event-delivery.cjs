@@ -116,3 +116,11 @@ test('the event editor waits for native acceptance before confirming a saved eve
   assert.equal(h.el('fSave').disabled, false);
   assert.equal(h.el('editorWrap').classList.contains('hidden'), true);
 });
+
+test('opening the APK does not replay a due event through JavaScript', () => {
+  const h = nativeHarness(async () => ({}));
+  h.run(`S.settings.tiered = false; S.tasks.push({ id: 'native-owned', name: '已由原生处理',
+    dueAt: Date.now() - 6000, daily: false, quadrant: 'q2' }); tickReminders();`);
+  assert.equal(h.toasts.length, 0);
+  assert.equal(h.context.S.fired.length, 0, 'native delivery markers own APK de-duplication');
+});

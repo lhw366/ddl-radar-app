@@ -901,6 +901,9 @@ function invalidateFiredCache() {
 }
 
 function tickReminders() {
+  // APK delivery belongs solely to the native scheduler. Replaying an expired
+  // event on resume masks background failures and produces duplicate vibration.
+  if (window.NativeNotify && NativeNotify.available()) return;
   // "静默（关闭提醒）" or all three outputs switched off means reminders are
   // intentionally disabled; do not consume them or fall back to a toast.
   if (!reminderOutputsEnabled()) return;
