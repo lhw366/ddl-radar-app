@@ -33,6 +33,22 @@ public class AlarmService extends Service {
 
     static final String GUARD_CHANNEL = "ddlr_guard";
     static final int FG_ID = 19900214;
+    /**
+     * 提醒通知 id 的偏移量。
+     *
+     * 提醒 id 来自 JS 的 hashId()，范围 0~2147483646；而守护通知固定用 FG_ID
+     * （19900214）。两者落在同一命名空间里，一旦某条提醒的 hash 恰好等于
+     * FG_ID，就会和守护通知互相覆盖：要么守护通知被提醒顶掉（保活失效），
+     * 要么提醒被守护通知顶掉（用户收不到这条提醒）。
+     * 加一个足够大的偏移把两个区段彻底隔开——这是「有时收不到某条提醒」
+     * 的一个隐蔽成因（概率低但一旦命中就是静默丢失）。
+     */
+    static final int NOTIF_ID_OFFSET = 1000000000;
+
+    /** 把 JS 侧提醒 id 映射成不会与守护通知冲突的通知 id */
+    static int notifId(long alarmId) {
+        return (int) ((alarmId & 0x3FFFFFFF) + NOTIF_ID_OFFSET);
+    }
 
     private static volatile boolean running;
     /** 是否已成功进入前台：避免每次 onStartCommand 重复 startForeground */
@@ -92,6 +108,15 @@ public class AlarmService extends Service {
         // 于是每次任务变动都会重复 startForeground（重建通知、唤醒通知服务）
         // —— 这是「待机耗电」的主要来源之一。已在前台就无需重复。
         if (!foregrounded) goForeground();
+        // 「知道了」按钮：只撤销通知，不重复投递提醒
+        if (intent != null && intent.getIntExtra("ackId", -1) != -1) {
+            try {
+                NotificationManager nm =
+                        (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel(intent.getIntExtra("ackId", -1));
+            } catch (Exception ignore) {}
+            return START_STICKY;
+        }
         if (intent != null && intent.getIntExtra("id", -1) != -1) {
             fireReminder(intent);
         } else {
@@ -430,7 +455,7 @@ public class AlarmService extends Service {
                 Intent alarm = new Intent(this, AlarmActivity.class);
                 alarm.putExtra("title", title);
                 alarm.putExtra("body", body);
-                alarm.putExtra("notifId", id);
+                alarm.putExtra("notifId", notifId(id));
                 alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 PendingIntent fsi = PendingIntent.getActivity(this, 1000000 + id, alarm,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -454,7 +479,31 @@ public class AlarmService extends Service {
                     .setDefaults(0)
                     .setContentIntent(pi)
                     .build();
-            nm.notify(id, n);
+
+            // ── 操作按钮：解决「震动完不知道该做什么」 ──
+            // 只震动/只响铃时用户往往在忙，看到通知却不知道怎么处理。
+            // 给两个直接动作：打开 App 处理 / 直接标记完成（免进 App）。
+            try {
+                Intent openI = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                if (openI != null) {
+                    openI.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    PendingIntent pOpen = PendingIntent.getActivity(this, 2000000 + id, openI,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                    n.actions.add(new Notification.Action.Builder(
+                            android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
+                            "去看看", pOpen).build());
+                }
+                // 「知道了」：只撤销通知，不再重复响（用户已确认看到）
+                Intent ackI = new Intent(this, AlarmService.class);
+                ackI.putExtra("ackId", notifId(id));
+                PendingIntent pAck = PendingIntent.getService(this, 3000000 + id, ackI,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                n.actions.add(new Notification.Action.Builder(
+                        android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
+                        "知道了", pAck).build());
+            } catch (Exception ignore) { /* 按钮加不上不影响通知本体 */ }
+
+            nm.notify(notifId(id), n);
 
             // 锁屏/灭屏兜底亮屏：全屏 Intent 可能因权限被拒而不生效，
             // 这里直接拉起提醒页，保证「锁屏也看得见」。
@@ -464,7 +513,7 @@ public class AlarmService extends Service {
                     Intent alarm = new Intent(this, AlarmActivity.class);
                     alarm.putExtra("title", title);
                     alarm.putExtra("body", body);
-                alarm.putExtra("notifId", id);
+                alarm.putExtra("notifId", notifId(id));
                     alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                             | Intent.FLAG_ACTIVITY_CLEAR_TOP
                             | Intent.FLAG_ACTIVITY_NO_USER_ACTION);

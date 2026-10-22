@@ -74,35 +74,33 @@ public class DdlAlarmPlugin extends Plugin {
 
             int cancelled = 0, added = 0;
             long nowMs = System.currentTimeMillis();
-            for (Long id : storedMap.keySet()) {
-                JSONObject w = wantedMap.get(id);
-                if (w == null) {
-                    // 期望列表里没有：只有「仍然在未来」的才取消。
-                    // 已到点（含即将到点）的条目必须保留——JS 侧 sync() 用
-                    // `r.at <= now + 3000` 过滤掉临期提醒，若这里无条件 cancel，
-                    // 就会把「马上要响」的闹钟撤掉，只能等应用内引擎 60 秒后补弹，
-                    // 这正是用户反馈「延迟整整 1 分钟」的根因。
-                    JSONObject s = storedMap.get(id);
-                    long at = s == null ? 0 : s.optLong("at", 0);
-                    if (at > nowMs + 3000) {
-                        AlarmScheduler.cancel(ctx, id);
-                        cancelled++;
-                    }
-                    continue;
-                }
-                if (!sameSpec(storedMap.get(id), w)) {
-                    AlarmScheduler.cancel(ctx, id);
-                    cancelled++;
-                }
-            }
+            // ── 顺序很重要：先「注册新的/需要改的」，再「取消多余的」 ──
+            // 早前是「先全量 cancel，再 schedule」，两者之间存在时间窗口：
+            // 若某条提醒恰好在 cancel 之后、schedule 之前的这几毫秒到点，
+            // AlarmManager 已经把它摘掉 → 这次提醒永久丢失。
+            // 表现为「有时准、有时不准」，且完全取决于恰不恰好卡在这个窗口。
+            // 现在的顺序保证任何时刻该响的闹钟都至少有一条存活。
             for (int i = 0; i < wanted.length(); i++) {
                 JSONObject w = wanted.getJSONObject(i);
                 JSONObject s = storedMap.get(w.optLong("id"));
                 if (s == null || !sameSpec(s, w)) {
+                    // 用同一 id 重新 schedule 会覆盖旧的注册（PendingIntent 身份相同），
+                    // 所以不需要先 cancel——这正是消除空窗的关键。
                     AlarmScheduler.schedule(ctx, w.optLong("id"), w.optLong("at"),
                             w.optString("title", null), w.optString("body", null),
                             w.optString("channel", null));
                     added++;
+                }
+            }
+            // 再清理「期望列表里确实没有」的条目。
+            for (Long id : storedMap.keySet()) {
+                if (wantedMap.containsKey(id)) continue;
+                JSONObject s = storedMap.get(id);
+                // 已到点（含即将到点）的保留：可能正在投递中，撤掉就丢提醒
+                long at = s == null ? 0 : s.optLong("at", 0);
+                if (at > nowMs + 3000) {
+                    AlarmScheduler.cancel(ctx, id);
+                    cancelled++;
                 }
             }
             // 持久化列表 = 期望列表 ∪ 仍未被投递的临期条目。

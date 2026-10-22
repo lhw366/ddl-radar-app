@@ -918,7 +918,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1101,7 +1101,14 @@ function bindSettings() {
   $('diagBtn').addEventListener('click', renderDiag);
   $('updateBtn').addEventListener('click', async () => {
     const b = $('updateBtn');
+    // ⚠️ 防重入：b.disabled = true 只能挡住「后续的新点击」，
+    // 挡不住已经排进事件队列的连点（快速点两下会触发两次 handler）。
+    // 而原生 ApkInstallerPlugin 的 downloadingCall 是单个字段，
+    // 两个并发调用会互相覆盖 —— 表现为重复下载多个安装包。
+    // 用显式标志位在 JS 侧串行化，且必须在任何 await 之前置位。
+    if (b.dataset.busy === '1') return;
     if (b.dataset.url) {
+      b.dataset.busy = '1';
       const urls = pendingUpdateMirrors.length ? pendingUpdateMirrors : [b.dataset.url];
       // APK 内：多线路下载（版本化文件名+镜像优先），进度实时显示，完成后拉起系统安装
       if (window.Capacitor && Capacitor.Plugins.ApkInstaller) {
@@ -1131,48 +1138,61 @@ function bindSettings() {
           toast('⚠️ 下载失败', (msg ? msg.slice(0, 160) + '。' : '') + '可再点一次重试，或让电脑传安装包覆盖安装');
         } finally {
           if (prog && prog.remove) { try { prog.remove(); } catch (e) { /* ignore */ } }
+          delete b.dataset.busy; // 无论成败都要解除防重入
         }
         return;
       }
+      delete b.dataset.busy;
       openExternal(b.dataset.url);
       return;
     }
+    b.dataset.busy = '1';
     b.disabled = true; b.textContent = '🔄 检查中…';
     // 本地版本：优先用原生返回的**已安装包真实 versionCode**。
     // 早前读的是包内 version.json——那是 CI 构建时写死的当次构建号，
     // 装到手机上后永远等于「当时那次构建」，一旦远端有更新就再也判不出
     // 「已是最新」，会出现反复提示更新、甚至更新后仍提示的循环。
-    let local = 0;
     try {
-      if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.getInfo) {
-        const info = await Capacitor.Plugins.App.getInfo();
-        local = parseInt(info && info.build, 10) || 0;
+      let local = 0;
+      try {
+        if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.getInfo) {
+          const info = await Capacitor.Plugins.App.getInfo();
+          local = parseInt(info && info.build, 10) || 0;
+        }
+      } catch (e) { /* 取不到再回落 */ }
+      if (!local) {
+        try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) local = (await r.json()).code || 0; } catch (e) {}
       }
-    } catch (e) { /* 取不到再回落 */ }
-    if (!local) {
-      try { const r = await fetch('version.json', { cache: 'no-store' }); if (r.ok) local = (await r.json()).code || 0; } catch (e) {}
-    }
-    const rem = await fetchRemoteVersion();
-    b.disabled = false;
-    if (!rem) { b.textContent = '🔄 检查更新'; toast('⚠️ 检查失败', '连不上 GitHub，稍后再试'); return; }
-    if ((rem.code || 0) > local) {
-      pendingUpdateMirrors = rem.mirrors || [];
-      b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
-      b.classList.add('primary');
-      b.dataset.url = rem.apk || rem.url || '';
-      b.dataset.code = String(rem.code || 0);
-      // 文案要说清楚下一步，别再讲「浏览器会下载」——APK 内是走应用内下载器
-      const inApp = !!(window.Capacitor && Capacitor.Plugins.ApkInstaller);
-      toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
-        inApp ? '再点一次按钮即开始下载，下载完自动弹出安装界面'
-              : '再点一次按钮，浏览器会下载新 APK');
-    } else {
-      b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
-      // 已是最新：清掉残留的待更新状态，否则按钮会一直卡在「更新到…」
-      delete b.dataset.url;
-      delete b.dataset.code;
-      pendingUpdateMirrors = [];
-      setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
+      const rem = await fetchRemoteVersion();
+      b.disabled = false;
+      if (!rem) {
+        b.textContent = '🔄 检查更新';
+        toast('⚠️ 检查失败', '连不上 GitHub，稍后再试');
+        return;
+      }
+      if ((rem.code || 0) > local) {
+        pendingUpdateMirrors = rem.mirrors || [];
+        b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
+        b.classList.add('primary');
+        b.dataset.url = rem.apk || rem.url || '';
+        b.dataset.code = String(rem.code || 0);
+        // 文案要说清楚下一步，别再讲「浏览器会下载」——APK 内是走应用内下载器
+        const inApp = !!(window.Capacitor && Capacitor.Plugins.ApkInstaller);
+        toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
+          inApp ? '再点一次按钮即开始下载，下载完自动弹出安装界面'
+                : '再点一次按钮，浏览器会下载新 APK');
+      } else {
+        b.textContent = '✅ 已是最新 v' + APP_VERSION + (local > 0 ? ' (b' + local + ')' : '');
+        // 已是最新：清掉残留的待更新状态，否则按钮会一直卡在「更新到…」
+        delete b.dataset.url;
+        delete b.dataset.code;
+        pendingUpdateMirrors = [];
+        setTimeout(() => { b.textContent = '🔄 检查更新'; }, 4000);
+      }
+    } finally {
+      // 所有出口（含异常/提前 return）都必须解除防重入，
+      // 否则一次网络异常会让按钮永久失效，用户只能重启 App。
+      delete b.dataset.busy;
     }
   });
   $('bgDimRange').value = S.settings.bgDim;

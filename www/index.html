@@ -124,6 +124,78 @@
       <div id="calYearNote" class="cal-note"></div>
     </section>
 
+    <!-- ============ 视图5: 课表 ============ -->
+    <section class="view hidden" id="view-timetable">
+      <h3 class="sec-title">📚 我的课表</h3>
+
+      <div class="card pad">
+        <div class="row-btns">
+          <button id="ttImportBtn" class="btn primary">📷 照片导入</button>
+          <button id="ttAddBtn" class="btn">✏️ 手动添加</button>
+          <button id="ttClearBtn" class="btn ghost">清空</button>
+        </div>
+        <div id="ttImportHint" class="tt-hint hidden">
+          <div>把课表截图贴进来（或选图），我会自动识别课程名/教室/节次。</div>
+          <div class="tt-hint-sub">识别结果会先列出来让你确认修改，确认后才写入。</div>
+          <div class="row-btns" style="margin-top:8px">
+            <button id="ttPasteBtn" class="btn">📋 从剪贴板读取</button>
+            <button id="ttFileBtn" class="btn">🖼️ 选择图片</button>
+            <button id="ttOcrCancel" class="btn ghost">取消</button>
+          </div>
+          <input type="file" id="ttFileInput" accept="image/*" hidden />
+          <div id="ttOcrStatus" class="tt-status"></div>
+        </div>
+      </div>
+
+      <!-- 识别结果确认区（导入后出现） -->
+      <div id="ttReview" class="hidden">
+        <h3 class="sec-title">🔍 识别结果（可直接改）</h3>
+        <div class="card pad">
+          <div id="ttReviewList"></div>
+          <div class="row-btns" style="margin-top:10px">
+            <button id="ttConfirmBtn" class="btn primary full">✅ 确认导入</button>
+            <button id="ttReviewCancel" class="btn ghost">放弃</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 课表网格 -->
+      <div id="ttGrid" class="tt-grid"></div>
+      <div id="ttEmpty" class="tt-empty">还没有课程。点「照片导入」识别课表，或「手动添加」逐条录入。</div>
+
+      <!-- 单条课程编辑弹层 -->
+      <div id="ttEditor" class="sheet-wrap hidden">
+        <div class="sheet">
+          <div class="sheet-head"><b id="ttEdTitle">添加课程</b><button class="sheet-close" id="ttEdClose">✕</button></div>
+          <label class="field"><span>课程名</span><input id="ttEdName" type="text" placeholder="如：高等数学（B）（一）" /></label>
+          <label class="field"><span>教室</span><input id="ttEdRoom" type="text" placeholder="如：理教106" /></label>
+          <div class="row-2">
+            <label class="field"><span>星期</span>
+              <select id="ttEdDay">
+                <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+                <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+                <option value="7">周日</option>
+              </select>
+            </label>
+            <label class="field"><span>单双周</span>
+              <select id="ttEdWeek">
+                <option value="all">每周</option><option value="odd">单周</option><option value="even">双周</option>
+              </select>
+            </label>
+          </div>
+          <div class="row-2">
+            <label class="field"><span>起始节</span><input id="ttEdStart" type="number" min="1" max="12" value="1" /></label>
+            <label class="field"><span>结束节</span><input id="ttEdEnd" type="number" min="1" max="12" value="2" /></label>
+          </div>
+          <label class="field"><span>备注</span><input id="ttEdNote" type="text" placeholder="可选" /></label>
+          <div class="row-btns" style="margin-top:12px">
+            <button id="ttEdSave" class="btn primary full">保存</button>
+            <button id="ttEdDel" class="btn ghost">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ 视图4: 我的/设置 ============ -->
     <section class="view hidden" id="view-settings">
       <h3 class="sec-title">🎨 皮肤</h3>
@@ -205,6 +277,7 @@
     <button class="tab active" data-view="home"><img class="t-ico" src="assets/emoji3d/notepad.png" alt=""><span>清单</span></button>
     <button class="tab" data-view="matrix"><img class="t-ico" src="assets/emoji3d/target.png" alt=""><span>四象限</span></button>
     <button class="tab" data-view="calendar"><img class="t-ico" src="assets/emoji3d/calendar.png" alt=""><span>日历</span></button>
+    <button class="tab" data-view="timetable"><img class="t-ico" src="assets/emoji3d/notepad.png" alt=""><span>课表</span></button>
     <button class="tab" data-view="settings"><img class="t-ico" src="assets/emoji3d/gear.png" alt=""><span>我的</span></button>
   </nav>
 </div>
@@ -308,6 +381,7 @@
 <script src="assets/holiday-data.js"></script>
 <script src="js/calendar.js"></script>
 <script src="js/nativenotify.js"></script>
+<script src="js/timetable.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -53,6 +53,12 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+
+    // 课表照片导入用的 OCR：Google ML Kit 中文文字识别。
+    // 选它的理由：①完全离线（模型随 APK 打包，无需联网/无隐私外泄）
+    // ②官方维护、中文识别质量好 ③API 简单，不需要额外 NDK/so 配置。
+    // 代价：APK 体积会增加约 3~5MB。
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
 }
 
 apply from: 'capacitor.build.gradle'

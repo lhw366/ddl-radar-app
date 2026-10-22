@@ -35,6 +35,8 @@ import java.util.List;
 public class ApkInstallerPlugin extends Plugin {
 
     private PluginCall downloadingCall;
+    /** 保护 downloadingCall 的并发判重（连点会触发多次 installApk） */
+    private final Object downloadLock = new Object();
 
     @PluginMethod
     public void installApk(PluginCall call) {
@@ -49,7 +51,18 @@ public class ApkInstallerPlugin extends Plugin {
         String single = call.getString("url");
         if (single != null && !single.isEmpty() && !urls.contains(single)) urls.add(single);
         if (urls.isEmpty()) { call.reject("url required"); return; }
-        downloadingCall = call;
+
+        // ⚠️ 并发保护：downloadingCall 是单个字段，两次并发 installApk 会互相覆盖，
+        // 表现为「下载了多个安装包 / 进度乱跳 / 装的是上一个包」。
+        // JS 侧已有 dataset.busy 防重入，这里再兜一层——因为插件可能被
+        // 其他调用方（或旧版 JS 缓存）重复触发。
+        synchronized (downloadLock) {
+            if (downloadingCall != null) {
+                call.reject("已有一个更新包正在下载，请稍候");
+                return;
+            }
+            downloadingCall = call;
+        }
 
         new Thread(() -> {
             File dir = getContext().getExternalFilesDir("update");

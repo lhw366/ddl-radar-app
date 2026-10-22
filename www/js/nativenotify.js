@@ -208,6 +208,16 @@
       }
     },
 
+    /**
+     * 课表变更后强制重排。
+     * 不能只靠 sync() 的签名去抖：课表字段虽已纳入签名，但用户可能
+     * 在「签名恰好相同」的情况下修改了不影响签名的细节，强制清空更保险。
+     */
+    syncTimetable: function (S) {
+      this._sig = null;
+      return this.sync(S || window.S);
+    },
+
     // 任务/设置变化后整表协调系统闹钟（带签名去抖；原生侧多退少补）
     sync: async function (S) {
       if (!this.available() || !S) return;
@@ -225,6 +235,10 @@
       var sig = mode + '|' + tiered + '|' + dailyTime + '|' + dayKey + '|' + slot10 + '|'
         + S.tasks.map(function (t) {
           return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
+        }).join(',')
+        // 课表也要进签名：改了课程/时间必须重排，否则系统里还是旧课表
+        + '|tt:' + ((S.timetable && S.timetable.courses) || []).map(function (c) {
+          return c.id + ':' + c.day + ':' + c.start + ':' + c.end + ':' + (c.week || 'all') + ':' + (c.remindMin || 15);
         }).join(',');
       if (this._sig === sig) return;
       // ⚠️ 注意：这里**不能**先给 _sig 赋值。
@@ -264,6 +278,30 @@
               });
             }
           }
+          // 课表提醒：未来 7 天里每天的上课提醒。
+          // 课程是周期性的（每周同一天同一节），所以要把窗口内每一天都算一遍，
+          // 而不是只算「今天」——否则周四设的课，周一不会出现在系统闹钟里。
+          try {
+            if (window.Timetable && window.Timetable.planFor) {
+              for (var dOff = 0; dOff <= 7; dOff++) {
+                var dayTs = now + dOff * 86400000;
+                var cs = window.Timetable.planFor(dayTs);
+                for (var ci = 0; ci < cs.length; ci++) {
+                  var cr = cs[ci];
+                  if (cr.at <= now - 1000 || cr.at > now + HORIZON) continue;
+                  var cid = hashId(cr.key);
+                  if (alarms.some(function (a) { return a.id === cid; })) continue;
+                  alarms.push({
+                    id: cid,
+                    at: cr.at,
+                    title: cr.title,
+                    body: cr.body,
+                    channelId: 'ddlr_' + mode
+                  });
+                }
+              }
+            }
+          } catch (e) { console.warn('[DDL雷达] 课表提醒生成失败', e); }
           alarms.sort(function (a, b) { return a.at - b.at; });
           // 上限只截「最远」的，最近的必定保留
           if (alarms.length > 120) alarms = alarms.slice(0, 120);
