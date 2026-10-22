@@ -145,7 +145,7 @@
       var out = { native: this.available() };
       if (!out.native) return out;
       var ddp = DDP();
-      try { var s = await ddp.notifyStatus(); out.notify = !!s.granted; } catch (e) { out.notify = null; }
+      try { var s = await ddp.notifyStatus(); out.notify = !!s.granted; out.overlayAllowed = s.overlayAllowed === true; } catch (e) { out.notify = null; }
       try {
         var settings = (window.S && window.S.settings) || {};
         var channelId = channelIdFor(settings);
@@ -199,6 +199,7 @@
         if (ddp) {
           try { var st = await ddp.notifyStatus(); granted = !!(st && st.granted); } catch (e) {}
         }
+        if (ddp && ddp.configureDisplay) await ddp.configureDisplay({ bannerDuration: settings.bannerDuration || 'manual' });
         await ddl.scheduleOne({
           id: 990000001,
           at: at,
@@ -257,7 +258,18 @@
     },
 
     // 任务/设置变化后整表协调系统闹钟（带签名去抖；原生侧多退少补）
-    sync: async function (S) {
+    _queue: Promise.resolve(),
+    sync: function (state) {
+      // Serialize native reconciliations so an older apply cannot overwrite a
+      // newly saved event. Capture scheduling data, excluding large wallpaper.
+      var snapshot = state && JSON.parse(JSON.stringify(state, function (key, value) {
+        return key === 'bgImage' ? undefined : value;
+      }));
+      var run = this._queue.catch(function () {}).then(function () { return N._sync(snapshot); });
+      this._queue = run;
+      return run;
+    },
+    _sync: async function (S) {
       if (!this.available() || !S) return;
       var settings = S.settings || {};
       var enabled = outputsEnabled(settings);
@@ -273,15 +285,9 @@
       var slot10 = Math.floor(nowMs / 600000); // 10 分钟一档
       var tiered = (S.settings && S.settings.tiered) ? 1 : 0;
       var dailyTime = (S.settings && S.settings.dailyTime) || '';
-      var sig = enabled + '|' + channelId + '|' + vibrate + '|' + tiered + '|' + dailyTime + '|' + dayKey + '|' + slot10 + '|'
-        + S.tasks.map(function (t) {
-          return t.id + ':' + (t.updatedAt || 0) + ':' + (t.done ? 1 : 0);
-        }).join(',')
-        // 课表也要进签名：改了课程/时间必须重排，否则系统里还是旧课表
-        + '|tt:' + ((S.timetable && S.timetable.courses) || []).map(function (c) {
-          return c.id + ':' + c.day + ':' + c.start + ':' + c.end + ':' + (c.week || 'all') + ':' + (c.remindMin || 15);
-        }).join(',');
-      if (this._sig === sig) return;
+      var sig = JSON.stringify([enabled, channelId, vibrate, settings.bannerDuration,
+        tiered, dailyTime, dayKey, slot10, S.tasks, S.timetable || null]);
+      if (this._sig === sig) return true;
       // ⚠️ 注意：这里**不能**先给 _sig 赋值。
       // 早前是 `this._sig = sig` 写在 try 之前，一旦下面 apply() 抛异常，
       // 签名已经被记账 → 后续所有 sync 都因「签名相同」直接 return，
@@ -289,6 +295,8 @@
       // 正确做法：成功拿到 apply 结果之后再记账，失败则保持 null 以便重试。
 
       try {
+        var ddp = DDP();
+        if (ddp && ddp.configureDisplay) await ddp.configureDisplay({ bannerDuration: settings.bannerDuration || 'manual' });
         var alarms = [];
         if (enabled) {
           var now = Date.now();
@@ -299,11 +307,11 @@
           var HORIZON = 7 * 86400000;
           var scheduledIds = new Set();
           for (var i = 0; i < S.tasks.length; i++) {
-            var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i]) : [];
+            var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i], settings) : [];
             for (var j = 0; j < list.length; j++) {
               var r = list[j];
               if (r.at < now - 15 * 60000) continue;      // 已过期
-              if (r.at > now + HORIZON) continue;    // 超出 7 天窗口
+              if (r.at > now + HORIZON && /\|d\d{4}-/.test(r.key)) continue;    // 超出 7 天窗口
               var id = hashId(r.key);
               if (scheduledIds.has(id)) continue;
               scheduledIds.add(id);
@@ -374,6 +382,7 @@
           console.log('[DDL雷达] 系统闹钟对账完成：+' + r.added + ' -' + r.cancelled +
             '，下一条 ' + (r.nextAt ? new Date(r.nextAt).toLocaleString() : '无'));
         }
+        return true;
       } catch (e) {
         // 失败时清空签名，保证下次一定会重试（而不是被去抖挡掉）；
         // 同时把 _synced 置 false，让 tickReminders 立刻接管补弹——
@@ -381,6 +390,7 @@
         this._sig = null;
         this._synced = false;
         console.warn('[DDL雷达] 系统闹钟调度失败', e);
+        return false;
       }
     }
   };

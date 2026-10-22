@@ -57,6 +57,7 @@ function defaultState() { return {
     sound: true,
     vibrate: true,
     banner: true,
+    bannerDuration: 'manual',
     remindSilent: false,
     tiered: true, toastCompact: true
   }
@@ -79,6 +80,7 @@ function normalizeState(data) {
   next.settings.vibrate = next.settings.vibrate !== false;
   next.settings.banner = next.settings.banner !== false;
   next.settings.remindSilent = next.settings.remindSilent === true;
+  next.settings.bannerDuration = next.settings.bannerDuration === '5s' ? '5s' : 'manual';
   const ids = new Set();
   next.tasks = data.tasks.map(t => {
     if (!t || typeof t.id !== 'string' || !t.id || ids.has(t.id) ||
@@ -152,7 +154,8 @@ function save() {
   // 保持 window.S 与内部 S 指向同一对象（防止某处整体替换了 S 的引用）
   window.S = S;
   // APK 内同步重排系统级精确提醒
-  if (window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} }
+  if (window.NativeNotify && NativeNotify.available()) return NativeNotify.sync(S);
+  return Promise.resolve(true);
 }
 
 /* ---------------- 提示音 / 震动 ---------------- */
@@ -222,7 +225,7 @@ function toast(title, body, kind) {
   $('toastWrap').appendChild(el);
   const kill = () => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); };
   el.addEventListener('click', kill);
-  setTimeout(kill, 9000);
+  if (!kind || S.settings.bannerDuration === '5s') setTimeout(kill, kind ? 5000 : 9000);
   if (document.hidden) {
     document.title = '⏰ DDL雷达 · 有提醒！';
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -715,7 +718,8 @@ function syncEditorUI() {
   }));
 }
 
-function saveEditor() {
+async function saveEditor() {
+  if ($('fSave').disabled) return;
   const name = $('fName').value.trim();
   const dueV = $('fDue').value;
   if (!name) { toast('⚠️ 还没写名字', '给这件事起个名字吧'); $('fName').focus(); return; }
@@ -750,9 +754,13 @@ function saveEditor() {
     S.tasks.push(Object.assign({ id: uid(), done: false, createdAt: Date.now() }, data));
     askNotify();
   }
-  save();
+  $('fSave').disabled = true;
+  let synced;
+  try { synced = await save(); }
+  finally { $('fSave').disabled = false; }
   $('editorWrap').classList.add('hidden');
-  toast('📌 已上雷达', `『${escapeHtml(name)}』${editingId ? '已更新' : '开始盯梢'}`);
+  if (synced === false) toast('⚠️ 事项已保存，后台提醒未排定', '请保持 App 打开并运行诊断，稍后会重新尝试');
+  else toast('📌 已上雷达', `『${escapeHtml(name)}』${editingId ? '已更新' : '开始盯梢'}`);
   renderAll();
 }
 
@@ -797,14 +805,14 @@ window.AppBridge = { openDay };
 const TIER_MIN = [120, 60, 30, 5];
 
 // 计算某任务所有「应触发时刻」: [{key, at, title, body, kind}]
-function planReminders(t) {
+function planReminders(t, settings = S.settings) {
   const out = [];
   if (!t || t.done || !Number.isFinite(t.dueAt)) return out;
   const due = t.dueAt;
   const cutoff = Date.now() - 15 * 60000;
 
   // 当天分段提醒：设置页总开关 × 单事项细分开关
-  if (t.tiers && S.settings.tiered) {
+  if (t.tiers && settings.tiered) {
     const nowTs = Date.now();
     for (const min of TIER_MIN) {
       if (t.tiers[min] === false) continue;
@@ -844,7 +852,7 @@ function planReminders(t) {
     const dueDay = new Date(due); dueDay.setHours(0, 0, 0, 0);
     const todayDay = new Date(); todayDay.setHours(0, 0, 0, 0);
     if (dueDay > todayDay) {
-      const [hh, mm] = (t.dailyTime || S.settings.dailyTime || '12:00').split(':').map(Number);
+      const [hh, mm] = (t.dailyTime || settings.dailyTime || '12:00').split(':').map(Number);
       const MAX_DAYS = 30;
       for (let i = 0; i < MAX_DAYS; i++) {
         const day = new Date(todayDay.getTime() + i * 86400000);
@@ -1012,7 +1020,7 @@ function refreshNotifyBtn() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.10';
+const APP_VERSION = '2.2.11';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1242,6 +1250,7 @@ async function renderDiag() {
   const d = await NativeNotify.diag();
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
+  html += diagRow(d.overlayAllowed === true, d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：请点设置中的「允许顶部悬浮横幅」');
   html += diagRow((d.channels || 0) >= 4, '提醒通道已创建（' + (d.channels || 0) + '/4）', d.channels >= 4 ? '' : 'reinit');
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
@@ -1278,9 +1287,6 @@ async function renderDiag() {
     html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {
     html += diagRow(true, '当前提醒通道重要性 4/4；若仍无横幅，请检查 ColorOS 的横幅显示开关', 'channel');
-  }
-  if (d.canFullScreen === false) {
-    html += diagRow(false, '「全屏通知」权限被关闭：锁屏时不会亮屏弹提醒页', 'appinfo');
   }
   if (d.exactOk === false) {
     html += diagRow(false, '「闹钟和提醒」权限被关闭：提醒只能降级为普通闹钟，Doze 下可能延迟较久', 'appinfo');
@@ -1330,6 +1336,17 @@ function bindSettings() {
   reminderToggle('setSound', 'sound');
   reminderToggle('setVibrate', 'vibrate');
   reminderToggle('setBanner', 'banner');
+  $('setBannerDuration').value = S.settings.bannerDuration || 'manual';
+  $('setBannerDuration').addEventListener('change', () => {
+    S.settings.bannerDuration = $('setBannerDuration').value === '5s' ? '5s' : 'manual';
+    save();
+  });
+  $('bannerPermissionBtn').addEventListener('click', async () => {
+    if (window.NativeNotify && NativeNotify.available()) {
+      try { await Capacitor.Plugins.DdlNotify.openBannerPermission(); }
+      catch (error) { toast('请在系统设置开启悬浮窗', '应用 → DDL雷达 → 显示在其他应用上层'); }
+    } else toast('网页版只能在页面内显示横幅', '跨应用顶部横幅请安装 APK');
+  });
   $('setSilent').addEventListener('change', () => {
     S.settings.remindSilent = $('setSilent').checked;
     save();
@@ -1441,6 +1458,7 @@ function syncRemindModeUI() {
   $('setSound').checked = !silent && S.settings.sound !== false;
   $('setVibrate').checked = !silent && S.settings.vibrate !== false;
   $('setBanner').checked = !silent && S.settings.banner !== false;
+  $('setBannerDuration').value = S.settings.bannerDuration || 'manual';
   ['setSound', 'setVibrate', 'setBanner'].forEach((id) => { $(id).disabled = silent; });
 }
 

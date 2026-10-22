@@ -252,9 +252,14 @@
         <div class="set-line"><div>提醒横幅 · 屏幕最上方一行</div>
           <label class="switch"><input type="checkbox" id="setCompact" checked><i></i></label>
         </div>
+        <div class="set-line"><label for="setBannerDuration">提醒横幅关闭方式</label>
+          <select id="setBannerDuration"><option value="manual">手动点关闭</option><option value="5s">5 秒后自动消失</option></select>
+        </div>
+        <button id="bannerPermissionBtn" class="btn full">💬 允许顶部悬浮横幅（跨应用）</button>
+        <div class="tip">开启系统「显示在其他应用上层 / 悬浮窗」后，提醒可在其他 App 上方显示，点击「知道了」关闭。未授权时使用系统通知，系统横幅停留时间由手机控制。锁屏时可在通知栏查看。</div>
         <button id="testRemBtn" class="btn full">🧪 测试提醒（5 秒后触发，验证链路）</button>
         <button id="notifyBtn" class="btn full">🔔 申请系统通知权限（状态：未知）</button>
-        <div class="tip">响铃、震动、横幅可自由组合；全关或开启「静默」后不再提醒。退 App 后的提醒由系统级闹钟触发，只需允许通知；重启手机或覆盖安装后会自动恢复。点「测试提醒」后立即退 App，5 秒后验证。</div>
+        <div class="tip">响铃、震动、横幅可自由组合；全关或开启「静默」后不再提醒。退 App 后的提醒由系统级闹钟触发，请允许系统通知，跨应用横幅另需悬浮窗授权；重启手机或覆盖安装后会自动恢复。点「测试提醒」后立即退 App，5 秒后验证。</div>
       </div>
 
       <h3 class="sec-title">🩺 提醒诊断</h3>

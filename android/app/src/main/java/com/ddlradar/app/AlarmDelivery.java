@@ -73,10 +73,13 @@ final class AlarmDelivery {
             }
             if (vibrator == null || !vibrator.hasVibrator()) return;
             long[] pattern = new long[]{0, 350, 150, 350, 150, 650};
+            AudioAttributes attributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1));
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1), attributes);
             } else {
-                vibrator.vibrate(pattern, -1);
+                vibrator.vibrate(pattern, -1, attributes);
             }
         } catch (Exception error) {
             Log.w("DdlAlarm", "Reminder vibration unavailable", error);
@@ -170,22 +173,15 @@ final class AlarmDelivery {
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setWhen(System.currentTimeMillis());
+        boolean autoDismiss = context.getSharedPreferences("ddlr_display", Context.MODE_PRIVATE)
+                .getBoolean("autoDismiss", false);
+        if (autoDismiss && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(5000L);
         Intent open = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         if (open != null) {
             open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             PendingIntent content = activity(context, id, "open", open);
             builder.setContentIntent(content);
             builder.addAction(action(context, "去看看", content));
-        }
-        Intent alarm = new Intent(context, AlarmActivity.class);
-        alarm.putExtra("title", title);
-        alarm.putExtra("body", body);
-        alarm.putExtra("notifId", notificationId(id));
-        alarm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        // A foreground service does not grant background Activity launch rights.
-        if (channelId.startsWith("ddlr_high_") &&
-                (Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent())) {
-            builder.setFullScreenIntent(activity(context, id, "fullscreen", alarm), true);
         }
         Intent ack = new Intent(context, AlarmReceiver.class);
         ack.setAction("com.ddlradar.app.ACK_REMINDER");
@@ -194,26 +190,14 @@ final class AlarmDelivery {
         PendingIntent acknowledge = PendingIntent.getBroadcast(context, id, ack,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         builder.addAction(action(context, "知道了", acknowledge));
-        manager.notify(notificationId(id), builder.build());
+        try { manager.notify(notificationId(id), builder.build()); }
+        catch (SecurityException error) {
+            // Notification permission and overlay permission are independent.
+            Log.w("DdlAlarm", "System notification blocked", error);
+        }
         if (channelId.startsWith("ddlr_high_")) {
-            launchFullScreenFallback(context, manager, alarm);
+            ReminderBanner.show(context, notificationId(id), title, body, autoDismiss);
         }
     }
 
-    private static void launchFullScreenFallback(Context context, NotificationManager manager, Intent alarm) {
-        try {
-            if (Build.VERSION.SDK_INT >= 34 && !manager.canUseFullScreenIntent()) return;
-            android.os.PowerManager power = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
-            android.app.KeyguardManager keyguard =
-                    (android.app.KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
-            boolean screenOff = power != null && !power.isInteractive();
-            boolean locked = keyguard != null && keyguard.isKeyguardLocked();
-            if (!screenOff && !locked) return;
-            alarm.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            context.startActivity(alarm);
-        } catch (Exception error) {
-            // The notification's full-screen PendingIntent remains the system-approved route.
-            Log.w("DdlAlarm", "Direct full-screen launch unavailable", error);
-        }
-    }
 }

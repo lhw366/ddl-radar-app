@@ -23,6 +23,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         if (intent.hasExtra("ackId")) {
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) manager.cancel(intent.getIntExtra("ackId", 0));
+            ReminderBanner.dismiss(intent.getIntExtra("ackId", 0));
             return;
         }
         AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0),

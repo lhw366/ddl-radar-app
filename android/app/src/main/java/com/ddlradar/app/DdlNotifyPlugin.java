@@ -31,6 +31,27 @@ import java.util.List;
 public class DdlNotifyPlugin extends Plugin {
 
     @PluginMethod
+    public void configureDisplay(PluginCall call) {
+        getContext().getSharedPreferences("ddlr_display", Context.MODE_PRIVATE).edit()
+                .putBoolean("autoDismiss", "5s".equals(call.getString("bannerDuration", "manual"))).apply();
+        call.resolve(new JSObject().put("overlayAllowed", ReminderBanner.allowed(getContext())));
+    }
+
+    @PluginMethod
+    public void openBannerPermission(PluginCall call) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 23) {
+                android.content.Intent intent = new android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getContext().getPackageName()));
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+            }
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception error) { call.reject("无法打开悬浮窗设置: " + error.getMessage()); }
+    }
+
+    @PluginMethod
     public void ensureChannel(PluginCall call) {
         String id = call.getString("id");
         String name = call.getString("name");
@@ -114,7 +135,8 @@ public class DdlNotifyPlugin extends Plugin {
     @PluginMethod
     public void notifyStatus(PluginCall call) {
         boolean granted = NotificationManagerCompat.from(getContext()).areNotificationsEnabled();
-        call.resolve(new JSObject().put("granted", granted));
+        call.resolve(new JSObject().put("granted", granted)
+                .put("overlayAllowed", ReminderBanner.allowed(getContext())));
     }
 
     /** 打开系统应用详情页（ColorOS 后台保活引导：自启动/耗电管理在此页内） */
