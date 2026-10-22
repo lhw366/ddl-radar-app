@@ -80,8 +80,10 @@ try:
     adb('shell', 'am', 'kill', PKG)
     time.sleep(2)
     assert not adb('shell', 'pidof', PKG, check=False), 'Cold test must begin with no app process.'
-    adb('shell', 'device_config', 'put', 'device_idle', 'min_time_to_alarm', '0')
+    # Use the user-setting override consumed by DeviceIdleController. Android
+    # 16 restricts shell writes to non-allowlisted DeviceConfig flags.
     adb('shell', 'settings', 'put', 'global', 'device_idle_constants', 'min_time_to_alarm=0')
+    adb('shell', 'dumpsys', 'deviceidle', 'enable')
     time.sleep(1)
     adb('shell', 'dumpsys', 'battery', 'unplug')
     adb('shell', 'input', 'keyevent', 'KEYCODE_SLEEP')
@@ -109,7 +111,6 @@ finally:
         capture('final')
     except Exception as error:
         print('Capture failed:', error)
-    adb('shell', 'device_config', 'delete', 'device_idle', 'min_time_to_alarm', check=False)
     adb('shell', 'settings', 'delete', 'global', 'device_idle_constants', check=False)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
