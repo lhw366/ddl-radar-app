@@ -175,6 +175,23 @@ public class AlarmService extends Service {
         }
     }
 
+    /**
+     * 构造通知操作按钮，兼容 minSdk=22。
+     *
+     * Icon.createWithResource() 是 **API 23** 才有的；而本 App minSdk 是 22。
+     * 直接调用会在 Android 5.1 上抛 NoSuchMethodError 崩掉整个提醒投递。
+     * 这里按版本分支：23+ 用带图标的 Action，22 用不带图标的构造器。
+     */
+    private Notification.Action action(String title, PendingIntent pi) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return new Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
+                    title, pi).build();
+        }
+        // API 22：没有 Icon 类，用旧构造器（无图标）
+        return new Notification.Action.Builder(R.drawable.ic_stat_ddlr, title, pi).build();
+    }
+
     private Notification guardNotification() {
         long nextAt = 0, now = System.currentTimeMillis();
         org.json.JSONArray arr = AlarmScheduler.load(this);
@@ -492,18 +509,14 @@ public class AlarmService extends Service {
                     openI.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     PendingIntent pOpen = PendingIntent.getActivity(this, 2000000 + id, openI,
                             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                    b.addAction(new Notification.Action.Builder(
-                            android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
-                            "去看看", pOpen).build());
+                    b.addAction(action("去看看", pOpen));
                 }
                 // 「知道了」：只撤销通知，不再重复响（用户已确认看到）
                 Intent ackI = new Intent(this, AlarmService.class);
                 ackI.putExtra("ackId", notifId(id));
                 PendingIntent pAck = PendingIntent.getService(this, 3000000 + id, ackI,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                b.addAction(new Notification.Action.Builder(
-                        android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_stat_ddlr),
-                        "知道了", pAck).build());
+                b.addAction(action("知道了", pAck));
             } catch (Exception ignore) { /* 按钮加不上不影响通知本体 */ }
 
             Notification n = b.build();
