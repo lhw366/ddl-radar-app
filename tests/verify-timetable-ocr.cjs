@@ -8,7 +8,7 @@ fs.writeFileSync(process.argv[2].replace(/\.json$/, '-courses.json'), JSON.strin
 console.log(JSON.stringify(result.courses.map(c => ({day:c.day,start:c.start,end:c.end,name:c.name,room:c.room})), null, 2));
 const expected = [
   [1,3,4,'线性代数','理教408'],
-  [2,1,2,'高等数学','二教309'], [2,5,6,'英语词汇与英文文化','二教313'],
+  [2,1,2,'高等数学','二教309'], [2,5,6,'英语词汇与英美文化','二教313'],
   [2,7,8,'周易','一教203'], [2,10,11,'地球系统模拟','地学304'],
   [3,1,2,'线性代数','理教408'], [3,5,6,'计算概论A','理教403'],
   [3,7,9,'习近平新时代中国特色社会主义思想概论','哲学201'],

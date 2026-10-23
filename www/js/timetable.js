@@ -49,7 +49,11 @@
     var dayHeads = [];
     var dayRe = /^(星期|周)([一二三四五六日天])$/;
     var cnNum = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
+    var allLines = [];
     blocks.forEach(function (b) {
+      allLines = allLines.concat(b.lines && b.lines.length ? b.lines : [b]);
+    });
+    allLines.forEach(function (b) {
       var t = norm(b.text);
       var m = t.match(dayRe);
       if (m) dayHeads.push({ day: cnNum[m[2]], cx: cxOf(b), top: b.top, bottom: b.bottom });
@@ -62,6 +66,29 @@
 
     // ── 2) 找节次行标签 ──
     var rowHeads = [];
+    // Chinese period labels are often split into separate blocks: "第一" / "节".
+    // Read their geometry in the label gutter before falling back to text matching.
+    if (cols.length >= 2) {
+      var gutterRight = cols[0].x - (cols[1].x - cols[0].x) * 0.42;
+      var pieces = allLines.filter(function (l) { return cxOf(l) < gutterRight; })
+        .sort(function (a,b) { return cyOf(a)-cyOf(b); });
+      var labels = pieces.filter(function (l) { return /^第[一二三四五六七八九十]/.test(norm(l.text).replace(/^[|丨]+/,'')); });
+      if (labels.length >= 8 && labels.length <= 12) {
+        labels.forEach(function (label,index) {
+          var below = pieces.find(function (p) {
+            var delta = cyOf(p)-cyOf(label);
+            return delta > 0 && delta < 35 && /^[一二三四五六七八九十]*节$/.test(norm(p.text));
+          });
+          var text = norm(label.text).replace(/^[|丨]+/,'') + (below ? norm(below.text) : '');
+          var match = text.match(/^第([一二三四五六七八九十]+)/);
+          var n = match ? cnToNum(match[1]) : index+1;
+          // With all twelve ordered labels present, a missed 一/二 in the
+          // final wrapped labels must not collapse lessons 11/12 into 10.
+          if (labels.length === 12) n = index+1;
+          rowHeads.push({n:n,y:below ? (label.top+below.bottom)/2 : cyOf(label)});
+        });
+      }
+    }
     var jieRe = /^第?([一二三四五六七八九十]{1,3})(?:大)?节?$/;
     blocks.forEach(function (b) {
       var candidates = [b.text];
@@ -127,7 +154,8 @@
         // Text usually starts inside its cell but a long wrapped line can cross
         // the lower border. Assign by its top with a small tolerance so room
         // and note lines stay with the course they were printed under.
-        var y = ln.top != null ? ln.top - rowCentreGap * 0.05 : cyOf(ln);
+        var y = cyOf(ln);
+        if (y < rows[0].y - rowCentreGap * 0.5) return;
         var day = pickCol(cols, x, rows);
         if (!day) return;
         var rowIdx = pickRow(rows, y);
@@ -256,8 +284,10 @@
           c.texts.forEach(function (t) { if (prev.texts.indexOf(t) < 0) prev.texts.push(t); });
           return;
         }
-        var sameName = prev && prev.name === name;
-        if (prev && (sameBlock || (adjacent && sameName))) {
+        var sameName = prev && similarCourseName(prev.name, name)
+          && extractWeek(prev.texts, prev.raw) === extractWeek(c.texts, joined);
+        if (sameName && name.length > prev.name.length) prev.name = name;
+        if (prev && (sameBlock || ((adjacent || c.row === prev.end) && sameName))) {
           prev.end = Math.max(prev.end, c.row);
           prev.raw += ' ' + joined;
           if (c.spanBottom > (prev.spanBottom || -1)) prev.spanBottom = c.spanBottom;
@@ -286,7 +316,7 @@
           var target = Math.min(rows[spanIndex].n, cap);
           if (target > m.end) m.end = target;
         }
-        var info = parseCourseInfo(m.raw, m.name, m.texts);
+        var info = parseCourseInfo(m.raw, consensusName(m.texts, m.name), m.texts);
         courses.push({
           id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           name: info.name || m.name || '未命名课程',
@@ -317,6 +347,65 @@
   function cxOf(b) { return b.cx != null ? b.cx : ((b.left || 0) + (b.right || 0)) / 2; }
   function cyOf(b) { return b.cy != null ? b.cy : ((b.top || 0) + (b.bottom || 0)) / 2; }
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, '').trim(); }
+
+  function similarCourseName(a,b) {
+    a=norm(a).replace(/[|丨()（）ⅠI一\-]/g,'');
+    b=norm(b).replace(/[|丨()（）ⅠI一\-]/g,'');
+    if (a===b) return true;
+    if (!a || !b) return false;
+    var row=Array.from({length:b.length+1},function(_,i){return i;});
+    for (var i=1;i<=a.length;i++) {
+      var next=[i];
+      for(var j=1;j<=b.length;j++) next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1));
+      row=next;
+    }
+    var distance=row[b.length], length=Math.max(a.length,b.length);
+    return (length>=3 && distance<=1) || (length>=8 && distance/length<=0.28);
+  }
+
+  // Repeated period cells provide independent readings of the same title.
+  // Align them before voting, so a missing glyph does not shift the whole name.
+  function consensusName(texts, fallback) {
+    var names=texts.filter(function(t){return isMeaningfulCourseName(t) && similarCourseName(t,fallback);})
+      .map(function(t){return norm(t).replace(/^[|丨]+/,'');});
+    if (names.length<2) return names[0] || fallback;
+    var aligned=[Array.from(names[0])];
+    for(var k=1;k<names.length;k++) {
+      var base=aligned[0].join('').replace(/\u0000/g,''), incoming=names[k];
+      var dp=Array.from({length:base.length+1},function(_,i){return [i];});
+      for(var j=1;j<=incoming.length;j++) dp[0][j]=j;
+      for(var i=1;i<=base.length;i++) for(j=1;j<=incoming.length;j++)
+        dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(base[i-1]===incoming[j-1]?0:1));
+      i=base.length;j=incoming.length;
+      var pairs=[];
+      while(i || j) {
+        if(i && j && dp[i][j]===dp[i-1][j-1]+(base[i-1]===incoming[j-1]?0:1)) {pairs.unshift([i-1,incoming[j-1]]);i--;j--;}
+        else if(j && dp[i][j]===dp[i][j-1]+1) {pairs.unshift([-1,incoming[j-1]]);j--;}
+        else {pairs.unshift([i-1,'\u0000']);i--;}
+      }
+      // The pairwise base has no gaps; map existing aligned columns through it.
+      var oldColumns=[], position=0;
+      for(var c=0;c<aligned[0].length;c++) {
+        if(aligned[0][c]!=='\u0000') oldColumns[position++]=c;
+      }
+      var rebuilt=aligned.map(function(){return [];});
+      var next=[];
+      pairs.forEach(function(pair){
+        aligned.forEach(function(row,index){rebuilt[index].push(pair[0]<0?'\u0000':row[oldColumns[pair[0]]]);});
+        next.push(pair[1]);
+      });
+      rebuilt.push(next); aligned=rebuilt;
+    }
+    var output='';
+    for(var col=0;col<aligned[0].length;col++) {
+      var counts={}; aligned.forEach(function(row){var ch=row[col]||'\u0000';counts[ch]=(counts[ch]||0)+1;});
+      var options=Object.keys(counts).sort(function(a,b){
+        return counts[b]-counts[a] || (+/[\u3400-\u9fff]/.test(b))-(+/[\u3400-\u9fff]/.test(a)) || (a==='\u0000'?1:0)-(b==='\u0000'?1:0);
+      });
+      if(options[0]!=='\u0000') output+=options[0];
+    }
+    return output || fallback;
+  }
 
   function cnToNum(s) {
     if (!s) return 0;
@@ -415,7 +504,7 @@
     if (!t || t.length < 2) return false;
     if (/^[（(]/.test(t)) return false;
     if (looksLikeRoom(t) && /\d/.test(t)) return false;
-    if (/^(暂无|版权|版权所有|考试方式|考试时间|上课教室|周$|每$)/.test(t)) return false;
+    if (/^(暂无|版权|版权所有|考试方式|考试时间|上课教室|星期|节数|周$|每$|[|丨]?第)/.test(t)) return false;
     if (/(备注|考试|上课时间|上课教室|每周|单周|双周|学分|教师|教学班|课程代码)/.test(t)) return false;
     if (/^\d+$/.test(t)) return false;
     if (/^第?[一二三四五六七八九十\d]+(?:大)?节?$/.test(t)) return false;

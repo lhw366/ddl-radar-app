@@ -3,7 +3,7 @@
   "courses": [
     {"name":"线性代数A（Ⅰ）","day":1,"start":3,"end":4,"room":"理教408","week":"all"},
     {"name":"高等数学A（一）","day":2,"start":1,"end":2,"room":"二教309","week":"all"},
-    {"name":"英语词汇与英文文化","day":2,"start":5,"end":6,"room":"二教313","week":"all"},
+    {"name":"英语词汇与英美文化","day":2,"start":5,"end":6,"room":"二教313","week":"all"},
     {"name":"《周易》讲读","day":2,"start":7,"end":8,"room":"一教203","week":"all"},
     {"name":"地球系统模拟的成就、困惑与未来","day":2,"start":10,"end":11,"room":"地学304","week":"all"},
     {"name":"线性代数A（Ⅰ）","day":3,"start":1,"end":2,"room":"理教408","week":"all"},
