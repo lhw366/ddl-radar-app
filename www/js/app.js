@@ -870,6 +870,7 @@ function planReminders(t, settings = S.settings) {
         const days = Math.ceil((dueDay - day) / 86400000);
         out.push({
           key: `${t.id}|d${ymdOf(day.getTime())}`, at,
+          nativeKey: `${t.id}|daily`, repeatDays: 1, repeatUntil: dueDay.getTime()-1,
           title: `📅 每日提醒 · 还有 ${days} 天`,
           body: `『${escapeHtml(t.name)}』将于 ${fmtDT(due)} 截止`,
           kind: 'daily'
@@ -932,7 +933,7 @@ function flushCatchUps(list) {
   return notify.refreshDelivered().then(() => {
     for (const item of list) {
       let done = false;
-      try { done = notify.wasDeliveredNatively(notify.idOf(item.r.key), item.r.at); }
+      try { done = notify.wasDeliveredNatively(notify.idOf(item.r.nativeKey || item.r.key), item.r.at); }
       catch (e) { done = false; }
       if (!done) show(item);
     }
@@ -1204,7 +1205,17 @@ function bindUpdater() {
     // Foreground only, at most twice a day; no timer/worker/background network.
     if (!plugin || document.hidden || autoChecking || requestPending || nativeBusy) return;
     const last = Number(localStorage.getItem('ddlr_updateChecked') || 0);
-    if (last && Date.now() - last < 12 * 3600000) return;
+    if (last && Date.now() - last < 12 * 3600000) {
+      try {
+        const cached = JSON.parse(localStorage.getItem('ddlr_updateTarget') || 'null');
+        const dismissed = JSON.parse(localStorage.getItem('ddlr_updateDismiss') || '{}');
+        if (cached && !b.dataset.url && !(dismissed.code === cached.code && dismissed.until > Date.now())) {
+          const local = await installedCode();
+          if (local && cached.code > local) announce(cached, true);
+        }
+      } catch (e) { /* Invalid cache is ignored. */ }
+      return;
+    }
     autoChecking = true;
     try {
       await initialization;
@@ -1214,6 +1225,7 @@ function bindUpdater() {
       localStorage.setItem('ddlr_updateChecked', String(Date.now()));
       const rem = await fetchRemoteVersion();
       if (!rem || rem.code <= local) return;
+      localStorage.setItem('ddlr_updateTarget', JSON.stringify(rem));
       const dismissed = JSON.parse(localStorage.getItem('ddlr_updateDismiss') || '{}');
       if (dismissed.code === rem.code && dismissed.until > Date.now()) return;
       if (!requestPending && !nativeBusy) announce(rem, true);

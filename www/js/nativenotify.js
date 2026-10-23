@@ -353,15 +353,16 @@
               // The web catch-up window must not schedule already-past tiers
               // as a burst of native alarms when a task is first saved.
               if (r.at < now - 2000) continue;
-              if (r.at > now + HORIZON && /\|d\d{4}-/.test(r.key)) continue;    // 超出 7 天窗口
-              var id = hashId(r.key);
+              var id = hashId(r.nativeKey || r.key);
               if (scheduledIds.has(id)) continue;
               scheduledIds.add(id);
               alarms.push({
                 id: id,
                 at: r.at,
-                title: r.title.replace(/<[^>]+>/g, ''),
+                title: r.repeatDays === 1 ? '📅 每日提醒' : r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
+                repeatDays: r.repeatDays || 0,
+                repeatUntil: r.repeatUntil || 0,
                 channelId: channelId,
                 vibrate: vibrate
               });
@@ -372,13 +373,16 @@
           // 而不是只算「今天」——否则周四设的课，周一不会出现在系统闹钟里。
           try {
             if (window.Timetable && window.Timetable.planFor) {
-              for (var dOff = 0; dOff <= 7; dOff++) {
-                var dayTs = now + dOff * 86400000;
+              var term = S.timetable && S.timetable.termStart;
+              var termBase = term ? new Date(term + 'T00:00:00').getTime() : 0;
+              var base = Math.max(now, Number.isFinite(termBase) ? termBase : 0);
+              for (var dOff = 0; dOff <= 14; dOff++) {
+                var dayTs = base + dOff * 86400000;
                 var cs = window.Timetable.planFor(dayTs);
                 for (var ci = 0; ci < cs.length; ci++) {
                   var cr = cs[ci];
-                  if (cr.at < now - 15 * 60000 || cr.at > now + HORIZON) continue;
-                  var cid = hashId(cr.key);
+                  if (cr.at < now - 2000) continue;
+                  var cid = hashId(cr.nativeKey || cr.key);
                   if (scheduledIds.has(cid)) continue;
                   scheduledIds.add(cid);
                   alarms.push({
@@ -386,6 +390,8 @@
                     at: cr.at,
                     title: cr.title,
                     body: cr.body,
+                    repeatDays: cr.repeatDays || 0,
+                    repeatUntil: cr.repeatUntil || 0,
                     channelId: channelId,
                     vibrate: vibrate
                   });

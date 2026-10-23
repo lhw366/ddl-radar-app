@@ -30,6 +30,32 @@ test('all four normal tiers, custom reminder and deadline have exact times and s
   }
 });
 
+test('daily reminders register one native recurrence through the day before the deadline', async()=>{
+  let alarms;
+  const h=nativeHarness(async p=>{alarms=p.alarms;});
+  h.run(`S.settings.tiered=false;S.tasks=[{id:'daily-long',name:'长期任务',dueAt:Date.now()+60*86400000,daily:true,dailyTime:'12:00',quadrant:'q2'}]`);
+  await h.run('save()');
+  const daily=alarms.filter(a=>a.repeatDays===1);
+  assert.equal(daily.length,1);
+  assert.equal(daily[0].id,h.context.NativeNotify.idOf('daily-long|daily'));
+  const midnight=new Date(h.context.S.tasks[0].dueAt);midnight.setHours(0,0,0,0);
+  assert.equal(daily[0].repeatUntil,midnight.getTime()-1);
+});
+
+test('weekly and odd-week courses register native recurrence rather than expiring after seven days', async()=>{
+  let alarms;
+  const h=harness(['timetable.js','nativenotify.js','app.js'],{globals:{Capacitor:{isNativePlatform:()=>true,Plugins:{
+    DdlAlarm:{apply:async p=>{alarms=p.alarms;}}, DdlNotify:{configureDisplay:async()=>({})}
+  }}}});
+  h.run(`S.timetable={slots:Timetable.ensureState().slots,termStart:'2026-10-19',courses:[
+    {id:'weekly',name:'每周课',day:1,start:1,end:2,week:'all'},
+    {id:'odd',name:'单周课',day:2,start:3,end:4,week:'odd'}]}`);
+  await h.run('save()');
+  assert.equal(alarms.length,2);
+  assert.equal(alarms.find(a=>a.id===h.context.NativeNotify.idOf('tt:weekly:recurring')).repeatDays,7);
+  assert.equal(alarms.find(a=>a.id===h.context.NativeNotify.idOf('tt:odd:recurring')).repeatDays,14);
+});
+
 test('new tasks do not replay already-past gradients as a native alarm burst', async () => {
   let alarms;
   const h = nativeHarness(async p => { alarms = p.alarms; });

@@ -1168,6 +1168,8 @@
         if (remind < Date.now() - 15 * 60000) return;
         out.push({
           key: 'tt:' + c.id + ':' + at,
+          nativeKey: 'tt:' + c.id + ':recurring',
+          repeatDays: c.week === 'odd' || c.week === 'even' ? 14 : 7,
           at: remind,
           title: minutes ? '📚 ' + minutes + ' 分钟后上课' : '📚 上课时间到',
           body: c.name + (c.room ? ' · ' + c.room : '') + ' · 第' + c.start + '-' + c.end + '节 ' + slot
