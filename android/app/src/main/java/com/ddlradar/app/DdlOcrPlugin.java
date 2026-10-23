@@ -81,10 +81,6 @@ public class DdlOcrPlugin extends Plugin {
             return;
         }
 
-        // Dense Chinese timetable glyphs in screenshots may be below ML Kit's
-        // recommended character size. Enlarge once for this user-triggered OCR;
-        // never run recognition or scaling periodically in the background.
-        bmp = prepareBitmap(bmp);
         final Bitmap finalBmp = bmp;
         InputImage image = InputImage.fromBitmap(finalBmp, 0);
         getRecognizer().process(image)
@@ -145,14 +141,6 @@ public class DdlOcrPlugin extends Plugin {
         return out;
     }
 
-    static Bitmap prepareBitmap(Bitmap bitmap) {
-        if (bitmap.getWidth() < 3000 && bitmap.getWidth() > 1200) {
-            Bitmap enlarged = Bitmap.createScaledBitmap(bitmap, bitmap.getWidth()*2, bitmap.getHeight()*2, true);
-            if (enlarged != bitmap) bitmap.recycle();
-            return enlarged;
-        }
-        return bitmap;
-    }
 
     private static String msg(Exception e) {
         return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();

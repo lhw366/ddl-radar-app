@@ -30,7 +30,6 @@ public class TimetableOcrTest {
             source = BitmapFactory.decodeStream(input);
         }
         assertNotNull(source);
-        source = DdlOcrPlugin.prepareBitmap(source);
         TextRecognizer recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
         try {
             Text result = Tasks.await(recognizer.process(InputImage.fromBitmap(source, 0)), 120, TimeUnit.SECONDS);

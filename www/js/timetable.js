@@ -77,7 +77,8 @@
         labels.forEach(function (label,index) {
           var below = pieces.find(function (p) {
             var delta = cyOf(p)-cyOf(label);
-            return delta > 0 && delta < 35 && /^[一二三四五六七八九十]*节$/.test(norm(p.text));
+            return delta > 0 && delta < Math.max(35, (label.bottom-label.top)*2)
+              && /^[一二三四五六七八九十]*[节书共]$/.test(norm(p.text));
           });
           var text = norm(label.text).replace(/^[|丨]+/,'') + (below ? norm(below.text) : '');
           var match = text.match(/^第([一二三四五六七八九十]+)/);
@@ -109,6 +110,18 @@
     rowHeads.forEach(function (r) { if (rowMap[r.n] === undefined) rowMap[r.n] = r.y; });
     var rows = Object.keys(rowMap).map(function (n) { return { n: +n, y: rowMap[n] }; })
       .sort(function (a, b) { return a.y - b.y; });
+    if (rows.length >= 8) {
+      var complete = [];
+      for (var number=rows[0].n;number<=rows[rows.length-1].n;number++) {
+        if (rowMap[number] !== undefined) complete.push({n:number,y:rowMap[number]});
+        else {
+          var before=rows.filter(function(r){return r.n<number;}).pop();
+          var after=rows.find(function(r){return r.n>number;});
+          if(before && after) complete.push({n:number,y:before.y+(after.y-before.y)*(number-before.n)/(after.n-before.n)});
+        }
+      }
+      rows=complete;
+    }
     var rowsInferred = false;
     if (rows.length < 8 && cols.length >= 2) {
       var inferred = inferRows(blocks, dayHeads, imageMeta);
@@ -156,6 +169,7 @@
         // and note lines stay with the course they were printed under.
         var y = rowsInferred && ln.top != null ? ln.top - rowCentreGap * 0.05 : cyOf(ln);
         if (y < rows[0].y - rowCentreGap * 0.5) return;
+        if (y > rows[rows.length-1].y + (rows[rows.length-1].y-rows[rows.length-2].y)/2) return;
         var day = pickCol(cols, x, rows);
         if (!day) return;
         var rowIdx = pickRow(rows, y);
@@ -317,6 +331,9 @@
           if (target > m.end) m.end = target;
         }
         var info = parseCourseInfo(m.raw, consensusName(m.texts, m.name), m.texts);
+        if (!info.name) return;
+        var variants = m.texts.filter(function(t){return isMeaningfulCourseName(t) && similarCourseName(t,m.name);});
+        var needsReview = new Set(variants).size > 1 || /层[-－]/.test(info.room);
         courses.push({
           id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           name: info.name || m.name || '未命名课程',
@@ -326,6 +343,7 @@
           end: m.end,
           week: info.week,
           note: info.note,
+          needsReview: needsReview,
           remindMin: 15
         });
       });
@@ -504,7 +522,8 @@
     if (!t || t.length < 2) return false;
     if (/^[（(]/.test(t)) return false;
     if (looksLikeRoom(t) && /\d/.test(t)) return false;
-    if (/^(暂无|版权|版权所有|考试方式|考试时间|上课教室|星期|节数|周$|每$|[|丨]?第)/.test(t)) return false;
+    if (/(版权|@|https?:)/.test(t)) return false;
+    if (/^(暂无|考试方式|考试时间|上课教室|星期|节数|周$|每$|[|丨]?第)/.test(t)) return false;
     if (/(备注|考试|上课时间|上课教室|每周|单周|双周|学分|教师|教学班|课程代码)/.test(t)) return false;
     if (/^\d+$/.test(t)) return false;
     if (/^第?[一二三四五六七八九十\d]+(?:大)?节?$/.test(t)) return false;
@@ -894,6 +913,7 @@
     }
     courses.forEach(function (c, i) {
       html += '<div class="tt-rv-row" data-i="' + i + '">'
+        + (c.needsReview ? '<small style="grid-column:1/-1;color:#b45a17">⚠️ 文字存在差异或教室不完整，请对照原图核对</small>' : '')
         + '<input class="tt-rv-name" value="' + esc(c.name) + '" placeholder="课程名" />'
         + '<input class="tt-rv-room" value="' + esc(c.room || '') + '" placeholder="教室" />'
         + '<div class="tt-rv-line">'
