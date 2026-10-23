@@ -1509,7 +1509,8 @@ async function renderDiag() {
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
   trace.forEach(e => {
-    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed'].includes(e.stage),
+    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed',
+      'vibration_error', 'vibration_unavailable', 'effects_unavailable'].includes(e.stage),
       escapeHtml(new Date(e.at).toLocaleTimeString() + ' · ' + (stageNames[e.stage] || e.stage) + ' · ' + e.detail));
   });
   if (d.device) html += '<div>' + escapeHtml(d.device + ' · Android ' + d.androidRelease) + '</div>';
@@ -1517,22 +1518,24 @@ async function renderDiag() {
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
-    if (f === 'notify') { askNotify(); setTimeout(refreshNotifyBtn, 500); }
+    if (f === 'notify') { await askNotify(); await refreshNotifyBtn(); }
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
     if (f === 'reinit') {
       await NativeNotify.ensureChannels(true);
-      await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: NativeNotify.channelIdFor(S.settings) });
+      await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: d.channelId || NativeNotify.channelIdFor(S.settings) });
       toast('🔧 已检查提醒通道', '请确认允许通知，并开启横幅；系统保留的开关需在此修改');
     }
     if (f === 'channel') {
       // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
       try {
-        const channelId = NativeNotify.channelIdFor(S.settings);
+        const channelId = d.channelId || NativeNotify.channelIdFor(S.settings);
         const modeName = S.settings.banner !== false ? '横幅通知' : '无横幅通知';
         await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: channelId });
-        toast('⚙️ 已打开通道设置', '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
+        toast('⚙️ 已打开通道设置', d.overlayAllowed
+          ? '请检查此通道的震动开关；顶部横幅由已授权的悬浮窗显示'
+          : '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
       } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
     }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }

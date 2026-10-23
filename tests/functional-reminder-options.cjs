@@ -61,6 +61,21 @@ test('old reminder presets migrate to independent sound, vibration, and banner f
   assert.equal(silent.remindSilent, true);
 });
 
+test('diagnostic repair opens the actual native vibration channel when a custom overlay is used', async () => {
+  let opened;
+  const h = harness(['nativenotify.js', 'app.js'], { globals: {
+    Capacitor: { isNativePlatform: () => true, Plugins: { DdlAlarm: {}, DdlNotify: {
+      openChannelSettings: async ({id}) => { opened = id; }
+    } } }
+  } });
+  h.context.NativeNotify.diag = async () => ({ native: true, notify: true, overlayAllowed: true,
+    channels: 8, pending: 1, channelVibration: false, channelImportance: 3, headsUp: false,
+    channelId: 'ddlr_gentle_v4_vib_sound' });
+  await h.run('renderDiag()');
+  await h.el('diagList').querySelector('[data-fix="channel"]').click();
+  assert.equal(opened, 'ddlr_gentle_v4_vib_sound');
+});
+
 test('reminder controls are checked independently and silent disables the three outputs', async () => {
   const h = harness(['nativenotify.js', 'app.js']);
   h.run('bindSettings()');
