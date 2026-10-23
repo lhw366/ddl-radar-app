@@ -162,6 +162,39 @@ public class ReminderRuntimeTest {
         assertFalse(AlarmService.isWakeHeld());
     }
 
+    @Test public void realVibrationOnlyTaskDeliversWithoutOverlayOrForegroundService() throws Exception {
+        shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
+        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long ready = System.currentTimeMillis() + 30000;
+        while (!"true".equals(js(activity, "!!(window.S && window.NativeNotify && window.planReminders)"))) {
+            assertTrue("Web app failed to load", System.currentTimeMillis() < ready);
+            Thread.sleep(150);
+        }
+        js(activity, "window.__saved='pending'; S.tasks=[{id:'runtime-vibration-only',name:'纯震动后台任务',"
+                + "dueAt:Date.now()+8000,tiers:{120:false,60:false,30:false,5:false},custom:[],"
+                + "daily:false,done:false,quadrant:'q1'}];"
+                + "S.settings.sound=false;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
+                + "save().then(ok=>window.__saved=ok?'ready':'failed')");
+        while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
+            assertTrue("Real vibration-only task save was not acknowledged", System.currentTimeMillis() < ready);
+            Thread.sleep(100);
+        }
+        JSONArray pending = AlarmScheduler.load(ctx);
+        assertEquals(1, pending.length());
+        int id = pending.getJSONObject(0).getInt("id");
+        String before = shellText("dumpsys vibrator_manager");
+        shell("input keyevent KEYCODE_HOME");
+        awaitStage(id, "notification", 15000);
+        assertSystemVibrationChannel(id);
+        awaitNewSystemVibration(before);
+        assertFalse("Vibration-only delivery must not start a service", hasStage(id, "service"));
+        assertFalse(AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+        assertFalse(hasStage(id, "direct_vibration_requested"));
+    }
+
     private void assertSystemVibrationChannel(int id) {
         NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
