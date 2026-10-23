@@ -179,6 +179,19 @@ function remindBannerEnabled() {
 }
 function beep() {
   if (!remindSoundEnabled()) return;
+  const capacitor = window.Capacitor;
+  const native = capacitor && capacitor.Plugins && capacitor.Plugins.DdlNotify;
+  if (native || (capacitor && capacitor.isNativePlatform && capacitor.isNativePlatform())) {
+    // APK feedback must share native silent/DND policy. A missing or failed
+    // bridge must never fall back to a media-stream WebAudio cue.
+    try {
+      if (native && typeof native.foregroundFeedback === 'function') {
+        return Promise.resolve(native.foregroundFeedback({ sound: true, vibrate: false,
+          vibrateInSilent: S.settings.vibrateInSilent !== false })).catch(() => {});
+      }
+    } catch (error) { /* Keep APK feedback silent when the native bridge fails. */ }
+    return;
+  }
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -196,6 +209,17 @@ function beep() {
 }
 function vibe() {
   if (!remindVibrateEnabled()) return;
+  const capacitor = window.Capacitor;
+  const native = capacitor && capacitor.Plugins && capacitor.Plugins.DdlNotify;
+  if (native || (capacitor && capacitor.isNativePlatform && capacitor.isNativePlatform())) {
+    try {
+      if (native && typeof native.foregroundFeedback === 'function') {
+        return Promise.resolve(native.foregroundFeedback({ sound: false, vibrate: true,
+          vibrateInSilent: S.settings.vibrateInSilent !== false })).catch(() => {});
+      }
+    } catch (error) { /* Do not bypass the saved silent-vibration preference. */ }
+    return;
+  }
   if (navigator.vibrate) navigator.vibrate([180, 90, 180]);
 }
 

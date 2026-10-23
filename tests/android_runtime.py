@@ -38,7 +38,7 @@ def capture(prefix):
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
     for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
-                 'runtime-silent-dnd.json', 'runtime-normal-sound.json']:
+                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json']:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, check=False)
         try:
             json.loads(raw)
@@ -178,10 +178,10 @@ try:
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
     # Run short silent-policy regressions before the real five-minute wait.
-    instrument('SilentReminderRuntimeTest', 3)
+    instrument('SilentReminderRuntimeTest', 4)
     capture('silent-policy')
     for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
-                 'runtime-silent-dnd.json', 'runtime-normal-sound.json']:
+                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json']:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name)
         json.loads(raw)  # A passed test must also leave reviewable system evidence.
         (OUT / name).write_text(raw, encoding='utf-8')

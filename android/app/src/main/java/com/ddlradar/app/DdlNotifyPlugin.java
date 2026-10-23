@@ -40,6 +40,26 @@ public class DdlNotifyPlugin extends Plugin {
                 call.getBoolean("vibrateInSilent", true)));
     }
 
+    /** Foreground UI/catch-up feedback must use the same silent policy as alarms. */
+    @PluginMethod
+    public void foregroundFeedback(PluginCall call) {
+        JSObject result = new JSObject().put("foreground", MainActivity.visible);
+        if (!MainActivity.visible) {
+            call.resolve(result.put("suppressed", "app_background"));
+            return;
+        }
+        boolean sound = call.getBoolean("sound", false);
+        boolean vibrate = call.getBoolean("vibrate", false);
+        if (sound) {
+            String channel = "ddlr_gentle_v4_still_sound";
+            result.put("soundRequested", ReminderSound.canPlay(getContext(), channel));
+            ReminderSound.play(getContext(), 990000003, channel);
+        }
+        if (vibrate) result.put("vibration", AlarmDelivery.requestNativeVibration(getContext(), 990000003,
+                call.getBoolean("vibrateInSilent", true)));
+        call.resolve(result);
+    }
+
     @PluginMethod
     public void notifyUpdate(PluginCall call) {
         int code = call.getInt("code", 0);

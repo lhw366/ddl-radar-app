@@ -85,6 +85,58 @@ public class SilentReminderRuntimeTest {
                 .put("alarm", item).put("trace", ReminderTrace.read(ctx)).put("vibrations", shell("dumpsys vibrator_manager")));
     }
 
+    @Test public void foregroundFeedbackUsesNativeSilentPolicyInsteadOfBrowserAudioOrVibration() throws Exception {
+        policy.silentWithAllInterruptions();
+        MainActivity activity = openWebApp();
+        configure(activity, "S.tasks=[];S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.vibrationMode='notification';S.settings.vibrateInSilent=true;S.settings.remindSilent=false;");
+        js(activity, "window.__feedbackBrowserCalls={audio:0,vibration:0};"
+                + "window.__feedbackOriginals={audio:window.AudioContext,webkit:window.webkitAudioContext,"
+                + "vibrate:navigator.vibrate,context:audioCtx};audioCtx=null;"
+                + "window.__feedbackAudioProbe=function(){window.__feedbackBrowserCalls.audio++;throw new Error('APK used browser audio');};"
+                + "window.__feedbackVibrationProbe=function(){window.__feedbackBrowserCalls.vibration++;return true;};"
+                + "window.AudioContext=window.__feedbackAudioProbe;window.webkitAudioContext=window.__feedbackAudioProbe;"
+                + "navigator.vibrate=window.__feedbackVibrationProbe;");
+        try {
+            assertEquals("true", js(activity, "window.AudioContext===window.__feedbackAudioProbe"
+                    + "&&navigator.vibrate===window.__feedbackVibrationProbe"));
+            String before = shell("dumpsys vibrator_manager");
+            js(activity, "beep();vibe();");
+            awaitStage(990000003, "direct_vibration_requested", 6000);
+            awaitStage(990000003, "sound_suppressed", 3000);
+            assertTrue(detail(990000003, "direct_vibration_requested").contains("usage=alarm;"));
+            assertTrue(detail(990000003, "direct_vibration_requested").contains("foregroundService=false;appVisible=true"));
+            assertTrue(detail(990000003, "sound_suppressed").contains("reason=ringer_silent"));
+            assertFalse(has(990000003, "sound_started"));
+            completedMotor(before, "ALARM");
+            assertFalse("Visible foreground feedback must not start a service", AlarmService.isRunning());
+            assertFalse(AlarmService.isWakeHeld());
+            JSONArray enabledTrace = ReminderTrace.read(ctx);
+
+            configure(activity, "S.settings.vibrateInSilent=false;");
+            ctx.getSharedPreferences(ReminderTrace.PREFS, 0).edit().clear().commit();
+            before = shell("dumpsys vibrator_manager");
+            js(activity, "beep();vibe();");
+            awaitStage(990000003, "vibration_blocked", 6000);
+            awaitStage(990000003, "sound_suppressed", 3000);
+            assertTrue(detail(990000003, "vibration_blocked").contains("reason=silent_vibration_disabled"));
+            assertFalse(has(990000003, "direct_vibration_requested"));
+            assertFalse(has(990000003, "sound_started"));
+            assertNoNewMotor(before);
+            assertEquals("0", js(activity, "window.__feedbackBrowserCalls.audio"));
+            assertEquals("0", js(activity, "window.__feedbackBrowserCalls.vibration"));
+            assertSilentStateUnchanged();
+            evidence("runtime-foreground-feedback.json", new JSONObject().put("webAudioCalls", 0)
+                    .put("navigatorVibrationCalls", 0).put("enabledTrace", enabledTrace)
+                    .put("disabledTrace", ReminderTrace.read(ctx)).put("vibrations", shell("dumpsys vibrator_manager")));
+        } finally {
+            js(activity, "if(window.__feedbackOriginals){window.AudioContext=window.__feedbackOriginals.audio;"
+                    + "window.webkitAudioContext=window.__feedbackOriginals.webkit;"
+                    + "navigator.vibrate=window.__feedbackOriginals.vibrate;audioCtx=window.__feedbackOriginals.context;"
+                    + "delete window.__feedbackOriginals;}");
+        }
+    }
+
     @Test public void silentPreferenceVibrationToggleAndGlobalSilencePreventTheMotor() throws Exception {
         policy.silentWithAllInterruptions();
         MainActivity activity = openWebApp();
