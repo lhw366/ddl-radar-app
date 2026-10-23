@@ -1,6 +1,7 @@
 package com.ddlradar.app;
 
 import android.app.Instrumentation;
+import android.app.Activity;
 import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
@@ -8,6 +9,8 @@ import android.media.AudioManager;
 import android.os.ParcelFileDescriptor;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 import com.getcapacitor.JSObject;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -29,6 +32,7 @@ public class SilentReminderRuntimeTest {
     private Context ctx;
     private Instrumentation instrumentation;
     private RuntimeDevicePolicy policy;
+    private MainActivity webActivity;
 
     @Before public void prepare() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
@@ -49,7 +53,10 @@ public class SilentReminderRuntimeTest {
             AlarmScheduler.save(ctx, new JSONArray());
             ctx.stopService(new Intent(ctx, AlarmService.class));
             instrumentation.waitForIdleSync();
-        } finally { if (policy != null) policy.close(); }
+        } finally {
+            try { finishWebApp(); }
+            finally { if (policy != null) policy.close(); }
+        }
     }
 
     @Test public void fiveSecondBridgeTestUsesSilentAlarmHapticsWithoutAnyChime() throws Exception {
@@ -165,10 +172,40 @@ public class SilentReminderRuntimeTest {
     }
 
     private MainActivity openWebApp() throws Exception {
-        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
-                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        awaitJs(activity, "!!(window.S && window.NativeNotify && window.planReminders)", "true");
-        return activity;
+        // MainActivity is singleTask: returning from HOME resumes its existing
+        // instance through onNewIntent. startActivitySync waits for a newly
+        // created Activity and therefore times out on the second return.
+        instrumentation.runOnMainSync(() -> ctx.startActivity(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)));
+        long until = System.currentTimeMillis() + 15000;
+        while (System.currentTimeMillis() < until) {
+            AtomicReference<MainActivity> resumed = new AtomicReference<>();
+            instrumentation.runOnMainSync(() -> {
+                for (Activity activity : ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED)) {
+                    if (activity instanceof MainActivity && !activity.isFinishing() && !activity.isDestroyed())
+                        resumed.set((MainActivity) activity);
+                }
+            });
+            if (resumed.get() != null && MainActivity.visible) {
+                webActivity = resumed.get();
+                awaitJs(webActivity, "!!(window.S && window.NativeNotify && window.planReminders)", "true");
+                return webActivity;
+            }
+            Thread.sleep(75);
+        }
+        fail("MainActivity did not reach RESUMED after launch or return from HOME");
+        return null;
+    }
+
+    private void finishWebApp() throws Exception {
+        MainActivity activity = webActivity;
+        if (activity == null) return;
+        instrumentation.runOnMainSync(() -> { if (!activity.isDestroyed()) activity.finish(); });
+        long until = System.currentTimeMillis() + 5000;
+        while (!activity.isDestroyed() && System.currentTimeMillis() < until) Thread.sleep(50);
+        assertTrue("Each test must dispose its web Activity", activity.isDestroyed());
+        webActivity = null;
     }
 
     private void configure(MainActivity activity, String settings) throws Exception {

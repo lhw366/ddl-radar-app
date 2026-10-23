@@ -177,11 +177,7 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 8)
-    capture('desktop')
-    (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
-    (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
-    prepare()
+    # Run short silent-policy regressions before the real five-minute wait.
     instrument('SilentReminderRuntimeTest', 3)
     capture('silent-policy')
     for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
@@ -189,6 +185,11 @@ try:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name)
         json.loads(raw)  # A passed test must also leave reviewable system evidence.
         (OUT / name).write_text(raw, encoding='utf-8')
+    prepare()
+    instrument('ReminderRuntimeTest', 8)
+    capture('desktop')
+    (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
+    (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
     adb('shell', 'appops', 'set', PKG, 'SYSTEM_ALERT_WINDOW', 'deny')
     adb('shell', 'pm', 'revoke', PKG, 'android.permission.POST_NOTIFICATIONS')
     instrument('NotificationDeniedTest', 1)
