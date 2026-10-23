@@ -18,6 +18,8 @@ import org.json.JSONObject;
 
 /** Short, synchronous delivery while AlarmManager holds the receiver's wake lock. */
 final class AlarmDelivery {
+    private static final String GROUP = "com.ddlradar.app.reminders";
+    private static final int SUMMARY_ID = 19900216;
     private AlarmDelivery() {}
 
     static boolean deliver(Context context, Intent intent) {
@@ -162,6 +164,44 @@ final class AlarmDelivery {
         return id | Integer.MIN_VALUE;
     }
 
+    static void cancelNotification(Context context, int id) {
+        NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        if (Build.VERSION.SDK_INT >= 24) {
+            boolean other = false;
+            for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+                if (GROUP.equals(active.getNotification().getGroup()) && active.getId() != id
+                        && active.getId() != SUMMARY_ID) { other = true; break; }
+            }
+            if (!other) manager.cancel(SUMMARY_ID);
+        }
+        manager.cancel(id);
+    }
+
+    private static void postSummary(Context context, NotificationManager manager, boolean autoDismiss) {
+        if (Build.VERSION.SDK_INT < 24) return;
+        String channel = ensureChannel(context, manager, "ddlr_gentle_v4_still_silent");
+        Notification.Builder summary = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(context, channel) : new Notification.Builder(context);
+        summary.setSmallIcon(R.drawable.ic_stat_ddlr).setContentTitle("DDL雷达 · 提醒")
+                .setContentText("展开查看待处理提醒").setGroup(GROUP).setGroupSummary(true)
+                .setOnlyAlertOnce(true).setAutoCancel(true).setDefaults(0);
+        if (Build.VERSION.SDK_INT >= 26) {
+            summary.setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN);
+            if (autoDismiss) summary.setTimeoutAfter(5200L);
+        }
+        Intent open = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        if (open != null) summary.setContentIntent(activity(context, SUMMARY_ID, "summary", open));
+        manager.notify(SUMMARY_ID, summary.build());
+    }
+
+    static String notificationChannelFor(Context context, String channelId) {
+        // SystemUI heads-up windows cover application overlays. With a visible
+        // custom banner, keep native vibration but omit the duplicate heads-up.
+        return channelId.startsWith("ddlr_high_") && ReminderBanner.allowed(context) && !screenOff(context)
+                ? channelId.replace("ddlr_high_", "ddlr_gentle_") : channelId;
+    }
+
     private static PendingIntent activity(Context context, int id, String purpose, Intent intent) {
         intent.setData(Uri.parse("ddlr://notification/" + id + "/" + purpose));
         return PendingIntent.getActivity(context, id, intent,
@@ -178,6 +218,8 @@ final class AlarmDelivery {
     }
 
     private static boolean post(Context context, int id, String title, String body, String channelId) {
+        boolean banner = channelId.startsWith("ddlr_high_");
+        channelId = notificationChannelFor(context, channelId);
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) throw new IllegalStateException("Notification manager unavailable");
         channelId = ensureChannel(context, manager, channelId);
@@ -208,7 +250,7 @@ final class AlarmDelivery {
         // AlarmActivity 早前是纯死代码——manifest 里声明了、注释写着靠
         // fullScreenIntent 拉起，但没有任何地方真的设置过它，所以灭屏/锁屏
         // 从来没有亮屏提醒过。这里补上真正的调用点。
-        if (channelId.startsWith("ddlr_high_") && screenOff(context)) {
+        if (banner && screenOff(context)) {
             Intent page = new Intent(context, AlarmActivity.class);
             page.setData(Uri.parse("ddlr://alarm-screen/" + id));
             page.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -220,6 +262,8 @@ final class AlarmDelivery {
         }
         boolean autoDismiss = context.getSharedPreferences("ddlr_display", Context.MODE_PRIVATE)
                 .getBoolean("autoDismiss", false);
+        if (Build.VERSION.SDK_INT >= 24) builder.setGroup(GROUP);
+        if (Build.VERSION.SDK_INT >= 26) builder.setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN);
         if (autoDismiss && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(5000L);
         Intent open = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         if (open != null) {
@@ -235,7 +279,12 @@ final class AlarmDelivery {
         PendingIntent acknowledge = PendingIntent.getBroadcast(context, id, ack,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         builder.addAction(action(context, "知道了", acknowledge));
-        try { manager.notify(notificationId(id), builder.build()); }
+        try {
+            // Automatic grouping on Android 16 can mark new children SILENT.
+            // Own the group explicitly; the summary never replaces child alerts.
+            postSummary(context, manager, autoDismiss);
+            manager.notify(notificationId(id), builder.build());
+        }
         catch (SecurityException error) {
             // Notification permission and overlay permission are independent.
             allowed = false;
@@ -244,7 +293,7 @@ final class AlarmDelivery {
         context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
                 .putBoolean("lastNotificationAllowed", allowed).apply();
         ReminderTrace.mark(context, id, "notification", "allowed=" + allowed + ";channel=" + channelId + ";vibration=" + (Build.VERSION.SDK_INT < 26 ? channelId.contains("_vib_") : manager.getNotificationChannel(channelId).shouldVibrate()));
-        if (channelId.startsWith("ddlr_high_")) {
+        if (banner) {
             ReminderBanner.show(context, notificationId(id), title, body, autoDismiss);
         }
         return allowed;

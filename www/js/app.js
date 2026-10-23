@@ -1485,6 +1485,8 @@ async function renderDiag() {
     html += diagRow(null, '提醒已关闭：响铃、震动和横幅均未启用');
   } else if (!remindBannerEnabled()) {
     html += diagRow(null, '横幅已关闭；响铃和震动仍可由系统闹钟独立执行');
+  } else if (d.overlayAllowed === true) {
+    html += diagRow(true, '使用自定义顶部横幅；系统通知保留震动，避免两个横幅互相遮挡');
   } else if (d.headsUp === false) {
     html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {

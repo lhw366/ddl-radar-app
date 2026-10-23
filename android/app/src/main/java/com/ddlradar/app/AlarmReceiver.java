@@ -13,8 +13,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         if (intent == null) return;
         if (intent.getIntExtra("slot", 0) == 2) return; // Retired prewake route.
         if (intent.hasExtra("ackId")) {
-            NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager != null) manager.cancel(intent.getIntExtra("ackId", 0));
+            AlarmDelivery.cancelNotification(context, intent.getIntExtra("ackId", 0));
             ReminderBanner.dismiss(intent.getIntExtra("ackId", 0));
             return;
         }

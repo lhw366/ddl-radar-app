@@ -59,6 +59,10 @@ public class ReminderRuntimeTest {
         assertTrue(hasStage(11001, "receiver"));
         assertTrue(hasStage(11001, "service"));
         assertTrue(hasStage(11001, "vibration_requested"));
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        assertEquals("Avoid a system heads-up covering the custom banner", NotificationManager.IMPORTANCE_DEFAULT,
+                manager.getNotificationChannel(AlarmDelivery.notificationChannelFor(ctx,
+                        "ddlr_high_v4_vib_silent")).getImportance());
         screenshot("runtime-manual.png");
         Thread.sleep(6000);
         assertFalse("A retained banner must not retain a CPU wake lock", AlarmService.isWakeHeld());

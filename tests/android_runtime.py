@@ -21,7 +21,7 @@ def adb(*args, check=True, binary=False, timeout=40):
 
 def capture(prefix):
     for label, args in {
-        'logcat': ['logcat', '-d', '-v', 'threadtime', 'DdlTrace:I', 'DdlAlarm:W', '*:S'],
+        'logcat': ['logcat', '-d', '-v', 'threadtime', 'DdlTrace:I', 'DdlAlarm:W', 'NotifAttentionHelper:D', '*:S'],
         'crash': ['logcat', '-d', '-b', 'crash', '-t', '1000'],
         'events': ['logcat', '-d', '-b', 'events', '-v', 'descriptive', '-t', '2000'],
         'alarm': ['shell', 'dumpsys', 'alarm'],

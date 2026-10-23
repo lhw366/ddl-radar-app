@@ -283,6 +283,7 @@ public class DdlAlarmPlugin extends Plugin {
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             String channelId = normalizeChannelId(call.getString("channelId", "ddlr_high_sound"));
+            channelId = AlarmDelivery.notificationChannelFor(ctx, channelId);
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
             ret.put("channelImportance", imp);
