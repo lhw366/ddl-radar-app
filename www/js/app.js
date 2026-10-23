@@ -56,6 +56,7 @@ function defaultState() { return {
     dailyTime: '12:00',
     sound: true,
     vibrate: true,
+    vibrateInSilent: true,
     vibrationMode: 'notification',
     banner: true,
     bannerDuration: 'manual',
@@ -79,6 +80,7 @@ function normalizeState(data) {
   }
   next.settings.sound = next.settings.sound !== false;
   next.settings.vibrate = next.settings.vibrate !== false;
+  next.settings.vibrateInSilent = next.settings.vibrateInSilent !== false;
   next.settings.vibrationMode = next.settings.vibrationMode === 'native' ? 'native' : 'notification';
   next.settings.banner = next.settings.banner !== false;
   next.settings.remindSilent = next.settings.remindSilent === true;
@@ -421,6 +423,7 @@ function applyBg() {
   // 遮罩只用于自定义壁纸，纯渐变背景不需要压暗
   document.documentElement.style.setProperty('--dim', S.settings.bgImage ? S.settings.bgDim / 100 : 0);
   if (dim) dim.style.opacity = '';
+  if (window.AppReadability) AppReadability.refresh();
 }
 function renderThemeGrids() {
   const list = S.settings.customPalette
@@ -1129,7 +1132,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.2';
+const APP_VERSION = '2.3.3';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1427,12 +1430,14 @@ async function runVibrationSelfTest() {
   vibrationSelfTestBusy = true;
   syncRemindModeUI();
   try {
-    const result = await native.testVibration();
+    const result = await native.testVibration({ vibrateInSilent: S.settings.vibrateInSilent !== false });
     window.lastVibrationSelfTest = { ...result, capturedAt: new Date().toISOString() };
     if (result.hasVibrator === false) {
       toast('系统未提供可用震动器', '请查看提醒诊断中的设备震动状态。');
+    } else if (result.suppressed === 'silent_vibration_disabled') {
+      toast('已按你的设置保持静默', '手机处于静音，且“手机静音时震动”已关闭。本次没有请求震动。');
     } else if (result.suppressed) {
-      toast('本次震动请求被系统策略阻止', '请检查系统静音、勿扰和震动设置；应用不会修改这些设置。');
+      toast('本次震动请求被系统策略阻止', '应用按勿扰策略没有请求震动；不会修改手机静音、勿扰或音量。');
     } else if (result.error) {
       toast('原生震动调用失败', '请复制提醒诊断，查看系统返回的错误。');
     } else if (result.requested === true) {
@@ -1495,10 +1500,14 @@ async function renderDiag() {
   html += diagRow(d.overlayAllowed === true,
     d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统横幅需另行开启，是否弹出由手机控制',
     d.overlayAllowed ? '' : 'overlay');
-  html += diagRow((d.channels || 0) >= 12, '提醒通道已创建（' + (d.channels || 0) + '/12）', d.channels >= 12 ? '' : 'reinit');
+  html += diagRow((d.channels || 0) >= 14, '提醒通道已创建（' + (d.channels || 0) + '/14）', d.channels >= 14 ? '' : 'reinit');
   const vibrationMode = (d.vibrationMode || S.settings.vibrationMode) === 'native' ? 'native' : 'notification';
   html += diagRow(null, '当前震动方式：' + (vibrationMode === 'native' ? '原生震动（兼容模式）' : '跟随系统通知'));
-  if (remindVibrateEnabled() && vibrationMode === 'notification' && d.channelVibration === false) {
+  const quietRoute = String(d.channelId || '').includes('_v6_quiet');
+  if (quietRoute) {
+    html += diagRow(null, '系统静音使用独立视觉通道；该通道不负责震动，触觉由短时服务按偏好请求');
+  }
+  if (remindVibrateEnabled() && vibrationMode === 'notification' && d.channelVibration === false && !quietRoute) {
     html += diagRow(false, '当前系统通知通道的震动开关被关闭', 'channel');
     html += diagRow(null, '通知震动仍无效时，可主动启用原生兼容震动并自检', 'nativevibration');
   } else if (remindVibrateEnabled() && vibrationMode === 'native') {
@@ -1510,7 +1519,8 @@ async function renderDiag() {
     blocked_channel: [false, '系统通知通道未允许震动'],
     blocked_notification: [false, '系统通知未获允许，尚未通过通知请求震动'],
     disabled: [null, '此提醒未启用震动'],
-    blocked_policy: [false, '震动被系统静音、勿扰或震动策略阻止'],
+    blocked_policy: [null, '应用按勿扰策略未请求震动'],
+    blocked_preference: [null, '已按你的设置关闭手机静音时的震动'],
     unavailable: [false, '系统未提供可用震动器'],
     error: [false, '震动调用失败，请查看下方执行记录'],
     notification_requested: [null, '已通过系统通知请求震动，尚非手机实际震动确认']
@@ -1522,12 +1532,19 @@ async function renderDiag() {
       (oldChannelStatus ? '（当前已选原生兼容模式）' : ''));
   }
   const environment = d.environment || {};
+  if (d.lastVibrationUsage && d.vibrationStatus === 'native_requested') {
+    html += diagRow(null, d.lastVibrationUsage === 'alarm'
+      ? '上次为静音触觉请求：仅震动，不使用闹钟音频，不调整音量'
+      : '上次使用通知触觉请求');
+  }
   if (typeof environment.hasVibrator === 'boolean') {
     html += diagRow(environment.hasVibrator, environment.hasVibrator ? '系统报告设备提供震动器' : '系统报告设备没有可用震动器');
   }
   const ringerModes = { 0: '静音', 1: '震动', 2: '响铃' };
   if (Object.hasOwn(ringerModes, environment.ringerMode)) {
-    html += diagRow(environment.ringerMode === 0 ? false : null, '系统铃声模式：' + ringerModes[environment.ringerMode] + '（仅记录，不自动修改）');
+    html += diagRow(null, '系统铃声模式：' + ringerModes[environment.ringerMode] + '（仅记录，不自动修改）');
+    if (environment.ringerMode === 0) html += diagRow(null,
+      '手机静音时：禁止响铃；' + (S.settings.vibrateInSilent !== false ? '默认允许震动，勿扰仍生效' : '已选择不震动'));
   }
   const interruptionModes = { 1: '关闭', 2: '仅允许优先通知', 3: '全部阻止', 4: '仅允许闹钟' };
   if (Object.hasOwn(interruptionModes, environment.interruptionFilter)) {
@@ -1620,7 +1637,7 @@ async function renderDiag() {
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
     delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
-    direct_vibration_requested: '已请求原生震动（非硬件确认）', vibration_pending: '等待原生震动派发', vibration_disabled: '此提醒未启用震动', vibration_blocked: '震动被系统策略阻止', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
+    direct_vibration_requested: '已请求原生震动（非硬件确认）', vibration_pending: '等待原生震动派发', vibration_disabled: '此提醒未启用震动', vibration_blocked: '本次未请求震动（偏好或勿扰）', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
@@ -1692,6 +1709,7 @@ function bindSettings() {
   });
   reminderToggle('setSound', 'sound');
   reminderToggle('setVibrate', 'vibrate');
+  reminderToggle('setVibrateInSilent', 'vibrateInSilent');
   reminderToggle('setBanner', 'banner');
   $('setVibrationMode').addEventListener('change', () => {
     if (!remindVibrateEnabled()) return;
@@ -1843,6 +1861,8 @@ function syncRemindModeUI() {
   $('setSilent').checked = silent;
   $('setSound').checked = !silent && S.settings.sound !== false;
   $('setVibrate').checked = !silent && S.settings.vibrate !== false;
+  $('setVibrateInSilent').checked = S.settings.vibrateInSilent !== false;
+  $('setVibrateInSilent').disabled = silent || S.settings.vibrate === false;
   $('setBanner').checked = !silent && S.settings.banner !== false;
   $('setBannerDuration').value = S.settings.bannerDuration || 'manual';
   ['setSound', 'setVibrate', 'setBanner'].forEach((id) => { $(id).disabled = silent; });

@@ -36,7 +36,8 @@ public class DdlNotifyPlugin extends Plugin {
             call.reject("请保持应用在前台进行原生震动自检");
             return;
         }
-        call.resolve(AlarmDelivery.requestNativeVibration(getContext(), 990000002));
+        call.resolve(AlarmDelivery.requestNativeVibration(getContext(), 990000002,
+                call.getBoolean("vibrateInSilent", true)));
     }
 
     @PluginMethod

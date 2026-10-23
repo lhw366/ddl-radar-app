@@ -41,7 +41,7 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 13;
+    public static final int SCHED_VER = 14;
 
     /** 最近一次注册实际使用的通道（诊断用）：clock / exact_idle / inexact_idle */
     private static final String KEY_SCHED_MODE = "schedMode";
@@ -246,7 +246,8 @@ public final class AlarmScheduler {
             if (!scheduled && active < MAX_ACTIVE_ALARMS) {
                 schedule(ctx, item.optLong("id"), at,
                         item.optString("title", null), item.optString("body", null),
-                        item.optString("channel", null), item.optBoolean("vibrate", true));
+                        item.optString("channel", null), item.optBoolean("vibrate", true),
+                        item.optBoolean("vibrateInSilent", true));
                 try { item.put("scheduled", true); } catch (Exception ignore) {}
                 active++;
                 changed = true;
@@ -314,6 +315,11 @@ public final class AlarmScheduler {
      */
     public static synchronized void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId, boolean vibrate) {
+        schedule(ctx, id, at, title, body, channelId, vibrate, true);
+    }
+
+    public static synchronized void schedule(Context ctx, long id, long at,
+                                String title, String body, String channelId, boolean vibrate, boolean vibrateInSilent) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) throw new IllegalStateException("Alarm manager unavailable");
         cancelLegacy(ctx, id);
@@ -321,7 +327,7 @@ public final class AlarmScheduler {
         // 只需注销身份，不必再注册——它们的存在本身就是耗电来源。
         am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
-        PendingIntent op = operation(ctx, id, at, title, body, channelId, vibrate, 0);
+        PendingIntent op = operation(ctx, id, at, title, body, channelId, vibrate, vibrateInSilent, 0);
         String mode;
         try {
             am.setAlarmClock(new AlarmManager.AlarmClockInfo(at, showIntent(ctx)), op);
@@ -430,7 +436,8 @@ public final class AlarmScheduler {
             if (scheduled) {
                 schedule(ctx, o.optLong("id"), at,
                         o.optString("title", null), o.optString("body", null),
-                        o.optString("channel", null), o.optBoolean("vibrate", true));
+                        o.optString("channel", null), o.optBoolean("vibrate", true),
+                        o.optBoolean("vibrateInSilent", true));
                 active++;
                 if (nextAt == 0) nextAt = at;
             } else if (o.optBoolean("scheduled", true)) {
@@ -487,6 +494,12 @@ public final class AlarmScheduler {
     static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId,
                                            boolean vibrate, int slot) {
+        return operation(ctx, id, at, title, body, channelId, vibrate, true, slot);
+    }
+
+    static PendingIntent operation(Context ctx, long id, long at,
+                                           String title, String body, String channelId,
+                                           boolean vibrate, boolean vibrateInSilent, int slot) {
         Intent i = new Intent(ctx, AlarmReceiver.class);
         i.setAction("com.ddlradar.app.DELIVER_REMINDER");
         // Extras do not participate in PendingIntent identity. Preserve the full id,
@@ -499,6 +512,7 @@ public final class AlarmScheduler {
         if (body != null) i.putExtra("body", body);
         if (channelId != null) i.putExtra("channelId", channelId);
         i.putExtra("vibrate", vibrate);
+        i.putExtra("vibrateInSilent", vibrateInSilent);
         return PendingIntent.getBroadcast(ctx, slot, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }

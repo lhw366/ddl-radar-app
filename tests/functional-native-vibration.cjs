@@ -50,8 +50,8 @@ test('explicit compatibility mode creates four additional non-vibrating channels
     ensureChannel: async definition => created.push(definition)
   } } } } });
   await h.context.NativeNotify.ensureChannels();
-  assert.equal(created.length, 12);
-  assert.equal(new Set(created.map(item => item.id)).size, 12);
+  assert.equal(created.length, 14);
+  assert.equal(new Set(created.map(item => item.id)).size, 14);
   assert.equal(created.filter(item => item.id.includes('_v4_')).length, 8);
   for (const banner of [false, true]) for (const sound of [false, true]) {
     const id = h.context.NativeNotify.channelIdFor({ banner, sound, vibrate: true, vibrationMode: 'native' });
@@ -137,5 +137,113 @@ test('test readback distinguishes receiver delivery from hardware vibration in e
     assert.match(h.toasts.at(-1)[0], /测试闹钟已送达/);
     assert.match(h.toasts.at(-1)[1], mode === 'native' ? /调用记录不能证明硬件已震动/ : /通道的震动/);
     assert.doesNotMatch(h.toasts.at(-1).join(' '), /应已响铃|应响铃|应震动/);
+  }
+});
+
+test('silent-phone vibration preference reaches normal tiers, deadlines, courses and both tests without changing sound', async () => {
+  for (const mode of ['notification', 'native']) for (const seconds of [5, 60]) {
+    for (const preference of [undefined, true, false]) for (const sound of [false, true]) {
+      const { h, applied, queries } = nativeHarness({ mode });
+      h.context.S.settings.sound = sound;
+      if (preference !== undefined) h.context.S.settings.vibrateInSilent = preference;
+      assert.equal(await h.context.NativeNotify.test(seconds), true);
+      const alarms = applied.at(-1).alarms;
+      assert.equal(alarms.length, 4);
+      assert.ok(alarms.every(item => item.vibrateInSilent === (preference !== false)));
+      assert.ok(alarms.every(item => item.channelId.endsWith(sound ? '_sound' : '_silent')));
+      assert.equal(h.context.S.settings.sound, sound, 'silent-phone vibration must never enable ringing');
+      assert.equal(alarms.find(item => item.id === 990000001).at - h.context.Date.now(), seconds * 1000);
+      assert.equal(queries.at(-1).vibrateInSilent, preference !== false);
+    }
+  }
+});
+
+test('changing only silent-phone vibration preference updates all future alarms', async () => {
+  const { h, applied } = nativeHarness({ mode: 'native' });
+  await h.context.NativeNotify.sync(h.context.S);
+  h.context.S.settings.vibrateInSilent = false;
+  await h.context.NativeNotify.sync(h.context.S);
+  assert.equal(applied.length, 2);
+  assert.ok(applied[0].alarms.every(item => item.vibrateInSilent === true));
+  assert.ok(applied[1].alarms.every(item => item.vibrateInSilent === false));
+  assert.deepEqual(applied[0].alarms.map(item => item.id), applied[1].alarms.map(item => item.id));
+  assert.deepEqual(applied[0].alarms.map(item => item.channelId), applied[1].alarms.map(item => item.channelId));
+});
+
+test('silent-phone preference never overrides app silent mode or disabled vibration', async () => {
+  for (const preference of [true, false]) {
+    for (const disabled of ['remindSilent', 'allOutputs']) {
+      const { h, applied } = nativeHarness({ mode: 'native' });
+      h.context.S.settings.vibrateInSilent = preference;
+      if (disabled === 'remindSilent') h.context.S.settings.remindSilent = true;
+      else Object.assign(h.context.S.settings, { sound: false, vibrate: false, banner: false });
+      h.context.localStorage.setItem('ddlr_testAt', h.context.Date.now() + 5000);
+      await h.context.NativeNotify.sync(h.context.S);
+      assert.equal(applied.at(-1).alarms.length, 0);
+      await h.context.NativeNotify.test(5);
+      assert.equal(applied.length, 1, 'disabled outputs must not queue a new test alarm');
+    }
+    const { h, applied } = nativeHarness({ mode: 'native' });
+    Object.assign(h.context.S.settings, { vibrateInSilent: preference, vibrate: false, sound: true, banner: true });
+    await h.context.NativeNotify.sync(h.context.S);
+    assert.ok(applied.at(-1).alarms.every(item => item.vibrate === false));
+    assert.ok(applied.at(-1).alarms.every(item => item.vibrateInSilent === preference));
+  }
+});
+
+test('system-silent visual channels keep high and gentle notification choices separate from haptics', async () => {
+  const created = [];
+  const h = harness(['nativenotify.js'], { globals: { Capacitor: { Plugins: { DdlNotify: {
+    ensureChannel: async definition => created.push(definition)
+  } } } } });
+  await h.context.NativeNotify.ensureChannels();
+  const quiet = created.filter(channel => channel.id.endsWith('_v6_quiet'));
+  assert.equal(quiet.length, 2);
+  const high = quiet.find(channel => channel.id === 'ddlr_high_v6_quiet');
+  const gentle = quiet.find(channel => channel.id === 'ddlr_gentle_v6_quiet');
+  assert.equal(high.importance, 4);
+  assert.equal(high.sound, 'android.resource://com.ddlradar.app/raw/ddlr_silence');
+  assert.equal(high.vibration, false);
+  assert.equal(gentle.importance, 3);
+  assert.equal(gentle.sound, '');
+  assert.equal(gentle.vibration, false);
+});
+
+test('diagnostics retain silent-phone preference, actual usage and explicit preference-blocked status', async () => {
+  const { h, queries } = nativeHarness({ pendingFields: {
+    channelId: 'ddlr_high_v6_quiet', vibrateInSilent: false,
+    vibrationStatus: 'blocked_preference', lastVibrationStatus: 'blocked_preference', lastVibrationUsage: 'none'
+  } });
+  h.context.S.settings.vibrateInSilent = false;
+  const diagnostic = await h.context.NativeNotify.diag();
+  assert.equal(queries.at(-1).vibrateInSilent, false);
+  assert.equal(diagnostic.vibrateInSilent, false);
+  assert.equal(diagnostic.channelId, 'ddlr_high_v6_quiet');
+  assert.equal(diagnostic.lastVibrationUsage, 'none');
+  assert.equal(diagnostic.lastVibrationStatus, 'blocked_preference');
+
+  const legacyReadback = nativeHarness();
+  legacyReadback.h.context.S.settings.vibrateInSilent = false;
+  assert.equal((await legacyReadback.h.context.NativeNotify.diag()).vibrateInSilent, false,
+    'an older native readback must not overwrite the explicit preference');
+});
+
+test('quiet-channel test readback never mislabels intentionally disabled channel vibration as a fault', async () => {
+  for (const preference of [true, false]) {
+    const timers = [];
+    const { h } = nativeHarness({ vibration: false, timers, pendingFields: {
+      channelId: 'ddlr_high_v6_quiet'
+    } });
+    h.context.S.settings.vibrateInSilent = preference;
+    assert.equal(await h.context.NativeNotify.test(5), true);
+    assert.doesNotMatch(h.toasts.at(-1)[1], /系统提醒通道的震动已关闭/);
+    h.context.Capacitor.Plugins.DdlAlarm.pending = async () => ({ items: [], lastFireId: 990000001,
+      lastFireAt: h.context.Date.now() + 5000, channelId: 'ddlr_high_v6_quiet', channelVibration: false,
+      lastVibrationUsage: preference ? 'alarm' : 'none',
+      lastVibrationStatus: preference ? 'native_requested' : 'blocked_preference' });
+    timers.find(timer => timer.delay === 8000).fn();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(h.toasts.at(-1)[1], preference ? /纯触觉路径/ : /已关闭.*系统静音时震动/);
+    assert.doesNotMatch(h.toasts.at(-1)[1], /系统已关闭当前提醒通道的震动/);
   }
 });

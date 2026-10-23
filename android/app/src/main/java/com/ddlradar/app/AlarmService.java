@@ -104,10 +104,11 @@ public class AlarmService extends Service {
             try { AlarmDelivery.deliver(this, intent); }
             catch (Exception error) { Log.e("DdlAlarm", "Reminder delivery failed", error); }
             // Keep foreground priority through the short, finite vibration.
-            AlarmDelivery.vibrateFallback(this, lastId, intent.getBooleanExtra("directVibration", false));
+            AlarmDelivery.vibrateFallback(this, lastId, intent.getBooleanExtra("directVibration", false),
+                    intent.getBooleanExtra("vibrateInSilent", true));
             ReminderSound.play(this, lastId, intent.getStringExtra("channelId"));
             String channel = intent.getStringExtra("channelId");
-            effectsUntil = SystemClock.uptimeMillis() + (channel != null && channel.endsWith("_sound") ? 4000L : 2200L);
+            effectsUntil = SystemClock.uptimeMillis() + (ReminderSound.canPlay(this, channel) ? 4000L : 2200L);
         }
         handler.removeCallbacks(finishEffects);
         handler.postDelayed(finishEffects, Math.max(1L, effectsUntil - SystemClock.uptimeMillis()));

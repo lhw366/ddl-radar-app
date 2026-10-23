@@ -113,7 +113,8 @@ public class DdlAlarmPlugin extends Plugin {
                             // 所以不需要先 cancel——这正是消除空窗的关键。
                             AlarmScheduler.schedule(ctx, w.optLong("id"), w.optLong("at"),
                                     w.optString("title", null), w.optString("body", null),
-                                    w.optString("channel", null), w.optBoolean("vibrate", true));
+                                    w.optString("channel", null), w.optBoolean("vibrate", true),
+                                    w.optBoolean("vibrateInSilent", true));
                             added++;
                         }
                         w.put("scheduled", true);
@@ -169,7 +170,8 @@ public class DdlAlarmPlugin extends Plugin {
             synchronized (AlarmScheduler.class) {
                 AlarmScheduler.schedule(ctx, o.optLong("id"), o.optLong("at"),
                         o.optString("title", null), o.optString("body", null),
-                        o.optString("channel", null), o.optBoolean("vibrate", true));
+                        o.optString("channel", null), o.optBoolean("vibrate", true),
+                        o.optBoolean("vibrateInSilent", true));
                 o.put("scheduled", true);
                 upsert(ctx, o);
             }
@@ -267,6 +269,8 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("vibrationStatus", vibrationStatus);
             ret.put("lastVibrationStatus", vibrationStatus);
             ret.put("lastVibrationChannel", diagnostics.getString("lastVibrationChannel", ""));
+            ret.put("lastVibrationUsage", diagnostics.getString("lastVibrationUsage", ""));
+            ret.put("vibrateInSilent", call.getBoolean("vibrateInSilent", true));
             ret.put("lastReceiverId", lr[0]);
             ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
@@ -287,10 +291,11 @@ public class DdlAlarmPlugin extends Plugin {
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             String channelId = normalizeChannelId(call.getString("channelId", "ddlr_high_sound"));
+            boolean nativeMode = AlarmDelivery.nativeVibration(channelId);
             channelId = AlarmDelivery.notificationChannelFor(ctx, channelId);
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
-            ret.put("vibrationMode", AlarmDelivery.nativeVibration(channelId) ? "native" : "notification");
+            ret.put("vibrationMode", nativeMode ? "native" : "notification");
             ret.put("channelImportance", imp);
             if (Build.VERSION.SDK_INT >= 26 && nm != null && nm.getNotificationChannel(channelId) != null) {
                 ret.put("channelVibration", nm.getNotificationChannel(channelId).shouldVibrate());
@@ -331,6 +336,7 @@ public class DdlAlarmPlugin extends Plugin {
             o.put("body", call.getString("body", ""));
             o.put("channel", call.getString("channelId", "ddlr_high_sound"));
             o.put("vibrate", call.getBoolean("vibrate", true));
+            o.put("vibrateInSilent", call.getBoolean("vibrateInSilent", true));
             return o;
         } catch (Exception e) {
             return null;
@@ -362,6 +368,7 @@ public class DdlAlarmPlugin extends Plugin {
             ch = AlarmDelivery.channelFor(ch, in.optBoolean("vibrate", true));
             o.put("channel", ch);
             o.put("vibrate", in.optBoolean("vibrate", true));
+            o.put("vibrateInSilent", in.optBoolean("vibrateInSilent", true));
             return o;
         } catch (JSONException e) {
             return null;
@@ -377,7 +384,8 @@ public class DdlAlarmPlugin extends Plugin {
                 && a.optString("title", "").equals(b.optString("title", ""))
                 && a.optString("body", "").equals(b.optString("body", ""))
                 && a.optString("channel", "").equals(b.optString("channel", ""))
-                && a.optBoolean("vibrate", true) == b.optBoolean("vibrate", true);
+                && a.optBoolean("vibrate", true) == b.optBoolean("vibrate", true)
+                && a.optBoolean("vibrateInSilent", true) == b.optBoolean("vibrateInSilent", true);
     }
 
     private String normalizeChannelId(String id) {

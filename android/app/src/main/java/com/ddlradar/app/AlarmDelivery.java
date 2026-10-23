@@ -44,6 +44,8 @@ final class AlarmDelivery {
                     : intent.getStringExtra("channelId");
             boolean vibrate = item != null ? item.optBoolean("vibrate", true)
                     : intent.getBooleanExtra("vibrate", true);
+            boolean vibrateInSilent = item != null ? item.optBoolean("vibrateInSilent", true)
+                    : intent.getBooleanExtra("vibrateInSilent", true);
             if (title == null || title.isEmpty()) title = "DDL雷达";
             if (body == null) body = "";
             if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
@@ -51,25 +53,31 @@ final class AlarmDelivery {
                     + ";appVisible=" + MainActivity.visible);
             channelId = channelFor(channelId, vibrate);
             intent.putExtra("channelId", channelId);
+            intent.putExtra("vibrateInSilent", vibrateInSilent);
             boolean notified = post(context, id, title, body, channelId);
             String actualChannel = notificationChannelFor(context, channelId);
             boolean channelVibration = channelVibration(context, actualChannel);
             boolean notificationMayVibrate = channelVibration || soundMayBecomeVibration(context, actualChannel);
-            // Compatibility is an explicit user choice, persisted in the
-            // occurrence's channel. A disabled standard channel is not success
-            // and must not silently switch to a different vibration producer.
+            // Outside silent-ringer mode, compatibility remains an explicit
+            // choice encoded in the occurrence's channel. In silent mode the
+            // separate, persisted vibrateInSilent preference owns haptics.
             boolean nativeMode = nativeVibration(channelId);
-            boolean direct = vibrate && nativeMode && !(notified && notificationMayVibrate);
+            boolean silent = ringerSilent(context);
+            // System silent is distinct from the user's App-level silent switch.
+            // A quiet notification never owns haptics; the finite service does.
+            boolean direct = vibrate && (silent ? vibrateInSilent
+                    : nativeMode && !(notified && notificationMayVibrate));
             intent.putExtra("directVibration", direct);
-            String status = !vibrate ? "disabled" : direct ? "native_pending"
+            String status = !vibrate ? "disabled" : silent && !vibrateInSilent ? "blocked_preference" : direct ? "native_pending"
                     : !notified ? "blocked_notification" : !notificationMayVibrate ? "blocked_channel" : "notification_requested";
             vibrationStatus(context, status);
             context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
-                    .putString("lastVibrationChannel", actualChannel).apply();
+                    .putString("lastVibrationChannel", actualChannel).putString("lastVibrationUsage", "").apply();
             String stage = status.startsWith("blocked_") ? "vibration_blocked" : direct ? "vibration_pending"
                     : vibrate ? "vibration_requested" : "vibration_disabled";
             ReminderTrace.mark(context, id, stage, "status=" + status + ";channelVibration=" + channelVibration
-                    + ";route=" + (direct ? "native_service" : nativeMode ? "notification_user_override" : "notification_channel"));
+                    + ";vibrateInSilent=" + vibrateInSilent + ";route="
+                    + (direct ? "native_service" : nativeMode ? "notification_user_override" : "notification_channel"));
             context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
                     .putLong("lastExpectedAt", at)
                     .putLong("lastDelayMs", Math.max(0, System.currentTimeMillis() - at)).apply();
@@ -85,6 +93,15 @@ final class AlarmDelivery {
 
     static boolean nativeVibration(String channel) {
         return channel != null && channel.contains("_v5_native_");
+    }
+
+    static boolean ringerSilent(Context context) {
+        android.media.AudioManager audio = (android.media.AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        return audio != null && audio.getRingerMode() == android.media.AudioManager.RINGER_MODE_SILENT;
+    }
+
+    static boolean quietChannel(String channel) {
+        return channel != null && channel.matches("ddlr_(high|gentle)_v6_quiet");
     }
 
     private static boolean channelVibration(Context context, String channel) {
@@ -109,9 +126,15 @@ final class AlarmDelivery {
                 .putString("lastVibrationStatus", status).apply();
     }
 
-    /** Only an explicit compatibility choice or user-tapped self-check calls this. */
+    /** Finite native haptics for the selected route or a user-tapped self-check. */
     static JSObject requestNativeVibration(Context context, int id) {
+        return requestNativeVibration(context, id, true);
+    }
+
+    static JSObject requestNativeVibration(Context context, int id, boolean vibrateInSilent) {
         JSObject result = new JSObject().put("requested", false).put("hasVibrator", false);
+        context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                .putString("lastVibrationUsage", "").apply();
         try {
             Vibrator vibrator;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -129,26 +152,42 @@ final class AlarmDelivery {
             NotificationManager notifications = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             int filter = Build.VERSION.SDK_INT >= 23 && notifications != null
                     ? notifications.getCurrentInterruptionFilter() : NotificationManager.INTERRUPTION_FILTER_ALL;
-            if ((audio != null && audio.getRingerMode() == android.media.AudioManager.RINGER_MODE_SILENT)
-                    || filter == NotificationManager.INTERRUPTION_FILTER_NONE
-                    || filter == NotificationManager.INTERRUPTION_FILTER_ALARMS) {
-                String reason = audio != null && audio.getRingerMode() == android.media.AudioManager.RINGER_MODE_SILENT
-                        ? "ringer_silent" : "do_not_disturb";
-                result.put("suppressed", reason);
-                vibrationStatus(context, "blocked_policy");
-                ReminderTrace.mark(context, id, "vibration_blocked", "status=blocked_policy;reason=" + reason);
+            boolean silent = audio != null && audio.getRingerMode() == android.media.AudioManager.RINGER_MODE_SILENT;
+            if (silent && !vibrateInSilent) {
+                result.put("suppressed", "silent_vibration_disabled");
+                vibrationStatus(context, "blocked_preference");
+                ReminderTrace.mark(context, id, "vibration_blocked", "status=blocked_preference;reason=silent_vibration_disabled");
                 return result;
             }
+            // Never promote a notification past a DND filter. In priority mode
+            // normal notification haptics remain subject to the OS's policy.
+            if (filter == NotificationManager.INTERRUPTION_FILTER_NONE
+                    || filter == NotificationManager.INTERRUPTION_FILTER_ALARMS
+                    || (silent && filter != NotificationManager.INTERRUPTION_FILTER_ALL)) {
+                result.put("suppressed", "do_not_disturb");
+                vibrationStatus(context, "blocked_policy");
+                ReminderTrace.mark(context, id, "vibration_blocked", "status=blocked_policy;reason=do_not_disturb");
+                return result;
+            }
+            // This is a user's scheduled reminder, with an explicit silent
+            // haptic preference. ALARM is used for its waveform only: no audio,
+            // volume changes or bypass flags. NOTIFICATION would be discarded
+            // by stock Android's silent-ringer gate before reaching the motor.
+            int usage = silent ? AudioAttributes.USAGE_ALARM : AudioAttributes.USAGE_NOTIFICATION;
+            String usageName = silent ? "alarm" : "notification";
             long[] pattern = new long[]{0, 350, 150, 350, 150, 650};
             AudioAttributes attributes = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setUsage(usage)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1), attributes);
             else vibrator.vibrate(pattern, -1, attributes);
             result.put("requested", true);
+            result.put("usage", usageName);
+            context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                    .putString("lastVibrationUsage", usageName).apply();
             vibrationStatus(context, "native_requested");
-            ReminderTrace.mark(context, id, "direct_vibration_requested", "usage=notification;foregroundService="
+            ReminderTrace.mark(context, id, "direct_vibration_requested", "usage=" + usageName + ";foregroundService="
                     + AlarmService.isRunning() + ";appVisible=" + MainActivity.visible + ";hardwareConfirmed=false");
         } catch (Exception error) {
             result.put("error", error.toString());
@@ -160,13 +199,17 @@ final class AlarmDelivery {
 
     /** Called after the finite dispatch service entered foreground. */
     static void vibrateFallback(Context context, int id, boolean requested) {
+        vibrateFallback(context, id, requested, true);
+    }
+
+    static void vibrateFallback(Context context, int id, boolean requested, boolean vibrateInSilent) {
         if (!requested) return;
         if (!AlarmService.isRunning()) {
             vibrationStatus(context, "error");
             ReminderTrace.mark(context, id, "vibration_error", "dispatch_service_not_foreground");
             return;
         }
-        requestNativeVibration(context, id);
+        requestNativeVibration(context, id, vibrateInSilent);
     }
 
     /**
@@ -196,6 +239,7 @@ final class AlarmDelivery {
         String name = banner ? (sound ? "提醒 · 横幅+响铃" : "提醒 · 横幅静音")
                 : (sound ? "提醒 · 通知+响铃" : "提醒 · 静音通知");
         if (nativeVibration(id)) name = banner ? "原生兼容提醒 · 横幅" : "原生兼容提醒 · 通知";
+        else if (quietChannel(id)) name = banner ? "系统静音时 · 横幅" : "系统静音时 · 通知";
         else name += id.contains("_vib_") ? " · 震动" : " · 无震动";
         NotificationChannel channel = new NotificationChannel(id, name, importance);
         channel.setShowBadge(true);
@@ -227,6 +271,7 @@ final class AlarmDelivery {
     }
 
     static String normalizeChannelId(String id) {
+        if (quietChannel(id)) return id;
         if (id != null && id.matches("ddlr_(high|gentle)_v4_(vib|still)_(sound|silent)")) return id;
         if (id != null && id.matches("ddlr_(high|gentle)_v5_native_(sound|silent)")) return id;
         return channelFor(id, true);
@@ -271,8 +316,10 @@ final class AlarmDelivery {
     static String notificationChannelFor(Context context, String channelId) {
         // SystemUI heads-up windows cover application overlays. With a visible
         // custom banner, keep native vibration but omit the duplicate heads-up.
-        return channelId.startsWith("ddlr_high_") && ReminderBanner.allowed(context) && !screenOff(context)
+        String display = channelId.startsWith("ddlr_high_") && ReminderBanner.allowed(context) && !screenOff(context)
                 ? channelId.replace("ddlr_high_", "ddlr_gentle_") : channelId;
+        if (ringerSilent(context)) return "ddlr_" + (display.startsWith("ddlr_high_") ? "high" : "gentle") + "_v6_quiet";
+        return display;
     }
 
     private static PendingIntent activity(Context context, int id, String purpose, Intent intent) {
