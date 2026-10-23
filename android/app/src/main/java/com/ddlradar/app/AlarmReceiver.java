@@ -43,11 +43,13 @@ public class AlarmReceiver extends BroadcastReceiver {
             // 前台服务不再是投递链路的一环，只用来把悬浮横幅所在的进程留住。
             // 没有悬浮窗权限时横幅根本不会挂载，起服务纯属白耗电 + 多一条常驻通知。
             String channel = intent.getStringExtra("channelId");
-            boolean effects = intent.getBooleanExtra("vibrate", true)
+            boolean effects = intent.getBooleanExtra("directVibration", false)
                     || (channel != null && channel.endsWith("_sound"))
-                    || ReminderBanner.allowed(context);
+                    || (channel != null && channel.startsWith("ddlr_high_") && ReminderBanner.allowed(context));
             if (effects && !AlarmService.dispatch(context, intent)) {
-                ReminderSound.play(context, intent.getIntExtra("id", -1), channel);
+                // The system notification has already been submitted. Preserve
+                // the diagnostic if foreground fallback was denied by the OS.
+                ReminderTrace.mark(context, intent.getIntExtra("id", -1), "effects_unavailable", "foreground_service_denied");
             }
         }
     }

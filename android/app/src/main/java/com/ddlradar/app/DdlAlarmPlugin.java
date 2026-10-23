@@ -275,6 +275,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("androidRelease", Build.VERSION.RELEASE);
             ret.put("overlayAllowed", ReminderBanner.allowed(ctx));
             ret.put("trace", ReminderTrace.read(ctx));
+            ret.put("environment", AppEnvironment.read(ctx));
 
             // ── 诊断增强：检查当前提醒模式实际使用的通知通道 ──
             // 通道重要性一旦被用户调低（或旧版建成了 LOW），App 改不回来，
@@ -285,6 +286,9 @@ public class DdlAlarmPlugin extends Plugin {
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
             ret.put("channelImportance", imp);
+            if (Build.VERSION.SDK_INT >= 26 && nm != null && nm.getNotificationChannel(channelId) != null) {
+                ret.put("channelVibration", nm.getNotificationChannel(channelId).shouldVibrate());
+            }
             // 4 = IMPORTANCE_HIGH，只有 >=4 才会弹 heads-up 顶部横幅
             ret.put("headsUp", imp >= 4 && androidx.core.app.NotificationManagerCompat.from(ctx).areNotificationsEnabled());
             // 全屏 Intent 权限（Android 14+ 可被用户关闭，关闭后锁屏不亮屏）
@@ -349,7 +353,7 @@ public class DdlAlarmPlugin extends Plugin {
             o.put("body", in.optString("body", ""));
             String ch = in.optString("channel", "");
             if (ch.isEmpty()) ch = in.optString("channelId", "ddlr_high_sound");
-            ch = normalizeChannelId(ch);
+            ch = AlarmDelivery.channelFor(ch, in.optBoolean("vibrate", true));
             o.put("channel", ch);
             o.put("vibrate", in.optBoolean("vibrate", true));
             return o;

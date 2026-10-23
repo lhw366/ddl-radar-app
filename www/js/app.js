@@ -1096,13 +1096,13 @@ async function maybeAskOverlay() {
   try { last = parseInt(localStorage.getItem(stamp) || '0', 10) || 0; } catch (e) { /* ignore */ }
   if (Date.now() - last < 24 * 3600 * 1000) return;
   try { localStorage.setItem(stamp, String(Date.now())); } catch (e) { /* ignore */ }
-  toast('🔓 顶部横幅还差一步授权',
-    '系统未允许「显示在其他应用上层」，所以提醒只能发通知、不会从屏幕顶部弹出。到「我的 → 允许顶部悬浮横幅」开启即可', 'urgent');
+  toast('💬 自定义悬浮横幅未授权',
+    '系统通知和震动不依赖悬浮窗。若提示未知来源权限受限，请到设置里的「未知来源权限受限？」查看应用信息；系统顶部横幅由通知设置控制。', 'urgent');
 }
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1399,9 +1399,23 @@ async function renderDiag() {
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.overlayAllowed === true,
-    d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：没有它提醒不会从屏幕顶部弹出',
+    d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统通知横幅与震动仍可使用',
     d.overlayAllowed ? '' : 'overlay');
-  html += diagRow((d.channels || 0) >= 4, '提醒通道已创建（' + (d.channels || 0) + '/4）', d.channels >= 4 ? '' : 'reinit');
+  html += diagRow((d.channels || 0) >= 8, '提醒通道已创建（' + (d.channels || 0) + '/8）', d.channels >= 8 ? '' : 'reinit');
+  if (S.settings.vibrate !== false && d.channelVibration === false) {
+    html += diagRow(false, '当前系统通知通道的震动开关被关闭', 'channel');
+  }
+  const environment = d.environment || {};
+  if (typeof environment.debuggable === 'boolean') {
+    html += diagRow(!environment.debuggable, environment.debuggable ? '安装包为可调试构建' : '安装包为正式 Release 构建');
+  }
+  if (environment.signerSha256) html += diagRow(true, 'APK 已签名；证书指纹已包含在复制诊断中');
+  if ([3, 4].includes(environment.packageSource)) {
+    html += diagRow(null, '系统记录为本地/下载文件安装；若被限制权限，请打开应用信息确认受限设置', 'appinfo');
+  }
+  if (environment.backgroundRestricted === true) {
+    html += diagRow(false, '系统报告此应用后台运行受限；当前仅记录状态，不自动更改省电设置', 'appinfo');
+  }
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
     '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
@@ -1463,7 +1477,8 @@ async function renderDiag() {
   html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不需要关闭电池优化。异常时请复制诊断。');
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
-    delivery: '开始执行提醒', vibration_requested: '已请求震动', notification: '已提交系统通知',
+    delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
+    direct_vibration_requested: '前台派发服务已请求震动', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
@@ -1515,6 +1530,13 @@ async function renderDiag() {
 }
 
 function bindSettings() {
+  const restricted = $('restrictedSettingsBtn');
+  if (restricted) restricted.addEventListener('click', async () => {
+    try {
+      await Capacitor.Plugins.DdlNotify.openAppDetails();
+      toast('查看应用信息页的菜单', '若有「允许受限设置」，请阅读系统说明后自行确认，再返回授权悬浮窗；应用不能代你解除限制。');
+    } catch (e) { toast('请打开系统应用信息', '系统设置 → 应用 → DDL雷达，查看受限设置。'); }
+  });
   const reminderToggle = (id, key) => $(id).addEventListener('change', () => {
     if (S.settings.remindSilent) return;
     S.settings[key] = $(id).checked;

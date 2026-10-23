@@ -45,9 +45,15 @@ final class AlarmDelivery {
             if (body == null) body = "";
             if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
             ReminderTrace.mark(context, id, "delivery", "lateMs=" + (System.currentTimeMillis() - at));
-            vibrateForMode(context, channelId, vibrate);
-            ReminderTrace.mark(context, id, "vibration_requested", "enabled=" + vibrate);
-            post(context, id, title, body, channelId);
+            channelId = channelFor(channelId, vibrate);
+            intent.putExtra("channelId", channelId);
+            boolean notified = post(context, id, title, body, channelId);
+            // NotificationManager owns vibration while the application is in
+            // the background. Never duplicate it with a direct Vibrator call.
+            boolean direct = vibrate && !notified;
+            intent.putExtra("directVibration", direct);
+            ReminderTrace.mark(context, id, "vibration_requested",
+                    "enabled=" + vibrate + ";route=" + (direct ? "foreground_fallback" : "notification_channel"));
             context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
                     .putLong("lastExpectedAt", at)
                     .putLong("lastDelayMs", Math.max(0, System.currentTimeMillis() - at)).apply();
@@ -61,12 +67,8 @@ final class AlarmDelivery {
         }
     }
 
-    /**
-     * Vibration is executed by the receiver itself. Notification-channel
-     * vibration is user-editable and several ColorOS builds silently ignore
-     * the channel pattern while allowing direct vibration from an exact alarm.
-     */
-    private static void vibrateForMode(Context context, String channelId, boolean requested) {
+    /** Last-resort vibration after the dispatch service entered foreground. */
+    static void vibrateFallback(Context context, int id, boolean requested) {
         if (!requested) return;
         try {
             Vibrator vibrator;
@@ -76,7 +78,9 @@ final class AlarmDelivery {
             } else {
                 vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             }
-            if (vibrator == null || !vibrator.hasVibrator()) return;
+            if (vibrator == null || !vibrator.hasVibrator()) {
+                ReminderTrace.mark(context, id, "vibration_unavailable", "hasVibrator=false"); return;
+            }
             long[] pattern = new long[]{0, 350, 150, 350, 150, 650};
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
@@ -86,8 +90,10 @@ final class AlarmDelivery {
             } else {
                 vibrator.vibrate(pattern, -1, attributes);
             }
+            ReminderTrace.mark(context, id, "direct_vibration_requested", "usage=alarm;after_foreground_start");
         } catch (Exception error) {
             Log.w("DdlAlarm", "Reminder vibration unavailable", error);
+            ReminderTrace.mark(context, id, "vibration_error", error.toString());
         }
     }
 
@@ -117,12 +123,14 @@ final class AlarmDelivery {
         int importance = banner ? NotificationManager.IMPORTANCE_HIGH : NotificationManager.IMPORTANCE_DEFAULT;
         String name = banner ? (sound ? "提醒 · 横幅+响铃" : "提醒 · 横幅静音")
                 : (sound ? "提醒 · 通知+响铃" : "提醒 · 静音通知");
+        name += id.contains("_vib_") ? " · 震动" : " · 无震动";
         NotificationChannel channel = new NotificationChannel(id, name, importance);
         channel.setShowBadge(true);
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        // Vibration is executed by AlarmReceiver so it remains independent
-        // from the sound and banner channel settings.
-        channel.enableVibration(false);
+        // Immutable channels encode the independent vibration switch.
+        boolean vibration = id.contains("_vib_");
+        channel.enableVibration(vibration);
+        if (vibration) channel.setVibrationPattern(new long[]{0, 350, 150, 350, 150, 650});
         // Some ROMs suppress heads-up for channels with neither sound nor
         // channel vibration. A silent PCM cue keeps banner-only reminders
         // alerting without adding audible sound or changing direct vibration.
@@ -135,16 +143,17 @@ final class AlarmDelivery {
         return id;
     }
 
+    static String channelFor(String id, boolean vibrate) {
+        String base = id == null ? "ddlr_high_sound" : id;
+        boolean banner = base.startsWith("ddlr_high_") || "ddlr_vib".equals(base);
+        boolean sound = !base.endsWith("_silent") && !"ddlr_vib".equals(base);
+        return "ddlr_" + (banner ? "high" : "gentle") + "_v4_"
+                + (vibrate ? "vib_" : "still_") + (sound ? "sound" : "silent");
+    }
+
     static String normalizeChannelId(String id) {
-        if (id != null) id = id.replace("_v2_", "_v3_");
-        if (id != null && (id.equals("ddlr_high_v3_sound") || id.equals("ddlr_high_v3_silent")
-                || id.equals("ddlr_gentle_v3_sound") || id.equals("ddlr_gentle_v3_silent"))) return id;
-        if (id != null && (id.equals("ddlr_high_sound") || id.equals("ddlr_high_silent")
-                || id.equals("ddlr_gentle_sound") || id.equals("ddlr_gentle_silent"))) {
-            return id.replace("_sound", "_v3_sound").replace("_silent", "_v3_silent");
-        }
-        if ("ddlr_vib".equals(id)) return "ddlr_high_v3_silent";
-        return "ddlr_high_v3_sound";
+        if (id != null && id.matches("ddlr_(high|gentle)_v4_(vib|still)_(sound|silent)")) return id;
+        return channelFor(id, true);
     }
 
     static int notificationId(int id) {
@@ -167,22 +176,21 @@ final class AlarmDelivery {
         return new Notification.Action.Builder(R.drawable.ic_stat_ddlr, title, intent).build();
     }
 
-    private static void post(Context context, int id, String title, String body, String channelId) {
+    private static boolean post(Context context, int id, String title, String body, String channelId) {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) throw new IllegalStateException("Notification manager unavailable");
         channelId = ensureChannel(context, manager, channelId);
         boolean allowed = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
                 && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                 || manager.getNotificationChannel(channelId).getImportance() != NotificationManager.IMPORTANCE_NONE);
-        context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
-                .putBoolean("lastNotificationAllowed", allowed).apply();
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = new Notification.Builder(context, channelId);
         } else {
             builder = new Notification.Builder(context);
             int defaults = channelId.endsWith("_sound") ? Notification.DEFAULT_SOUND : 0;
-            builder.setDefaults(defaults);
+            builder.setDefaults(0);
+            if (channelId.contains("_vib_")) builder.setVibrate(new long[]{0, 350, 150, 350, 150, 650});
         }
         // A finite native service cue owns audible sound; channels never double it.
         builder.setSmallIcon(R.drawable.ic_stat_ddlr)
@@ -230,12 +238,16 @@ final class AlarmDelivery {
         try { manager.notify(notificationId(id), builder.build()); }
         catch (SecurityException error) {
             // Notification permission and overlay permission are independent.
+            allowed = false;
             Log.w("DdlAlarm", "System notification blocked", error);
         }
-        ReminderTrace.mark(context, id, "notification", "allowed=" + allowed + ";channel=" + channelId);
+        context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                .putBoolean("lastNotificationAllowed", allowed).apply();
+        ReminderTrace.mark(context, id, "notification", "allowed=" + allowed + ";channel=" + channelId + ";vibration=" + (Build.VERSION.SDK_INT < 26 ? channelId.contains("_vib_") : manager.getNotificationChannel(channelId).shouldVibrate()));
         if (channelId.startsWith("ddlr_high_")) {
             ReminderBanner.show(context, notificationId(id), title, body, autoDismiss);
         }
+        return allowed;
     }
 
 }

@@ -26,6 +26,7 @@ def capture(prefix):
         'events': ['logcat', '-d', '-b', 'events', '-v', 'descriptive', '-t', '2000'],
         'alarm': ['shell', 'dumpsys', 'alarm'],
         'services': ['shell', 'dumpsys', 'activity', 'services', PKG],
+        'vibrations': ['shell', 'dumpsys', 'vibrator_manager'],
         'windows': ['shell', 'dumpsys', 'window', 'windows'],
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
@@ -155,10 +156,14 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 4)
+    instrument('ReminderRuntimeTest', 5)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
     (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
+    adb('shell', 'appops', 'set', PKG, 'SYSTEM_ALERT_WINDOW', 'deny')
+    adb('shell', 'pm', 'revoke', PKG, 'android.permission.POST_NOTIFICATIONS')
+    instrument('NotificationDeniedTest', 1)
+    capture('notification-denied')
 
     print('PASS: desktop banner layout, manual dismissal, 5-second expiry, cold process + Doze delivery')
 finally:

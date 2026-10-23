@@ -46,7 +46,7 @@ test('reminder controls are checked independently and silent disables the three 
   assert.equal(h.run('reminderOutputsEnabled()'), false);
 });
 
-test('native channel combines only banner and sound; vibration remains a separate flag', () => {
+test('native channel encodes independent banner, sound and vibration choices', () => {
   const h = harness(['nativenotify.js']);
   const channel = h.run(`NativeNotify.channelIdFor({
     sound: true,
@@ -54,7 +54,7 @@ test('native channel combines only banner and sound; vibration remains a separat
     banner: false,
     remindSilent: false
   })`);
-  assert.equal(channel, 'ddlr_gentle_v3_sound');
+  assert.equal(channel, 'ddlr_gentle_v4_still_sound');
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:false,vibrate:true,banner:false,remindSilent:false})'), true);
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:true,vibrate:true,banner:true,remindSilent:true})'), false);
 });
@@ -81,7 +81,7 @@ test('five-second reminder uses the same reconciliation as real events', async (
   const ok = await h.context.NativeNotify.test();
   assert.equal(ok, true);
   assert.equal(scheduled.at - h.context.Date.now(), 5000);
-  assert.equal(scheduled.channelId, 'ddlr_gentle_v3_silent');
+  assert.equal(scheduled.channelId, 'ddlr_gentle_v4_vib_silent');
   assert.equal(scheduled.vibrate, true);
 });
 
@@ -121,7 +121,7 @@ test('silent clears native alarms and vibration-only schedules a silent channel 
   h.context.S.settings = { sound: false, vibrate: true, banner: false, remindSilent: false };
   h.context.NativeNotify._sig = null;
   await h.context.NativeNotify.sync(h.context.S);
-  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v3_silent');
+  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v4_vib_silent');
   assert.equal(applied[1].alarms[0].vibrate, true);
 });
 
@@ -167,4 +167,19 @@ test('banner-only reminders use the migrated high importance silent channel', as
   assert.equal(definition.importance, 4);
   assert.equal(definition.vibration, false);
   assert.equal(definition.sound, 'ddlr_silence.wav');
+});
+
+test('all eight output combinations have separate immutable channel vibration settings', async()=>{
+  const created=[];
+  const h=harness(['nativenotify.js'],{globals:{Capacitor:{Plugins:{DdlNotify:{ensureChannel:async d=>created.push(d)}}}}});
+  await h.context.NativeNotify.ensureChannels();
+  assert.equal(created.length,8);
+  for(const banner of [false,true]) for(const sound of [false,true]) for(const vibrate of [false,true]) {
+    const id=h.context.NativeNotify.channelIdFor({banner,sound,vibrate});
+    const channel=created.find(c=>c.id===id);
+    assert.ok(channel);
+    assert.equal(channel.vibration,vibrate);
+    assert.equal(channel.importance,banner?4:3);
+    assert.equal(id.endsWith('_sound'),sound);
+  }
 });

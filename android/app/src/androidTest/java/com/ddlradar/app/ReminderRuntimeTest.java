@@ -93,7 +93,9 @@ public class ReminderRuntimeTest {
         }
     }
 
-    @Test public void realSavedGradientAndDeadlineDeliverFromBackgroundWithFiniteSound() throws Exception {
+    @Test public void realSavedGradientAndDeadlineDeliverWithoutOverlayPermission() throws Exception {
+        shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
+        assertFalse(ReminderBanner.allowed(ctx));
         shell("cmd notification set_dnd off");
         shell("media volume --stream 5 --set 5");
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
@@ -122,12 +124,15 @@ public class ReminderRuntimeTest {
         shell("input keyevent KEYCODE_HOME");
         awaitStage(tier.getInt("id"), "sound_started", 25000);
         awaitStage(tier.getInt("id"), "sound_completed", 6000);
-        awaitStage(tier.getInt("id"), "overlay_visible", 3000);
+        assertSystemVibrationChannel(tier.getInt("id"));
+        assertEquals("No overlay permission is required for system delivery", 0, visibleCards());
+        assertFalse(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
         awaitStage(due.getInt("id"), "sound_started", 315000);
         awaitStage(due.getInt("id"), "sound_completed", 6000);
+        assertSystemVibrationChannel(due.getInt("id"));
         for (JSONObject item : new JSONObject[]{tier, due}) {
             long delay = 0;
             int count = 0;
@@ -146,6 +151,32 @@ public class ReminderRuntimeTest {
         assertFalse(AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
     }
+
+    private void assertSystemVibrationChannel(int id) {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+            if (active.getId() == AlarmDelivery.notificationId(id)) {
+                android.app.NotificationChannel channel = manager.getNotificationChannel(active.getNotification().getChannelId());
+                assertNotNull(channel);
+                assertTrue("System notification must own background vibration", channel.shouldVibrate());
+                assertArrayEquals(new long[]{0, 350, 150, 350, 150, 650}, channel.getVibrationPattern());
+                return;
+            }
+        }
+        fail("Real system notification missing for " + id);
+    }
+
+    @Test public void vibrationOffUsesSeparateSilentSystemChannel() {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        String vibrate = AlarmDelivery.channelFor("ddlr_high_v3_silent", true);
+        String still = AlarmDelivery.channelFor("ddlr_high_v3_silent", false);
+        assertNotEquals(vibrate, still);
+        AlarmDelivery.ensureChannel(ctx, manager, vibrate);
+        AlarmDelivery.ensureChannel(ctx, manager, still);
+        assertTrue(manager.getNotificationChannel(vibrate).shouldVibrate());
+        assertFalse(manager.getNotificationChannel(still).shouldVibrate());
+    }
+
 
     private String js(MainActivity activity, String script) throws Exception {
         CountDownLatch completed = new CountDownLatch(1);
