@@ -2,7 +2,7 @@ name: Check, build and release Android
 
 on:
   push:
-    branches: ['**']
+    branches: [main, master]
     paths-ignore: ['docs/**', '**.md']
   pull_request:
   workflow_dispatch:

@@ -16,6 +16,20 @@ function nativeHarness(apply, extra = {}, alarm = {}) {
   return h;
 }
 
+test('backgrounding removes page intervals and resuming creates only one replacement', async()=>{
+  let started=0,stopped=0;
+  const h=harness(['app.js'],{globals:{setInterval:()=>++started,clearInterval:()=>stopped++}});
+  h.run('foregroundInterval(()=>{},1000)');
+  assert.equal(started,1);
+  h.document.hidden=true;
+  await h.document.dispatch('visibilitychange');
+  assert.equal(stopped,1);
+  h.document.hidden=false;
+  await h.document.dispatch('visibilitychange');
+  await h.document.dispatch('visibilitychange');
+  assert.equal(started,2);
+});
+
 test('all four normal tiers, custom reminder and deadline have exact times and stable distinct ids', async () => {
   let alarms;
   const h = nativeHarness(async p => { alarms = p.alarms; });

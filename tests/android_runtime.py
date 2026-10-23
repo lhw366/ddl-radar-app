@@ -155,7 +155,7 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 3)
+    instrument('ReminderRuntimeTest', 4)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
     (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')

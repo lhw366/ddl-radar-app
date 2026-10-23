@@ -261,6 +261,18 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------------- 秒级倒计时 ---------------- */
+function foregroundInterval(callback, delay) {
+  let timer = null;
+  const update = () => {
+    if (document.hidden) {
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    } else if (timer === null) timer = setInterval(callback, delay);
+  };
+  document.addEventListener('visibilitychange', update);
+  update();
+}
+
 function tickCountdown() {
   const now = Date.now();
   // 英雄卡大数字每秒跳动（永远精确到秒）
@@ -1271,7 +1283,7 @@ function bindUpdater() {
     setBusy();
     // 监听器失败或 WebView 重建也能从原生状态恢复，避免永久停在“下载中”。
     if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = nativeBusy ? setTimeout(recoverState, 1500) : null;
+    pollTimer = nativeBusy && !document.hidden ? setTimeout(recoverState, 1500) : null;
   };
   async function recoverState() {
     if (!plugin || !plugin.getUpdateState) return;
@@ -1790,25 +1802,24 @@ function init() {
   // 每次唤醒仍要跑完 tickCountdown（遍历所有 DOM）和 tickReminders
   // （遍历所有任务 × 所有提醒点，含 400 天 daily）。这是待机耗电的主要来源。
   // 现在：隐藏时直接跳过重活，只保留最小限度的提醒补弹。
-  let tickCount = 0;
-  setInterval(() => {
+  foregroundInterval(() => {
     if (document.hidden) return;   // 后台不跑倒计时（看不见，纯浪费）
     tickCountdown();
   }, 1000);
-  setInterval(() => {
+  foregroundInterval(() => {
     // 提醒补弹：前台 2s 一次；后台降到 ~10s（靠计数跳过，不新增定时器）
     if (document.hidden) return;
     tickReminders();
   }, 2000);
-  setInterval(() => {
+  foregroundInterval(() => {
     if (document.hidden) return;   // 后台不重绘
     renderTop();
     if (curView === 'home') renderHome();
   }, 30000);
-  setInterval(idleNudge, 60000);
+  foregroundInterval(idleNudge, 60000);
   if (window.NativeNotify && NativeNotify.available()) {
     // 兜底重排：只在前台做。后台靠原生闹钟，不需要 JS 参与。
-    setInterval(() => { if (!document.hidden && window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} } }, 60000);
+    foregroundInterval(() => { if (!document.hidden && window.NativeNotify) { try { NativeNotify.sync(S).catch(function(){}); } catch (e) {} } }, 60000);
   }
 }
 document.addEventListener('DOMContentLoaded', init);

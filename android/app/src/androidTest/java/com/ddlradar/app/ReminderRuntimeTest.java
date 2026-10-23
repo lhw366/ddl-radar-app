@@ -156,6 +156,31 @@ public class ReminderRuntimeTest {
         return output.get();
     }
 
+    @Test public void nativeRecurringOccurrencesAdvanceAndStopAtTheirBoundary() throws Exception {
+        for (int days : new int[]{1, 7, 14}) {
+            int id = 12000 + days;
+            long at = System.currentTimeMillis() + 60000;
+            java.util.Calendar calendar = java.util.Calendar.getInstance();
+            calendar.setTimeInMillis(at);
+            calendar.add(java.util.Calendar.DAY_OF_YEAR, days);
+            long nextAt = calendar.getTimeInMillis();
+            JSONObject item = new JSONObject().put("id", id).put("at", at)
+                    .put("title", "周期测试").put("body", "边界验证")
+                    .put("channel", "ddlr_gentle_v3_silent").put("vibrate", false)
+                    .put("repeatDays", days).put("repeatUntil", nextAt)
+                    .put("scheduled", true).put("v", AlarmScheduler.SCHED_VER);
+            try {
+                AlarmScheduler.save(ctx, new JSONArray().put(item));
+                AlarmScheduler.recordDelivered(ctx, id, at);
+                AlarmScheduler.completeOccurrence(ctx, item);
+                JSONObject next = AlarmScheduler.load(ctx).getJSONObject(0);
+                assertEquals(nextAt, next.getLong("at"));
+                assertTrue("Next occurrence must be registered with Android", next.getBoolean("scheduled"));
+                assertNull("No occurrence beyond the boundary", AlarmScheduler.nextOccurrence(next, nextAt));
+            } finally { AlarmScheduler.cancel(ctx, id); AlarmScheduler.save(ctx, new JSONArray()); }
+        }
+    }
+
     private int visibleCards() {
         AtomicInteger count = new AtomicInteger();
         instrumentation.runOnMainSync(() -> count.set(ReminderBanner.visibleCount()));
