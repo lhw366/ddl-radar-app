@@ -227,7 +227,7 @@ test('all eight standard output combinations retain their immutable channel vibr
   const created=[];
   const h=harness(['nativenotify.js'],{globals:{Capacitor:{Plugins:{DdlNotify:{ensureChannel:async d=>created.push(d)}}}}});
   await h.context.NativeNotify.ensureChannels();
-  assert.equal(created.length,12);
+  assert.equal(created.length,14);
   for(const banner of [false,true]) for(const sound of [false,true]) for(const vibrate of [false,true]) {
     const id=h.context.NativeNotify.channelIdFor({banner,sound,vibrate});
     const channel=created.find(c=>c.id===id);

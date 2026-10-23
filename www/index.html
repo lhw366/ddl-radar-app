@@ -246,9 +246,14 @@
         <div class="set-line"><label for="setVibrationMode">APK 震动来源</label>
           <select id="setVibrationMode"><option value="notification">跟随系统通知</option><option value="native">原生震动（兼容模式）</option></select>
         </div>
+        <div class="set-line">
+          <div>手机静音时震动</div>
+          <label class="switch"><input type="checkbox" id="setVibrateInSilent" checked><i></i></label>
+        </div>
+        <div class="tip">默认只震动不响铃；关闭后手机静音时不震动。应用的“静默”会关闭全部提醒。勿扰设置仍生效。</div>
         <button id="enableNativeVibrationBtn" class="btn full">📳 启用原生兼容震动并自检</button>
         <button id="vibrationNowBtn" class="btn full">📳 立即自检原生震动</button>
-        <div class="tip">系统通知震动无效时，可主动选择兼容模式。兼容模式只在提醒到点时运行短时服务，不更改电池优化设置，仍遵循系统静音、勿扰与震动设置。自检提示仅表示请求结果，请以手机实际触感为准。</div>
+        <div class="tip">系统通知震动无效时，可主动选择兼容模式。手机静音时绝不响铃，是否震动由上方开关决定，两种震动来源均生效。原生震动只在到点时使用短时服务，不更改电池优化设置，仍遵循系统勿扰与震动设置。自检提示仅表示请求结果，请以手机实际触感为准。</div>
         <div class="set-line" style="margin-top:10px">
           <div>远期 DDL 每日提醒时间</div>
           <input type="time" id="setDailyTime" value="12:00">
@@ -418,5 +423,7 @@
 <script src="js/nativenotify.js"></script>
 <script src="js/timetable.js"></script>
 <script src="js/app.js"></script>
+<script src="js/gestures.js"></script>
+<script src="js/readability.js"></script>
 </body>
 </html>

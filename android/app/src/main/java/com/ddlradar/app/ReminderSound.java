@@ -14,6 +14,15 @@ final class ReminderSound {
     private static final Handler handler = new Handler(Looper.getMainLooper());
     private static final Runnable timeout = () -> stop();
 
+    static boolean canPlay(Context context, String channel) {
+        if (channel == null || !channel.endsWith("_sound")) return false;
+        AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        return audio != null && audio.getRingerMode() == AudioManager.RINGER_MODE_NORMAL
+                && audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) > 0
+                && (manager == null || manager.getCurrentInterruptionFilter() == NotificationManager.INTERRUPTION_FILTER_ALL);
+    }
+
     static void play(Context context, int id, String channel) {
         if (channel == null || !channel.endsWith("_sound")) return;
         handler.post(() -> {
@@ -25,7 +34,11 @@ final class ReminderSound {
                     || audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) == 0
                     || (notifications != null && notifications.getCurrentInterruptionFilter()
                         != NotificationManager.INTERRUPTION_FILTER_ALL)) {
-                ReminderTrace.mark(context, id, "sound_suppressed", "silent_volume_or_dnd");
+                String reason = audio == null ? "audio_unavailable"
+                        : audio.getRingerMode() == AudioManager.RINGER_MODE_SILENT ? "ringer_silent"
+                        : audio.getRingerMode() == AudioManager.RINGER_MODE_VIBRATE ? "ringer_vibrate"
+                        : audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) == 0 ? "notification_volume_zero" : "do_not_disturb";
+                ReminderTrace.mark(context, id, "sound_suppressed", "reason=" + reason);
                 return;
             }
             try {

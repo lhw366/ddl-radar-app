@@ -23,6 +23,7 @@
       ['sound','silent'].forEach(function(sound) {CHANNELS.push('ddlr_'+level+'_v4_'+vibration+'_'+sound);});
     });
     ['sound','silent'].forEach(function(sound) {CHANNELS.push('ddlr_'+level+'_v5_native_'+sound);});
+    CHANNELS.push('ddlr_'+level+'_v6_quiet');
   });
 
   function settingEnabled(settings, key) {
@@ -48,6 +49,10 @@
 
   function vibrationModeFor(settings) {
     return settings && settings.vibrationMode === 'native' ? 'native' : 'notification';
+  }
+
+  function quietChannel(result) {
+    return !!(result && typeof result.channelId === 'string' && result.channelId.indexOf('_v6_quiet') >= 0);
   }
 
   var N = {
@@ -140,9 +145,12 @@
       var defs = CHANNELS.map(function(id) {
         var banner=id.indexOf('ddlr_high_')===0, vibrate=id.indexOf('_vib_')>=0;
         var nativeVibration=id.indexOf('_v5_native_')>=0;
-        return {id:id, name:'提醒 · '+(banner?'横幅':'通知')+(nativeVibration?' · 原生兼容震动':(vibrate?' · 震动':' · 无震动'))
+        var quiet=id.indexOf('_v6_quiet')>=0;
+        return {id:id, name:quiet?'提醒 · 系统静音'+(banner?'横幅':'通知'):
+          '提醒 · '+(banner?'横幅':'通知')+(nativeVibration?' · 原生兼容震动':(vibrate?' · 震动':' · 无震动'))
           +(id.endsWith('_sound')?' · 响铃':' · 静音'),importance:banner?4:3,vibration:vibrate,
-          sound:!nativeVibration && (banner||id.endsWith('_sound'))?'ddlr_silence.wav':''};
+          sound:quiet?(banner?'android.resource://com.ddlradar.app/raw/ddlr_silence':''):
+            !nativeVibration && (banner||id.endsWith('_sound'))?'ddlr_silence.wav':''};
       });
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
       // 注意：原生侧复用已存在通道，用户手动调整过的
@@ -196,7 +204,8 @@
         var settings = (window.S && window.S.settings) || {};
         var channelId = channelIdFor(settings);
         var mode = vibrationModeFor(settings);
-        var p = await DDL().pending({ channelId: channelId, vibrationMode: mode });
+        var p = await DDL().pending({ channelId: channelId, vibrationMode: mode,
+          vibrateInSilent: settings.vibrateInSilent !== false });
         out.pending = (p.items || []).length;
         out.queued = p.queued || 0;
         out.channelId = outputsEnabled(settings) ? (p.channelId || channelId) : null;
@@ -221,6 +230,8 @@
         out.vibrationStatus = p.vibrationStatus;
         out.lastVibrationStatus = p.lastVibrationStatus;
         out.lastVibrationChannel = p.lastVibrationChannel;
+        out.lastVibrationUsage = p.lastVibrationUsage || '';
+        out.vibrateInSilent = typeof p.vibrateInSilent === 'boolean' ? p.vibrateInSilent : settings.vibrateInSilent !== false;
         out.device = p.device || '';
         out.appVersion = p.appVersion;
         out.appBuild = p.appBuild;
@@ -271,7 +282,8 @@
         // 回读验证：这条闹钟确实在原生存储里
         var ok = false, readback = null;
         try {
-          var p = await ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings) });
+          var p = await ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings),
+            vibrateInSilent: settings.vibrateInSilent !== false });
           readback = p;
           ok = (p.items || []).some(function (i) { return i.id === 990000001; });
         } catch (e) { throw new Error('无法确认系统闹钟，请重试'); }
@@ -279,10 +291,13 @@
           if (window.toast) {
             var head = '✅ 已排定，' + seconds + ' 秒后触发系统闹钟';
             var detail = '请退到桌面验收；闹钟送达与手机实际响铃、震动需分别确认。';
-            if (!granted) detail += vibrationModeFor(settings) === 'native'
+            if (!granted) detail += quietChannel(readback) && settings.vibrateInSilent !== false
+              ? '系统通知权限尚未开启，静音时震动仍按你选择的偏好尝试。'
+              : vibrationModeFor(settings) === 'native'
               ? '系统通知权限尚未开启，原生兼容震动将独立尝试。'
               : '系统通知权限未开启，系统通知与通知通道震动不可用。';
-            if (settingEnabled(settings, 'vibrate') && vibrationModeFor(settings) === 'notification' && readback.channelVibration === false) {
+            if (settingEnabled(settings, 'vibrate') && vibrationModeFor(settings) === 'notification'
+                && readback.channelVibration === false && !quietChannel(readback)) {
               detail += '当前系统提醒通道的震动已关闭，请打开「运行诊断」修复。';
             }
             window.toast(head, detail, 'urgent');
@@ -290,14 +305,21 @@
           // +8s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
           setTimeout(function () {
             if (document.hidden) return; // 退到后台的验证场景以实际通知为准
-            ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings) }).then(function (p) {
+            ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings),
+              vibrateInSilent: settings.vibrateInSilent !== false }).then(function (p) {
               var gone = !(p.items || []).some(function (i) { return i.id === 990000001; });
               var fired = p.lastFireId === 990000001 && p.lastFireAt >= at - 2000;
               if (fired && gone && window.toast) {
                 var viaTxt = p.lastFireVia === 'exact' ? '经精确闹钟备份' : '经系统闹钟';
                 var detail = '提醒已到达原生接收器；请以手机实际声音、震动和横幅为准。';
                 if (settingEnabled(settings, 'vibrate')) {
-                  if (vibrationModeFor(settings) === 'native') {
+                  if (p.lastVibrationStatus === 'blocked_preference' || p.vibrationStatus === 'blocked_preference') {
+                    detail = '你已关闭“系统静音时震动”，此次按偏好保持静默；闹钟已送达。';
+                  } else if (p.lastVibrationStatus === 'blocked_policy' || p.vibrationStatus === 'blocked_policy') {
+                    detail = '此次震动被系统策略阻止；闹钟已送达，请查看运行诊断。';
+                  } else if (quietChannel(p)) {
+                    detail = '当前使用系统静音时的纯触觉路径；调用记录不能证明硬件已震动，请以实际触感为准。';
+                  } else if (vibrationModeFor(settings) === 'native') {
                     detail = '当前使用原生兼容震动；调用记录不能证明硬件已震动，请以实际触感为准。';
                   } else if (p.channelVibration === false) {
                     detail = '系统已关闭当前提醒通道的震动，请打开「运行诊断」修复。闹钟送达不代表手机已震动。';
@@ -350,6 +372,7 @@
       var enabled = outputsEnabled(settings);
       var channelId = channelIdFor(settings);
       var vibrate = settingEnabled(settings, 'vibrate');
+      var vibrateInSilent = settings.vibrateInSilent !== false;
       // 签名必须覆盖所有会影响 planReminders() 输出的因素：
       // · 日期/时刻档 —— planReminders 结果随时间推移变化（每日提醒按天生成），
       //   签名若不含时间，跨天不会重排，7 天窗口用完后提醒体系直接归零。
@@ -360,7 +383,7 @@
       var slot10 = Math.floor(nowMs / 600000); // 10 分钟一档
       var tiered = (S.settings && S.settings.tiered) ? 1 : 0;
       var dailyTime = (S.settings && S.settings.dailyTime) || '';
-      var sig = JSON.stringify([enabled, channelId, vibrate, settings.bannerDuration,
+      var sig = JSON.stringify([enabled, channelId, vibrate, vibrateInSilent, settings.bannerDuration,
         tiered, dailyTime, dayKey, slot10, localStorage.getItem('ddlr_testAt'), S.tasks, S.timetable || null]);
       if (this._sig === sig) return true;
       // ⚠️ 注意：这里**不能**先给 _sig 赋值。
@@ -399,7 +422,8 @@
                 repeatDays: r.repeatDays || 0,
                 repeatUntil: r.repeatUntil || 0,
                 channelId: channelId,
-                vibrate: vibrate
+                vibrate: vibrate,
+                vibrateInSilent: vibrateInSilent
               });
             }
           }
@@ -428,7 +452,8 @@
                     repeatDays: cr.repeatDays || 0,
                     repeatUntil: cr.repeatUntil || 0,
                     channelId: channelId,
-                    vibrate: vibrate
+                    vibrate: vibrate,
+                    vibrateInSilent: vibrateInSilent
                   });
                 }
               }
@@ -448,7 +473,8 @@
                 title: '🧪 测试提醒',
                 body: '与正常事件使用同一派发机制，请在桌面或锁屏验收',
                 channelId: channelId,
-                vibrate: vibrate
+                vibrate: vibrate,
+                vibrateInSilent: vibrateInSilent
               });
               alarms.sort(function (a, b) { return a.at - b.at; });
             }

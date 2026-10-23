@@ -26,6 +26,7 @@ import static org.junit.Assert.*;
 public class ReminderRuntimeTest {
     private Context ctx;
     private Instrumentation instrumentation;
+    private RuntimeDevicePolicy devicePolicy;
 
     @Before public void prepare() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
@@ -48,6 +49,7 @@ public class ReminderRuntimeTest {
         AlarmScheduler.save(ctx, new JSONArray());
         ctx.stopService(new Intent(ctx, AlarmService.class));
         instrumentation.waitForIdleSync();
+        if (devicePolicy != null) devicePolicy.close();
     }
 
     @Test public void homeScreenAlarmStartsServiceAndDrawsNonzeroManualBanner() throws Exception {
@@ -100,8 +102,8 @@ public class ReminderRuntimeTest {
     @Test public void realSavedGradientAndDeadlineDeliverWithoutOverlayPermission() throws Exception {
         shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
         assertFalse(ReminderBanner.allowed(ctx));
-        shell("cmd notification set_dnd off");
-        shell("media volume --stream 5 --set 5");
+        devicePolicy = new RuntimeDevicePolicy(ctx, instrumentation);
+        devicePolicy.silentWithAllInterruptions();
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         long ready = System.currentTimeMillis() + 30000;
@@ -115,7 +117,7 @@ public class ReminderRuntimeTest {
                 + "dueAt:Date.now()+315000,tiers:{120:false,60:false,30:false,5:true},custom:[],"
                 + "daily:false,done:false,quadrant:'q1'}];"
                 + "S.settings.tiered=true;S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;S.settings.vibrationMode='native';"
-                + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
+                + "S.settings.vibrateInSilent=true;S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
                 + "save().then(ok=>window.__saved=ok?'ready':'failed')");
         while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
             assertTrue("Real event save was not acknowledged", System.currentTimeMillis() < ready);
@@ -127,20 +129,27 @@ public class ReminderRuntimeTest {
         assertEquals(300000L, due.getLong("at") - tier.getLong("at"));
         String beforeTier = shellText("dumpsys vibrator_manager");
         shell("input keyevent KEYCODE_HOME");
-        awaitStage(tier.getInt("id"), "sound_started", 25000);
-        awaitStage(tier.getInt("id"), "sound_completed", 6000);
-        assertNativeVibrationChannel(tier.getInt("id"));
-        awaitNewSystemVibration(beforeTier, true);
+        awaitStage(tier.getInt("id"), "direct_vibration_requested", 25000);
+        awaitStage(tier.getInt("id"), "sound_suppressed", 4000);
+        assertQuietNotification(tier.getInt("id"));
+        awaitNewSystemVibration(beforeTier, true, "ALARM");
+        assertFalse("Silent mode must never start the chime", hasStage(tier.getInt("id"), "sound_started"));
+        assertTrue(stageDetail(tier.getInt("id"), "sound_suppressed").contains("reason=ringer_silent"));
         assertEquals("No overlay permission is required for system delivery", 0, visibleCards());
         assertTrue(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
         String beforeDeadline = shellText("dumpsys vibrator_manager");
-        awaitStage(due.getInt("id"), "sound_started", 315000);
-        awaitStage(due.getInt("id"), "sound_completed", 6000);
-        assertNativeVibrationChannel(due.getInt("id"));
-        awaitNewSystemVibration(beforeDeadline, true);
+        awaitStage(due.getInt("id"), "direct_vibration_requested", 315000);
+        awaitStage(due.getInt("id"), "sound_suppressed", 4000);
+        assertQuietNotification(due.getInt("id"));
+        awaitNewSystemVibration(beforeDeadline, true, "ALARM");
+        assertFalse("Silent mode must never start the chime", hasStage(due.getInt("id"), "sound_started"));
+        assertTrue(stageDetail(due.getInt("id"), "sound_suppressed").contains("reason=ringer_silent"));
+        assertEquals(android.media.AudioManager.RINGER_MODE_SILENT, devicePolicy.audio.getRingerMode());
+        assertEquals(NotificationManager.INTERRUPTION_FILTER_ALL, devicePolicy.notifications.getCurrentInterruptionFilter());
+        assertEquals(0, devicePolicy.audio.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION));
         for (JSONObject item : new JSONObject[]{tier, due}) {
             long delay = 0;
             int count = 0;
@@ -264,6 +273,21 @@ public class ReminderRuntimeTest {
         fail("Native route system notification missing for " + id);
     }
 
+    private void assertQuietNotification(int id) {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+            if (active.getId() != AlarmDelivery.notificationId(id)) continue;
+            android.app.NotificationChannel channel = manager.getNotificationChannel(active.getNotification().getChannelId());
+            assertEquals("ddlr_high_v6_quiet", channel.getId());
+            assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.getImportance());
+            assertFalse("Only the explicit silent haptic may vibrate", channel.shouldVibrate());
+            assertNotNull("Silent banner eligibility uses a zero PCM cue", channel.getSound());
+            assertTrue(channel.getSound().toString().endsWith("/ddlr_silence"));
+            return;
+        }
+        fail("Silent reminder system notification missing for " + id);
+    }
+
     @Test public void immediateNativeSelfCheckUsesTheRealForegroundBridge() throws Exception {
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -286,6 +310,10 @@ public class ReminderRuntimeTest {
     }
 
     private void awaitNewSystemVibration(String before, boolean nativeProducer) throws Exception {
+        awaitNewSystemVibration(before, nativeProducer, "NOTIFICATION");
+    }
+
+    private void awaitNewSystemVibration(String before, boolean nativeProducer, String usage) throws Exception {
         long until = System.currentTimeMillis() + 4000;
         String after = "";
         while (System.currentTimeMillis() < until) {
@@ -293,7 +321,7 @@ public class ReminderRuntimeTest {
             for (String line : after.split("\\n")) {
                 boolean correctProducer = nativeProducer ? line.contains("| " + ctx.getPackageName() + " (uid=")
                         : line.contains("reason: Notification (" + ctx.getPackageName() + " ");
-                if (correctProducer && line.contains("usage: NOTIFICATION")
+                if (correctProducer && line.contains("usage: " + usage + " |")
                         && line.contains("finished") && !before.contains(line.trim())) return;
             }
             Thread.sleep(150);
@@ -384,6 +412,15 @@ public class ReminderRuntimeTest {
             if (event.optLong("id") == id && stage.equals(event.optString("stage"))) return true;
         }
         return false;
+    }
+
+    private String stageDetail(long id, String stage) throws Exception {
+        JSONArray trace = ReminderTrace.read(ctx);
+        for (int i = 0; i < trace.length(); i++) {
+            JSONObject event = trace.getJSONObject(i);
+            if (event.optLong("id") == id && stage.equals(event.optString("stage"))) return event.optString("detail");
+        }
+        return "";
     }
 
     private void awaitStage(long id, String stage, long timeout) throws Exception {

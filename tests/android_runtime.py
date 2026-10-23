@@ -25,6 +25,7 @@ def capture(prefix):
         'crash': ['logcat', '-d', '-b', 'crash', '-t', '1000'],
         'events': ['logcat', '-d', '-b', 'events', '-v', 'descriptive', '-t', '2000'],
         'alarm': ['shell', 'dumpsys', 'alarm'],
+        'audio': ['shell', 'dumpsys', 'audio'],
         'services': ['shell', 'dumpsys', 'activity', 'services', PKG],
         'vibrations': ['shell', 'dumpsys', 'vibrator_manager'],
         'notifications': ['shell', 'dumpsys', 'notification', '--noredact'],
@@ -36,6 +37,14 @@ def capture(prefix):
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
+    for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
+                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json']:
+        raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, check=False)
+        try:
+            json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        (OUT / f'{prefix}-{name}').write_text(raw, encoding='utf-8')
 
 
 def traces():
@@ -78,6 +87,10 @@ def instrument(cls, expected):
 
 assert adb('get-state') == 'device'
 assert adb('shell', 'getprop', 'ro.kernel.qemu') == '1', 'This script only runs on a disposable emulator.'
+original_ringer = adb('shell', 'settings', 'get', 'global', 'mode_ringer')
+original_zen = adb('shell', 'settings', 'get', 'global', 'zen_mode')
+original_volume = re.search(r'volume is\s+(\d+)',
+                           adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
     prepare()
     instrument('TimetableOcrTest', 1)
@@ -164,6 +177,15 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
+    # Run short silent-policy regressions before the real five-minute wait.
+    instrument('SilentReminderRuntimeTest', 4)
+    capture('silent-policy')
+    for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
+                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json']:
+        raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name)
+        json.loads(raw)  # A passed test must also leave reviewable system evidence.
+        (OUT / name).write_text(raw, encoding='utf-8')
+    prepare()
     instrument('ReminderRuntimeTest', 8)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
@@ -173,7 +195,8 @@ try:
     instrument('NotificationDeniedTest', 1)
     capture('notification-denied')
 
-    print('PASS: desktop banner layout, manual dismissal, 5-second expiry, cold process + Doze delivery')
+    print('PASS: normal gradients/deadlines in silent mode, native alarm haptics without chime, '
+          'silent opt-out, DND policy, normal finite sound, banners and cold-process delivery')
 finally:
     try:
         capture('final')
@@ -181,6 +204,17 @@ finally:
         print('Capture failed:', error)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
+    # Failure/crash fallback: instrumentation normally restores these in @After.
+    adb('shell', 'cmd', 'notification', 'set_dnd', 'off', check=False)
+    if original_volume and original_ringer == '2':
+        adb('shell', 'cmd', 'audio', 'set-ringer-mode', 'NORMAL', check=False)
+        adb('shell', 'cmd', 'audio', 'set-volume', '5', original_volume.group(1), check=False)
+    if original_ringer in ('0', '1', '2'):
+        adb('shell', 'cmd', 'audio', 'set-ringer-mode',
+            {'0': 'SILENT', '1': 'VIBRATE', '2': 'NORMAL'}[original_ringer], check=False)
+    if original_zen in ('0', '1', '2', '3'):
+        adb('shell', 'cmd', 'notification', 'set_dnd',
+            {'0': 'off', '1': 'priority', '2': 'none', '3': 'alarms'}[original_zen], check=False)
     adb('shell', 'pm', 'clear', PKG, check=False)
     adb('forward', '--remove-all', check=False)
     adb('reverse', '--remove-all', check=False)

@@ -3,14 +3,15 @@ const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
 
 function nativeFixture(options = {}) {
-  const calls = [], lifecycle = [];
+  const calls = [], lifecycle = [], requests = [];
   let diagnosis = options.diag || { notify: true, channels: 8, pending: 1, headsUp: true,
     channelImportance: 4, overlayAllowed: false, channelVibration: false };
   const plugin = {
     notifyStatus: async () => ({ granted: true }),
     openNotificationSettings: async () => { calls.push('notification-settings'); },
-    testVibration: async () => {
+    testVibration: async request => {
       calls.push('test');
+      requests.push(request);
       if (options.error) throw new Error('native bridge failed');
       return options.result || { requested: true, hasVibrator: true };
     }
@@ -28,7 +29,7 @@ function nativeFixture(options = {}) {
     } } }
   } });
   h.context.toast = (...args) => h.toasts.push(args);
-  return Object.assign(h, { calls, lifecycle, plugin, setDiagnosis: value => { diagnosis = value; } });
+  return Object.assign(h, { calls, lifecycle, requests, plugin, setDiagnosis: value => { diagnosis = value; } });
 }
 
 test('upgrading or importing settings preserves system notification vibration until explicitly selected', () => {
@@ -91,6 +92,7 @@ test('self-test reports system refusals and missing hardware without claiming a 
   const cases = [
     [{ requested: false, hasVibrator: false }, /未提供可用震动器/],
     [{ requested: false, hasVibrator: true, suppressed: 'dnd' }, /被系统策略阻止/],
+    [{ requested: false, hasVibrator: true, suppressed: 'silent_vibration_disabled' }, /按你的设置保持静默/],
     [{ requested: false, hasVibrator: true, error: 'denied' }, /调用失败/],
     [{ requested: false, hasVibrator: true }, /未接受/]
   ];
@@ -107,6 +109,53 @@ test('self-test reports system refusals and missing hardware without claiming a 
   await h.el('vibrationNowBtn').click();
   assert.match(h.toasts.at(-1).join(' '), /自检失败/);
   assert.equal(h.el('vibrationNowBtn').disabled, false);
+});
+
+test('system-silent haptics default on while an explicit opt-out survives save, import and self-check', async () => {
+  const h = nativeFixture();
+  assert.equal(h.run('defaultState().settings.vibrateInSilent'), true);
+  assert.equal(h.run('normalizeState({tasks:[],settings:{}}).settings.vibrateInSilent'), true);
+  assert.equal(h.run('normalizeState({tasks:[],settings:{vibrateInSilent:false}}).settings.vibrateInSilent'), false);
+  h.run('bindSettings()');
+  assert.equal(h.el('setVibrateInSilent').checked, true);
+  const beforeSound = h.context.S.settings.sound;
+  h.el('setVibrateInSilent').checked = false;
+  await h.el('setVibrateInSilent').dispatch('change');
+  assert.equal(h.context.S.settings.vibrateInSilent, false);
+  assert.equal(JSON.parse(h.storage.get('ddlr_v1')).settings.vibrateInSilent, false);
+  assert.equal(h.context.S.settings.sound, beforeSound, 'silent haptic choice never enables audio');
+  assert.ok(h.calls.some(call => call.startsWith('sync:')));
+  await h.el('vibrationNowBtn').click();
+  assert.equal(h.requests.at(-1).vibrateInSilent, false);
+  h.el('setSilent').checked = true;
+  await h.el('setSilent').dispatch('change');
+  assert.equal(h.el('setVibrateInSilent').disabled, true);
+  assert.equal(h.context.S.settings.vibrateInSilent, false, 'global silent keeps the independent preference');
+});
+
+test('silent-ringer diagnostics distinguish the expected quiet channel from disabled notification vibration', async () => {
+  const h = nativeFixture({ diag: { notify: true, channels: 14, pending: 1,
+    vibrationMode: 'notification', channelId: 'ddlr_high_v6_quiet', channelVibration: false,
+    vibrationStatus: 'native_requested', lastVibrationUsage: 'alarm',
+    environment: { hasVibrator: true, ringerMode: 0, notificationVolume: 0, interruptionFilter: 1 } } });
+  await h.run('renderDiag()');
+  const html = h.el('diagList').innerHTML;
+  assert.doesNotMatch(html, /当前系统通知通道的震动开关被关闭/);
+  assert.match(html, /禁止响铃；默认允许震动/);
+  assert.match(html, /仅震动，不使用闹钟音频/);
+  assert.match(html, /14\/14/);
+  assert.deepEqual(h.calls, ['diag']);
+});
+
+test('a silent-haptic opt-out is shown as a preference, without blaming system rejection', async () => {
+  const h = nativeFixture({ diag: { notify: true, channels: 14, pending: 0,
+    channelId: 'ddlr_high_v6_quiet', vibrationMode: 'notification', channelVibration: false,
+    vibrationStatus: 'blocked_preference', environment: { ringerMode: 0, interruptionFilter: 1 } } });
+  h.run('S.settings.vibrateInSilent=false');
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /按你的设置关闭手机静音时的震动/);
+  assert.match(h.el('diagList').innerHTML, /禁止响铃；已选择不震动/);
+  assert.doesNotMatch(h.el('diagList').innerHTML, /被系统静音.*阻止/);
 });
 
 test('native mode treats a silent notification channel as intended and shows requests as unconfirmed', async () => {
