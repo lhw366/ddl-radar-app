@@ -243,6 +243,12 @@
             <label class="switch"><input type="checkbox" id="setSilent"><i></i></label>
           </div>
         </div>
+        <div class="set-line"><label for="setVibrationMode">APK 震动来源</label>
+          <select id="setVibrationMode"><option value="notification">跟随系统通知</option><option value="native">原生震动（兼容模式）</option></select>
+        </div>
+        <button id="enableNativeVibrationBtn" class="btn full">📳 启用原生兼容震动并自检</button>
+        <button id="vibrationNowBtn" class="btn full">📳 立即自检原生震动</button>
+        <div class="tip">系统通知震动无效时，可主动选择兼容模式。兼容模式只在提醒到点时运行短时服务，不更改电池优化设置，仍遵循系统静音、勿扰与震动设置。自检提示仅表示请求结果，请以手机实际触感为准。</div>
         <div class="set-line" style="margin-top:10px">
           <div>远期 DDL 每日提醒时间</div>
           <input type="time" id="setDailyTime" value="12:00">
@@ -257,9 +263,10 @@
           <select id="setBannerDuration"><option value="manual">手动点关闭</option><option value="5s">5 秒后自动消失</option></select>
         </div>
         <button id="bannerPermissionBtn" class="btn full">💬 允许顶部悬浮横幅（跨应用）</button>
+        <button id="notificationSettingsBtn" class="btn full">🔔 打开系统通知与横幅设置</button>
         <button id="restrictedSettingsBtn" class="btn full">🔐 未知来源权限受限？打开应用信息</button>
-        <div class="tip">若系统提示“限制未知来源应用获取部分权限”，请在应用信息页查看右上角菜单中的“允许受限设置”（以手机实际提供的选项为准），再回到悬浮窗授权。签名不能自动解除安装来源限制。无法授权悬浮窗时，提醒仍使用系统通知与震动。</div>
-        <div class="tip">开启系统「显示在其他应用上层 / 悬浮窗」后，提醒可在其他 App 上方显示，点击「知道了」关闭。未授权时使用系统通知，系统横幅停留时间由手机控制。锁屏时可在通知栏查看。</div>
+        <div class="tip">若系统提示“限制未知来源应用获取部分权限”，请在应用信息页查看右上角菜单中的“允许受限设置”（以手机实际提供的选项为准），再回到悬浮窗授权。签名不能自动解除安装来源限制。无法授权悬浮窗时仍会请求系统通知；是否弹出由系统通知、横幅和勿扰设置决定。</div>
+        <div class="tip">应用内的下载、保存等提示消息只显示在当前页面，不能证明跨应用横幅正常。开启「显示在其他应用上层 / 悬浮窗」后，提醒可请求在其他 App 上方显示并按所选方式关闭。系统通知横幅需单独开启，停留时间由手机控制。</div>
         <button id="testRemBtn" class="btn full">🧪 测试提醒（5 秒后触发，验证链路）</button>
         <button id="backgroundTestBtn" class="btn full">⏱️ 后台验证（60 秒后，请退到桌面）</button>
         <button id="notifyBtn" class="btn full">🔔 申请系统通知权限（状态：未知）</button>
@@ -287,9 +294,9 @@
 
       <h3 class="sec-title">ℹ️ 关于</h3>
       <div class="card pad about">
-        <b>DDL雷达</b> <span id="verText">v1.4.0</span><br>
-        为 OPPO Find X5 Pro / ColorOS 设计 · 兼容所有现代安卓浏览器<br>
-        本页面是可交互原型：数据存在本机，可装到桌面当 App 用。<br>
+        <b>DDL雷达</b> <span id="verText">v2.3.2</span><br>
+        Android 本地事项与课表提醒应用 · 也可在现代浏览器中使用<br>
+        事项与课表保存在本机，支持导出备份；后台系统提醒需要安装 APK。<br>
         <small>素材与数据致谢：microsoft/fluentui-emoji (MIT) · lunar-javascript · holiday-cn · ZCOOL KuaiLe 字体</small>
         <button id="updateBtn" class="btn full">🔄 检查更新</button>
       </div>

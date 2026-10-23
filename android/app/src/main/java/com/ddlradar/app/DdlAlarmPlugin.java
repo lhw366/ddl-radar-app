@@ -263,6 +263,10 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastExpectedAt", diagnostics.getLong("lastExpectedAt", 0));
             ret.put("lastDelayMs", diagnostics.getLong("lastDelayMs", -1));
             ret.put("lastNotificationAllowed", diagnostics.getBoolean("lastNotificationAllowed", false));
+            String vibrationStatus = diagnostics.getString("lastVibrationStatus", "");
+            ret.put("vibrationStatus", vibrationStatus);
+            ret.put("lastVibrationStatus", vibrationStatus);
+            ret.put("lastVibrationChannel", diagnostics.getString("lastVibrationChannel", ""));
             ret.put("lastReceiverId", lr[0]);
             ret.put("lastReceiverAt", lr[1]);
             ret.put("guard", AlarmService.isRunning());
@@ -286,6 +290,7 @@ public class DdlAlarmPlugin extends Plugin {
             channelId = AlarmDelivery.notificationChannelFor(ctx, channelId);
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
+            ret.put("vibrationMode", AlarmDelivery.nativeVibration(channelId) ? "native" : "notification");
             ret.put("channelImportance", imp);
             if (Build.VERSION.SDK_INT >= 26 && nm != null && nm.getNotificationChannel(channelId) != null) {
                 ret.put("channelVibration", nm.getNotificationChannel(channelId).shouldVibrate());

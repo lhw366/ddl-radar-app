@@ -56,6 +56,7 @@ function defaultState() { return {
     dailyTime: '12:00',
     sound: true,
     vibrate: true,
+    vibrationMode: 'notification',
     banner: true,
     bannerDuration: 'manual',
     remindSilent: false,
@@ -78,6 +79,7 @@ function normalizeState(data) {
   }
   next.settings.sound = next.settings.sound !== false;
   next.settings.vibrate = next.settings.vibrate !== false;
+  next.settings.vibrationMode = next.settings.vibrationMode === 'native' ? 'native' : 'notification';
   next.settings.banner = next.settings.banner !== false;
   next.settings.remindSilent = next.settings.remindSilent === true;
   next.settings.bannerDuration = next.settings.bannerDuration === '5s' ? '5s' : 'manual';
@@ -489,6 +491,7 @@ function switchView(v) {
   if (v === 'calendar' && window.Cal) Cal.render();
   if (v === 'home') renderHome();
   if (v === 'matrix') renderMatrix();
+  if (v === 'settings') refreshSettingsDiagnostics();
 }
 
 /* ---------------- 任务渲染 ---------------- */
@@ -1126,7 +1129,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.1';
+const APP_VERSION = '2.3.2';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1404,6 +1407,73 @@ function bindUpdater() {
   });
 }
 
+async function openSystemNotificationSettings() {
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  try {
+    if (native && native.openNotificationSettings) await native.openNotificationSettings();
+    else if (native && native.openAppDetails) await native.openAppDetails();
+    else toast('请查看浏览器通知设置', '跨应用提醒请使用 Android APK。');
+  } catch (error) { toast('请打开系统通知设置', '系统设置 → 应用 → DDL雷达 → 通知，分别检查允许通知、横幅与震动。'); }
+}
+
+let vibrationSelfTestBusy = false;
+async function runVibrationSelfTest() {
+  if (vibrationSelfTestBusy) return;
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  if (!(native && native.testVibration)) {
+    toast('原生震动自检需要 Android APK', '网页中的提示消息不能验证手机的后台震动。');
+    return;
+  }
+  vibrationSelfTestBusy = true;
+  syncRemindModeUI();
+  try {
+    const result = await native.testVibration();
+    window.lastVibrationSelfTest = { ...result, capturedAt: new Date().toISOString() };
+    if (result.hasVibrator === false) {
+      toast('系统未提供可用震动器', '请查看提醒诊断中的设备震动状态。');
+    } else if (result.suppressed) {
+      toast('本次震动请求被系统策略阻止', '请检查系统静音、勿扰和震动设置；应用不会修改这些设置。');
+    } else if (result.error) {
+      toast('原生震动调用失败', '请复制提醒诊断，查看系统返回的错误。');
+    } else if (result.requested === true) {
+      toast('📳 已请求原生震动', '请求已交给 Android，请以手机实际触感为准。这条消息只在应用内显示。');
+    } else {
+      toast('系统未接受本次震动请求', '请查看提醒诊断中的系统震动状态。');
+    }
+  } catch (error) {
+    toast('原生震动自检失败', '请复制提醒诊断后反馈。');
+  } finally {
+    vibrationSelfTestBusy = false;
+    syncRemindModeUI();
+  }
+}
+
+async function enableNativeVibration() {
+  if (!remindVibrateEnabled() || vibrationSelfTestBusy) return;
+  S.settings.vibrationMode = 'native';
+  syncRemindModeUI();
+  const accepted = await save();
+  if (accepted === false) {
+    toast('兼容模式已保存，后台排定未完成', '请运行诊断确认正常任务已排入系统后再验证后台提醒。');
+    await renderDiag();
+    return;
+  }
+  resyncReminderSettings();
+  await runVibrationSelfTest();
+  await renderDiag();
+}
+
+let settingsDiagnosticsRefresh = null;
+function refreshSettingsDiagnostics() {
+  if (document.hidden || curView !== 'settings') return;
+  if (settingsDiagnosticsRefresh) return settingsDiagnosticsRefresh;
+  settingsDiagnosticsRefresh = Promise.resolve().then(async () => {
+    await refreshNotifyBtn();
+    await renderDiag();
+  }).catch(() => {}).finally(() => { settingsDiagnosticsRefresh = null; });
+  return settingsDiagnosticsRefresh;
+}
+
 /* ---------------- 提醒诊断面板 ---------------- */
 function diagRow(ok, text, fix) {
   const icon = ok === null || ok === undefined ? '➖' : ok ? '✅' : '❌';
@@ -1423,13 +1493,59 @@ async function renderDiag() {
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.overlayAllowed === true,
-    d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统通知横幅与震动仍可使用',
+    d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统横幅需另行开启，是否弹出由手机控制',
     d.overlayAllowed ? '' : 'overlay');
-  html += diagRow((d.channels || 0) >= 8, '提醒通道已创建（' + (d.channels || 0) + '/8）', d.channels >= 8 ? '' : 'reinit');
-  if (S.settings.vibrate !== false && d.channelVibration === false) {
+  html += diagRow((d.channels || 0) >= 12, '提醒通道已创建（' + (d.channels || 0) + '/12）', d.channels >= 12 ? '' : 'reinit');
+  const vibrationMode = (d.vibrationMode || S.settings.vibrationMode) === 'native' ? 'native' : 'notification';
+  html += diagRow(null, '当前震动方式：' + (vibrationMode === 'native' ? '原生震动（兼容模式）' : '跟随系统通知'));
+  if (remindVibrateEnabled() && vibrationMode === 'notification' && d.channelVibration === false) {
     html += diagRow(false, '当前系统通知通道的震动开关被关闭', 'channel');
+    html += diagRow(null, '通知震动仍无效时，可主动启用原生兼容震动并自检', 'nativevibration');
+  } else if (remindVibrateEnabled() && vibrationMode === 'native') {
+    html += diagRow(null, '原生兼容震动由到点时的短时服务请求；通知通道关闭震动属于此模式的正常设置');
+  }
+  const vibrationStatuses = {
+    native_pending: [null, '原生震动等待短时服务派发'],
+    native_requested: [null, '已向 Android 请求原生震动，尚非手机实际震动确认'],
+    blocked_channel: [false, '系统通知通道未允许震动'],
+    blocked_notification: [false, '系统通知未获允许，尚未通过通知请求震动'],
+    disabled: [null, '此提醒未启用震动'],
+    blocked_policy: [false, '震动被系统静音、勿扰或震动策略阻止'],
+    unavailable: [false, '系统未提供可用震动器'],
+    error: [false, '震动调用失败，请查看下方执行记录'],
+    notification_requested: [null, '已通过系统通知请求震动，尚非手机实际震动确认']
+  };
+  if (vibrationStatuses[d.vibrationStatus]) {
+    const status = vibrationStatuses[d.vibrationStatus];
+    const oldChannelStatus = d.vibrationStatus === 'blocked_channel' && vibrationMode === 'native';
+    html += diagRow(oldChannelStatus ? null : status[0], '上次震动记录：' + status[1] +
+      (oldChannelStatus ? '（当前已选原生兼容模式）' : ''));
   }
   const environment = d.environment || {};
+  if (typeof environment.hasVibrator === 'boolean') {
+    html += diagRow(environment.hasVibrator, environment.hasVibrator ? '系统报告设备提供震动器' : '系统报告设备没有可用震动器');
+  }
+  const ringerModes = { 0: '静音', 1: '震动', 2: '响铃' };
+  if (Object.hasOwn(ringerModes, environment.ringerMode)) {
+    html += diagRow(environment.ringerMode === 0 ? false : null, '系统铃声模式：' + ringerModes[environment.ringerMode] + '（仅记录，不自动修改）');
+  }
+  const interruptionModes = { 1: '关闭', 2: '仅允许优先通知', 3: '全部阻止', 4: '仅允许闹钟' };
+  if (Object.hasOwn(interruptionModes, environment.interruptionFilter)) {
+    html += diagRow([3, 4].includes(environment.interruptionFilter) ? false : null,
+      '系统勿扰：' + interruptionModes[environment.interruptionFilter] + '（是否允许本次震动以系统策略为准）');
+  }
+  if (Number.isFinite(environment.notificationVolume) && environment.notificationVolume >= 0) {
+    html += diagRow(null, '系统通知音量：' + environment.notificationVolume);
+  }
+  if (Number.isFinite(environment.notificationVibrationIntensity) && environment.notificationVibrationIntensity >= 0) {
+    html += diagRow(environment.notificationVibrationIntensity === 0 ? false : null,
+      '系统通知震动强度：' + environment.notificationVibrationIntensity);
+  }
+  if (environment.vibrateAppOp !== undefined && environment.vibrateAppOp !== null) {
+    const appOp = String(environment.vibrateAppOp);
+    html += diagRow(['1', '2', 'ignored', 'errored'].includes(appOp) ? false : null,
+      '系统震动访问状态：' + escapeHtml(appOp));
+  }
   if (typeof environment.debuggable === 'boolean') {
     html += diagRow(!environment.debuggable, environment.debuggable ? '安装包为可调试构建' : '安装包为正式 Release 构建');
   }
@@ -1486,11 +1602,11 @@ async function renderDiag() {
   } else if (!remindBannerEnabled()) {
     html += diagRow(null, '横幅已关闭；响铃和震动仍可由系统闹钟独立执行');
   } else if (d.overlayAllowed === true) {
-    html += diagRow(true, '使用自定义顶部横幅；系统通知保留震动，避免两个横幅互相遮挡');
+    html += diagRow(null, '已选择自定义顶部横幅；实际窗口展示结果见下方执行记录');
   } else if (d.headsUp === false) {
     html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {
-    html += diagRow(true, '当前提醒通道重要性 4/4；若仍无横幅，请检查 ColorOS 的横幅显示开关', 'channel');
+    html += diagRow(null, '当前提醒通道重要性 4/4，具备系统横幅条件；是否弹出仍取决于系统横幅开关与勿扰设置', 'channel');
   }
   if (d.exactOk === false) {
     html += diagRow(false, '「闹钟和提醒」权限被关闭：提醒只能降级为普通闹钟，Doze 下可能延迟较久', 'appinfo');
@@ -1504,21 +1620,22 @@ async function renderDiag() {
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
     delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
-    direct_vibration_requested: '前台派发服务已请求震动', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
+    direct_vibration_requested: '已请求原生震动（非硬件确认）', vibration_pending: '等待原生震动派发', vibration_disabled: '此提醒未启用震动', vibration_blocked: '震动被系统策略阻止', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
   trace.forEach(e => {
     html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed',
-      'vibration_error', 'vibration_unavailable', 'effects_unavailable'].includes(e.stage),
+      'vibration_blocked', 'vibration_error', 'vibration_unavailable', 'effects_unavailable'].includes(e.stage),
       escapeHtml(new Date(e.at).toLocaleTimeString() + ' · ' + (stageNames[e.stage] || e.stage) + ' · ' + e.detail));
   });
   if (d.device) html += '<div>' + escapeHtml(d.device + ' · Android ' + d.androidRelease) + '</div>';
-  if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">设备系统版本 Android ' + d.sdk + '（诊断结果可截图发给开发者）</div>';
+  if (d.sdk) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">Android API 级别 ' + d.sdk + '（API 级别与 Android 系统版本不同）</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
     if (f === 'notify') { await askNotify(); await refreshNotifyBtn(); }
+    if (f === 'nativevibration') await enableNativeVibration();
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
@@ -1576,6 +1693,25 @@ function bindSettings() {
   reminderToggle('setSound', 'sound');
   reminderToggle('setVibrate', 'vibrate');
   reminderToggle('setBanner', 'banner');
+  $('setVibrationMode').addEventListener('change', () => {
+    if (!remindVibrateEnabled()) return;
+    S.settings.vibrationMode = $('setVibrationMode').value === 'native' ? 'native' : 'notification';
+    save();
+    syncRemindModeUI();
+    resyncReminderSettings();
+  });
+  $('vibrationNowBtn').addEventListener('click', runVibrationSelfTest);
+  $('enableNativeVibrationBtn').addEventListener('click', enableNativeVibration);
+  $('notificationSettingsBtn').addEventListener('click', openSystemNotificationSettings);
+  document.addEventListener('visibilitychange', refreshSettingsDiagnostics);
+  const app = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.App;
+  if (app && app.addListener) {
+    try {
+      Promise.resolve(app.addListener('appStateChange', (state) => {
+        if (state.isActive) return refreshSettingsDiagnostics();
+      })).catch(() => {});
+    } catch (error) { /* Native lifecycle is unavailable in a browser. */ }
+  }
   $('setBannerDuration').value = S.settings.bannerDuration || 'manual';
   $('setBannerDuration').addEventListener('change', () => {
     S.settings.bannerDuration = $('setBannerDuration').value === '5s' ? '5s' : 'manual';
@@ -1710,6 +1846,12 @@ function syncRemindModeUI() {
   $('setBanner').checked = !silent && S.settings.banner !== false;
   $('setBannerDuration').value = S.settings.bannerDuration || 'manual';
   ['setSound', 'setVibrate', 'setBanner'].forEach((id) => { $(id).disabled = silent; });
+  $('setVibrationMode').value = S.settings.vibrationMode === 'native' ? 'native' : 'notification';
+  $('setVibrationMode').disabled = silent || S.settings.vibrate === false;
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  const canTest = !!(native && native.testVibration);
+  $('enableNativeVibrationBtn').disabled = !canTest || silent || S.settings.vibrate === false || vibrationSelfTestBusy;
+  $('vibrationNowBtn').disabled = !canTest || vibrationSelfTestBusy;
 }
 
 function resyncReminderSettings() {

@@ -40,12 +40,13 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
         if (delivered) {
             // A finite service is needed only for sound, an allowed overlay,
-            // or direct vibration when notification permission is unavailable.
+            // or the user's explicitly chosen native vibration route.
             String channel = intent.getStringExtra("channelId");
             boolean effects = intent.getBooleanExtra("directVibration", false)
                     || (channel != null && channel.endsWith("_sound"))
                     || (channel != null && channel.startsWith("ddlr_high_") && ReminderBanner.allowed(context));
             if (effects && !AlarmService.dispatch(context, intent)) {
+                if (intent.getBooleanExtra("directVibration", false)) AlarmDelivery.vibrationStatus(context, "error");
                 // The system notification has already been submitted. Preserve
                 // the diagnostic if foreground fallback was denied by the OS.
                 ReminderTrace.mark(context, intent.getIntExtra("id", -1), "effects_unavailable", "foreground_service_denied");

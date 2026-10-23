@@ -223,11 +223,11 @@ test('banner-only reminders use the migrated high importance silent channel', as
   assert.equal(definition.sound, 'ddlr_silence.wav');
 });
 
-test('all eight output combinations have separate immutable channel vibration settings', async()=>{
+test('all eight standard output combinations retain their immutable channel vibration settings', async()=>{
   const created=[];
   const h=harness(['nativenotify.js'],{globals:{Capacitor:{Plugins:{DdlNotify:{ensureChannel:async d=>created.push(d)}}}}});
   await h.context.NativeNotify.ensureChannels();
-  assert.equal(created.length,8);
+  assert.equal(created.length,12);
   for(const banner of [false,true]) for(const sound of [false,true]) for(const vibrate of [false,true]) {
     const id=h.context.NativeNotify.channelIdFor({banner,sound,vibrate});
     const channel=created.find(c=>c.id===id);

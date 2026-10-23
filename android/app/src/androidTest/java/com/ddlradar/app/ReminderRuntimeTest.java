@@ -114,7 +114,7 @@ public class ReminderRuntimeTest {
         js(activity, "window.__saved='pending'; S.tasks=[{id:'runtime-gradient',name:'真实梯度验收',"
                 + "dueAt:Date.now()+315000,tiers:{120:false,60:false,30:false,5:true},custom:[],"
                 + "daily:false,done:false,quadrant:'q1'}];"
-                + "S.settings.tiered=true;S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.tiered=true;S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;S.settings.vibrationMode='native';"
                 + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
                 + "save().then(ok=>window.__saved=ok?'ready':'failed')");
         while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
@@ -129,18 +129,18 @@ public class ReminderRuntimeTest {
         shell("input keyevent KEYCODE_HOME");
         awaitStage(tier.getInt("id"), "sound_started", 25000);
         awaitStage(tier.getInt("id"), "sound_completed", 6000);
-        assertSystemVibrationChannel(tier.getInt("id"));
-        awaitNewSystemVibration(beforeTier);
+        assertNativeVibrationChannel(tier.getInt("id"));
+        awaitNewSystemVibration(beforeTier, true);
         assertEquals("No overlay permission is required for system delivery", 0, visibleCards());
-        assertFalse(hasStage(tier.getInt("id"), "direct_vibration_requested"));
+        assertTrue(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
         String beforeDeadline = shellText("dumpsys vibrator_manager");
         awaitStage(due.getInt("id"), "sound_started", 315000);
         awaitStage(due.getInt("id"), "sound_completed", 6000);
-        assertSystemVibrationChannel(due.getInt("id"));
-        awaitNewSystemVibration(beforeDeadline);
+        assertNativeVibrationChannel(due.getInt("id"));
+        awaitNewSystemVibration(beforeDeadline, true);
         for (JSONObject item : new JSONObject[]{tier, due}) {
             long delay = 0;
             int count = 0;
@@ -174,7 +174,7 @@ public class ReminderRuntimeTest {
         js(activity, "window.__saved='pending'; S.tasks=[{id:'runtime-vibration-only',name:'纯震动后台任务',"
                 + "dueAt:Date.now()+8000,tiers:{120:false,60:false,30:false,5:false},custom:[],"
                 + "daily:false,done:false,quadrant:'q1'}];"
-                + "S.settings.sound=false;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.sound=false;S.settings.vibrate=true;S.settings.banner=true;S.settings.vibrationMode='notification';"
                 + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
                 + "save().then(ok=>window.__saved=ok?'ready':'failed')");
         while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
@@ -188,7 +188,7 @@ public class ReminderRuntimeTest {
         shell("input keyevent KEYCODE_HOME");
         awaitStage(id, "notification", 15000);
         assertSystemVibrationChannel(id);
-        awaitNewSystemVibration(before);
+        awaitNewSystemVibration(before, false);
         assertFalse("Vibration-only delivery must not start a service", hasStage(id, "service"));
         assertFalse(AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
@@ -209,13 +209,91 @@ public class ReminderRuntimeTest {
         fail("Real system notification missing for " + id);
     }
 
-    private void awaitNewSystemVibration(String before) throws Exception {
+    @Test public void nativeVibrationOnlySavedTaskReleasesItsFiniteService() throws Exception {
+        shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
+        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long ready = System.currentTimeMillis() + 30000;
+        while (!"true".equals(js(activity, "!!(window.S && window.NativeNotify && window.planReminders)"))) {
+            assertTrue(System.currentTimeMillis() < ready);
+            Thread.sleep(150);
+        }
+        js(activity, "window.__saved='pending';S.tasks=[{id:'native-motor',name:'原生震动正常任务',"
+                + "dueAt:Date.now()+8000,tiers:{120:false,60:false,30:false,5:false},custom:[],daily:false,done:false,quadrant:'q1'}];"
+                + "S.settings.sound=false;S.settings.vibrate=true;S.settings.banner=true;S.settings.vibrationMode='native';"
+                + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';save().then(ok=>window.__saved=ok?'ready':'failed')");
+        while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
+            assertTrue(System.currentTimeMillis() < ready);
+            Thread.sleep(100);
+        }
+        int id = AlarmScheduler.load(ctx).getJSONObject(0).getInt("id");
+        String before = shellText("dumpsys vibrator_manager");
+        shell("input keyevent KEYCODE_HOME");
+        awaitStage(id, "direct_vibration_requested", 15000);
+        assertNativeVibrationChannel(id);
+        awaitNewSystemVibration(before, true);
+        JSONArray trace = ReminderTrace.read(ctx);
+        boolean foreground = false;
+        for (int i = 0; i < trace.length(); i++) {
+            JSONObject entry = trace.getJSONObject(i);
+            if (entry.optLong("id") != id) continue;
+            if ("service".equals(entry.optString("stage"))) foreground = true;
+            if ("direct_vibration_requested".equals(entry.optString("stage"))) {
+                assertTrue("Native vibration must follow foreground start", foreground);
+                assertTrue(entry.optString("detail").contains("appVisible=false"));
+            }
+        }
+        awaitStage(id, "wake_released", 4000);
+        long stopped = System.currentTimeMillis() + 1500;
+        while (AlarmService.isRunning() && System.currentTimeMillis() < stopped) Thread.sleep(50);
+        assertFalse(AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+    }
+
+    private void assertNativeVibrationChannel(int id) {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+            if (active.getId() != AlarmDelivery.notificationId(id)) continue;
+            assertTrue(AlarmDelivery.nativeVibration(active.getNotification().getChannelId()));
+            assertFalse("Only native API owns vibration, avoiding duplicate effects",
+                    manager.getNotificationChannel(active.getNotification().getChannelId()).shouldVibrate());
+            assertNull("No sound URI which Android could demote to a second vibration",
+                    manager.getNotificationChannel(active.getNotification().getChannelId()).getSound());
+            return;
+        }
+        fail("Native route system notification missing for " + id);
+    }
+
+    @Test public void immediateNativeSelfCheckUsesTheRealForegroundBridge() throws Exception {
+        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long ready = System.currentTimeMillis() + 30000;
+        while (!"true".equals(js(activity, "!!(window.S && window.NativeNotify)"))) {
+            assertTrue(System.currentTimeMillis() < ready);
+            Thread.sleep(100);
+        }
+        String before = shellText("dumpsys vibrator_manager");
+        js(activity, "window.__nativeCheck={pending:true};Capacitor.Plugins.DdlNotify.testVibration()"
+                + ".then(r=>window.__nativeCheck=r).catch(e=>window.__nativeCheck={error:String(e)})");
+        while (!"true".equals(js(activity, "window.__nativeCheck.requested===true"))) {
+            assertTrue("Native self-check failed: " + js(activity, "JSON.stringify(window.__nativeCheck)"),
+                    System.currentTimeMillis() < ready);
+            Thread.sleep(100);
+        }
+        awaitNewSystemVibration(before, true);
+        assertTrue(hasStage(990000002, "direct_vibration_requested"));
+        assertFalse("A foreground self-check needs no dispatch service", hasStage(990000002, "service"));
+    }
+
+    private void awaitNewSystemVibration(String before, boolean nativeProducer) throws Exception {
         long until = System.currentTimeMillis() + 4000;
         String after = "";
         while (System.currentTimeMillis() < until) {
             after = shellText("dumpsys vibrator_manager");
             for (String line : after.split("\\n")) {
-                if (line.contains("Notification (" + ctx.getPackageName() + " ")
+                boolean correctProducer = nativeProducer ? line.contains("| " + ctx.getPackageName() + " (uid=")
+                        : line.contains("reason: Notification (" + ctx.getPackageName() + " ");
+                if (correctProducer && line.contains("usage: NOTIFICATION")
                         && line.contains("finished") && !before.contains(line.trim())) return;
             }
             Thread.sleep(150);
