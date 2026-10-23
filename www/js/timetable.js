@@ -154,7 +154,7 @@
         // Text usually starts inside its cell but a long wrapped line can cross
         // the lower border. Assign by its top with a small tolerance so room
         // and note lines stay with the course they were printed under.
-        var y = cyOf(ln);
+        var y = rowsInferred && ln.top != null ? ln.top - rowCentreGap * 0.05 : cyOf(ln);
         if (y < rows[0].y - rowCentreGap * 0.5) return;
         var day = pickCol(cols, x, rows);
         if (!day) return;
