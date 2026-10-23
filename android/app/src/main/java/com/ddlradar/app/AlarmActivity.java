@@ -83,9 +83,7 @@ public class AlarmActivity extends Activity {
                 // 通知栏里那条提醒还挂着，得再去划掉一次。
                 try {
                     if (notifId != -1) {
-                        android.app.NotificationManager nm =
-                                (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-                        if (nm != null) nm.cancel(notifId);
+                        AlarmDelivery.cancelNotification(AlarmActivity.this, notifId);
                     }
                 } catch (Exception ignore) {}
                 finish();

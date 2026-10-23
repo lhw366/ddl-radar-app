@@ -59,6 +59,10 @@ public class ReminderRuntimeTest {
         assertTrue(hasStage(11001, "receiver"));
         assertTrue(hasStage(11001, "service"));
         assertTrue(hasStage(11001, "vibration_requested"));
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        assertEquals("Avoid a system heads-up covering the custom banner", NotificationManager.IMPORTANCE_DEFAULT,
+                manager.getNotificationChannel(AlarmDelivery.notificationChannelFor(ctx,
+                        "ddlr_high_v4_vib_silent")).getImportance());
         screenshot("runtime-manual.png");
         Thread.sleep(6000);
         assertFalse("A retained banner must not retain a CPU wake lock", AlarmService.isWakeHeld());
@@ -93,7 +97,9 @@ public class ReminderRuntimeTest {
         }
     }
 
-    @Test public void realSavedGradientAndDeadlineDeliverFromBackgroundWithFiniteSound() throws Exception {
+    @Test public void realSavedGradientAndDeadlineDeliverWithoutOverlayPermission() throws Exception {
+        shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
+        assertFalse(ReminderBanner.allowed(ctx));
         shell("cmd notification set_dnd off");
         shell("media volume --stream 5 --set 5");
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
@@ -119,15 +125,22 @@ public class ReminderRuntimeTest {
         assertEquals("Exactly the enabled tier and the deadline", 2, pending.length());
         JSONObject tier = pending.getJSONObject(0), due = pending.getJSONObject(1);
         assertEquals(300000L, due.getLong("at") - tier.getLong("at"));
+        String beforeTier = shellText("dumpsys vibrator_manager");
         shell("input keyevent KEYCODE_HOME");
         awaitStage(tier.getInt("id"), "sound_started", 25000);
         awaitStage(tier.getInt("id"), "sound_completed", 6000);
-        awaitStage(tier.getInt("id"), "overlay_visible", 3000);
+        assertSystemVibrationChannel(tier.getInt("id"));
+        awaitNewSystemVibration(beforeTier);
+        assertEquals("No overlay permission is required for system delivery", 0, visibleCards());
+        assertFalse(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
+        String beforeDeadline = shellText("dumpsys vibrator_manager");
         awaitStage(due.getInt("id"), "sound_started", 315000);
         awaitStage(due.getInt("id"), "sound_completed", 6000);
+        assertSystemVibrationChannel(due.getInt("id"));
+        awaitNewSystemVibration(beforeDeadline);
         for (JSONObject item : new JSONObject[]{tier, due}) {
             long delay = 0;
             int count = 0;
@@ -136,6 +149,8 @@ public class ReminderRuntimeTest {
                 JSONObject event = events.getJSONObject(i);
                 if (event.optLong("id") == item.getLong("id") && "delivery".equals(event.optString("stage"))) {
                     count++;
+                    assertTrue("Delivery must happen while the app is in background",
+                            event.optString("detail").contains("appVisible=false"));
                     delay = event.getLong("at") - item.getLong("at");
                 }
             }
@@ -146,6 +161,91 @@ public class ReminderRuntimeTest {
         assertFalse(AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
     }
+
+    @Test public void realVibrationOnlyTaskDeliversWithoutOverlayOrForegroundService() throws Exception {
+        shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
+        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long ready = System.currentTimeMillis() + 30000;
+        while (!"true".equals(js(activity, "!!(window.S && window.NativeNotify && window.planReminders)"))) {
+            assertTrue("Web app failed to load", System.currentTimeMillis() < ready);
+            Thread.sleep(150);
+        }
+        js(activity, "window.__saved='pending'; S.tasks=[{id:'runtime-vibration-only',name:'纯震动后台任务',"
+                + "dueAt:Date.now()+8000,tiers:{120:false,60:false,30:false,5:false},custom:[],"
+                + "daily:false,done:false,quadrant:'q1'}];"
+                + "S.settings.sound=false;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
+                + "save().then(ok=>window.__saved=ok?'ready':'failed')");
+        while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
+            assertTrue("Real vibration-only task save was not acknowledged", System.currentTimeMillis() < ready);
+            Thread.sleep(100);
+        }
+        JSONArray pending = AlarmScheduler.load(ctx);
+        assertEquals(1, pending.length());
+        int id = pending.getJSONObject(0).getInt("id");
+        String before = shellText("dumpsys vibrator_manager");
+        shell("input keyevent KEYCODE_HOME");
+        awaitStage(id, "notification", 15000);
+        assertSystemVibrationChannel(id);
+        awaitNewSystemVibration(before);
+        assertFalse("Vibration-only delivery must not start a service", hasStage(id, "service"));
+        assertFalse(AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+        assertFalse(hasStage(id, "direct_vibration_requested"));
+    }
+
+    private void assertSystemVibrationChannel(int id) {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+            if (active.getId() == AlarmDelivery.notificationId(id)) {
+                android.app.NotificationChannel channel = manager.getNotificationChannel(active.getNotification().getChannelId());
+                assertNotNull(channel);
+                assertTrue("System notification must own background vibration", channel.shouldVibrate());
+                assertArrayEquals(new long[]{0, 350, 150, 350, 150, 650}, channel.getVibrationPattern());
+                return;
+            }
+        }
+        fail("Real system notification missing for " + id);
+    }
+
+    private void awaitNewSystemVibration(String before) throws Exception {
+        long until = System.currentTimeMillis() + 4000;
+        String after = "";
+        while (System.currentTimeMillis() < until) {
+            after = shellText("dumpsys vibrator_manager");
+            for (String line : after.split("\\n")) {
+                if (line.contains("Notification (" + ctx.getPackageName() + " ")
+                        && line.contains("finished") && !before.contains(line.trim())) return;
+            }
+            Thread.sleep(150);
+        }
+        fail("No new completed system vibration for real reminder: " + after
+                + "\nNotifications:\n" + shellText("dumpsys notification --noredact"));
+    }
+
+    private String shellText(String command) throws Exception {
+        try (ParcelFileDescriptor output = instrumentation.getUiAutomation().executeShellCommand(command);
+             java.io.InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(output);
+             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+            return bytes.toString("UTF-8");
+        }
+    }
+
+    @Test public void vibrationOffUsesSeparateSilentSystemChannel() {
+        NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        String vibrate = AlarmDelivery.channelFor("ddlr_high_v3_silent", true);
+        String still = AlarmDelivery.channelFor("ddlr_high_v3_silent", false);
+        assertNotEquals(vibrate, still);
+        AlarmDelivery.ensureChannel(ctx, manager, vibrate);
+        AlarmDelivery.ensureChannel(ctx, manager, still);
+        assertTrue(manager.getNotificationChannel(vibrate).shouldVibrate());
+        assertFalse(manager.getNotificationChannel(still).shouldVibrate());
+    }
+
 
     private String js(MainActivity activity, String script) throws Exception {
         CountDownLatch completed = new CountDownLatch(1);
@@ -236,7 +336,9 @@ public class ReminderRuntimeTest {
 
     private void awaitCompositedBanner() throws Exception {
         // A pre-draw callback/visible rectangle is not proof of screen pixels.
-        long until = System.currentTimeMillis() + 3500;
+        // SystemUI's heads-up window has higher priority than app overlays.
+        // A retained card must still be composited after that temporary cover.
+        long until = System.currentTimeMillis() + 8000;
         while (System.currentTimeMillis() < until) {
             Thread.sleep(200);
             Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();

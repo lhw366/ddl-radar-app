@@ -21,11 +21,13 @@ def adb(*args, check=True, binary=False, timeout=40):
 
 def capture(prefix):
     for label, args in {
-        'logcat': ['logcat', '-d', '-v', 'threadtime', 'DdlTrace:I', 'DdlAlarm:W', '*:S'],
+        'logcat': ['logcat', '-d', '-v', 'threadtime', 'DdlTrace:I', 'DdlAlarm:W', 'NotifAttentionHelper:D', '*:S'],
         'crash': ['logcat', '-d', '-b', 'crash', '-t', '1000'],
         'events': ['logcat', '-d', '-b', 'events', '-v', 'descriptive', '-t', '2000'],
         'alarm': ['shell', 'dumpsys', 'alarm'],
         'services': ['shell', 'dumpsys', 'activity', 'services', PKG],
+        'vibrations': ['shell', 'dumpsys', 'vibrator_manager'],
+        'notifications': ['shell', 'dumpsys', 'notification', '--noredact'],
         'windows': ['shell', 'dumpsys', 'window', 'windows'],
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
@@ -62,6 +64,7 @@ def prepare():
     adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
     adb('shell', 'wm', 'dismiss-keyguard')
     adb('logcat', '-c')
+    adb('shell', 'setprop', 'log.tag.NotifAttentionHelper', 'DEBUG')
 
 
 def instrument(cls, expected):
@@ -155,10 +158,14 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 4)
+    instrument('ReminderRuntimeTest', 6)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
     (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')
+    adb('shell', 'appops', 'set', PKG, 'SYSTEM_ALERT_WINDOW', 'deny')
+    adb('shell', 'pm', 'revoke', PKG, 'android.permission.POST_NOTIFICATIONS')
+    instrument('NotificationDeniedTest', 1)
+    capture('notification-denied')
 
     print('PASS: desktop banner layout, manual dismissal, 5-second expiry, cold process + Doze delivery')
 finally:

@@ -88,8 +88,7 @@ final class ReminderBanner {
                 Button close = new Button(app);
                 close.setText("知道了 · 关闭");
                 close.setOnClickListener(view -> {
-                    NotificationManager manager = (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
-                    if (manager != null) manager.cancel(id);
+                    AlarmDelivery.cancelNotification(app, id);
                     dismiss(id);
                 });
                 card.addView(close);

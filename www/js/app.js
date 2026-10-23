@@ -1066,12 +1066,36 @@ function idleNudge() {
 }
 
 /* ---------------- 通知权限 ---------------- */
-function askNotify() {
+async function askNotify() {
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  if (native && native.notifyStatus) {
+    try {
+      let status = await native.notifyStatus();
+      if (!status.granted && native.requestPermissions) {
+        await native.requestPermissions({ permissions: ['notifications'] });
+        status = await native.notifyStatus();
+        if (status.granted) return;
+      }
+      // Runtime denial and per-channel banner controls both live in this page.
+      if (native.openNotificationSettings) await native.openNotificationSettings();
+      else if (native.openAppDetails) await native.openAppDetails();
+    } catch (error) { toast('通知权限', '请在系统应用信息中查看通知设置。', 'daily'); }
+    return;
+  }
   if (!('Notification' in window)) return;
-  if (Notification.permission === 'default') Notification.requestPermission();
+  if (Notification.permission === 'default') await Notification.requestPermission();
 }
-function refreshNotifyBtn() {
+async function refreshNotifyBtn() {
   const b = $('notifyBtn');
+  b.disabled = false;
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  if (native && native.notifyStatus) {
+    try {
+      const status = await native.notifyStatus();
+      b.textContent = status.granted ? '✅ 系统通知已开启 · 查看通知设置' : '🔔 开启系统通知';
+    } catch (error) { b.textContent = '🔔 查看系统通知设置'; }
+    return;
+  }
   if (!('Notification' in window)) { b.textContent = '此浏览器不支持系统通知'; b.disabled = true; return; }
   const p = Notification.permission;
   b.textContent = p === 'granted' ? '✅ 系统通知已开启' :
@@ -1096,13 +1120,13 @@ async function maybeAskOverlay() {
   try { last = parseInt(localStorage.getItem(stamp) || '0', 10) || 0; } catch (e) { /* ignore */ }
   if (Date.now() - last < 24 * 3600 * 1000) return;
   try { localStorage.setItem(stamp, String(Date.now())); } catch (e) { /* ignore */ }
-  toast('🔓 顶部横幅还差一步授权',
-    '系统未允许「显示在其他应用上层」，所以提醒只能发通知、不会从屏幕顶部弹出。到「我的 → 允许顶部悬浮横幅」开启即可', 'urgent');
+  toast('💬 自定义悬浮横幅未授权',
+    '系统通知和震动不依赖悬浮窗。若提示未知来源权限受限，请到设置里的「未知来源权限受限？」查看应用信息；系统顶部横幅由通知设置控制。', 'urgent');
 }
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1399,9 +1423,23 @@ async function renderDiag() {
   let html = '';
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.overlayAllowed === true,
-    d.overlayAllowed ? '跨应用顶部横幅已授权' : '跨应用顶部横幅未授权：没有它提醒不会从屏幕顶部弹出',
+    d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统通知横幅与震动仍可使用',
     d.overlayAllowed ? '' : 'overlay');
-  html += diagRow((d.channels || 0) >= 4, '提醒通道已创建（' + (d.channels || 0) + '/4）', d.channels >= 4 ? '' : 'reinit');
+  html += diagRow((d.channels || 0) >= 8, '提醒通道已创建（' + (d.channels || 0) + '/8）', d.channels >= 8 ? '' : 'reinit');
+  if (S.settings.vibrate !== false && d.channelVibration === false) {
+    html += diagRow(false, '当前系统通知通道的震动开关被关闭', 'channel');
+  }
+  const environment = d.environment || {};
+  if (typeof environment.debuggable === 'boolean') {
+    html += diagRow(!environment.debuggable, environment.debuggable ? '安装包为可调试构建' : '安装包为正式 Release 构建');
+  }
+  if (environment.signerSha256) html += diagRow(true, 'APK 已签名；证书指纹已包含在复制诊断中');
+  if ([3, 4].includes(environment.packageSource)) {
+    html += diagRow(null, '系统记录为本地/下载文件安装；若被限制权限，请打开应用信息确认受限设置', 'appinfo');
+  }
+  if (environment.backgroundRestricted === true) {
+    html += diagRow(false, '系统报告此应用后台运行受限；当前仅记录状态，不自动更改省电设置', 'appinfo');
+  }
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
     '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
@@ -1447,6 +1485,8 @@ async function renderDiag() {
     html += diagRow(null, '提醒已关闭：响铃、震动和横幅均未启用');
   } else if (!remindBannerEnabled()) {
     html += diagRow(null, '横幅已关闭；响铃和震动仍可由系统闹钟独立执行');
+  } else if (d.overlayAllowed === true) {
+    html += diagRow(true, '使用自定义顶部横幅；系统通知保留震动，避免两个横幅互相遮挡');
   } else if (d.headsUp === false) {
     html += diagRow(false, '当前提醒通道重要性为 ' + d.channelImportance + '/4；请调回「重要」并开启横幅', 'channel');
   } else if (d.headsUp === true) {
@@ -1463,12 +1503,14 @@ async function renderDiag() {
   html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不需要关闭电池优化。异常时请复制诊断。');
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
-    delivery: '开始执行提醒', vibration_requested: '已请求震动', notification: '已提交系统通知',
+    delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
+    direct_vibration_requested: '前台派发服务已请求震动', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
   trace.forEach(e => {
-    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed'].includes(e.stage),
+    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed',
+      'vibration_error', 'vibration_unavailable', 'effects_unavailable'].includes(e.stage),
       escapeHtml(new Date(e.at).toLocaleTimeString() + ' · ' + (stageNames[e.stage] || e.stage) + ' · ' + e.detail));
   });
   if (d.device) html += '<div>' + escapeHtml(d.device + ' · Android ' + d.androidRelease) + '</div>';
@@ -1476,22 +1518,24 @@ async function renderDiag() {
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
-    if (f === 'notify') { askNotify(); setTimeout(refreshNotifyBtn, 500); }
+    if (f === 'notify') { await askNotify(); await refreshNotifyBtn(); }
     if (f === 'appinfo') {
       try { await Capacitor.Plugins.DdlNotify.openAppDetails(); } catch (e) { /* 忽略 */ }
     }
     if (f === 'reinit') {
       await NativeNotify.ensureChannels(true);
-      await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: NativeNotify.channelIdFor(S.settings) });
+      await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: d.channelId || NativeNotify.channelIdFor(S.settings) });
       toast('🔧 已检查提醒通道', '请确认允许通知，并开启横幅；系统保留的开关需在此修改');
     }
     if (f === 'channel') {
       // 通道重要性 App 改不了，只能直达系统设置让用户手动调回「重要」
       try {
-        const channelId = NativeNotify.channelIdFor(S.settings);
+        const channelId = d.channelId || NativeNotify.channelIdFor(S.settings);
         const modeName = S.settings.banner !== false ? '横幅通知' : '无横幅通知';
         await Capacitor.Plugins.DdlNotify.openChannelSettings({ id: channelId });
-        toast('⚙️ 已打开通道设置', '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
+        toast('⚙️ 已打开通道设置', d.overlayAllowed
+          ? '请检查此通道的震动开关；顶部横幅由已授权的悬浮窗显示'
+          : '确认「' + modeName + '」的重要性为「重要/紧急」，并允许横幅显示');
       } catch (e) { toast('⚠️ 打不开设置', '请手动到 系统设置 → 应用 → DDL雷达 → 通知 里调整'); }
     }
     if (f === 'notask') { toast('📌 暂无可提醒事项', '添加带截止时间的事项后，系统提醒会自动排定'); }
@@ -1515,6 +1559,13 @@ async function renderDiag() {
 }
 
 function bindSettings() {
+  const restricted = $('restrictedSettingsBtn');
+  if (restricted) restricted.addEventListener('click', async () => {
+    try {
+      await Capacitor.Plugins.DdlNotify.openAppDetails();
+      toast('查看应用信息页的菜单', '若有「允许受限设置」，请阅读系统说明后自行确认，再返回授权悬浮窗；应用不能代你解除限制。');
+    } catch (e) { toast('请打开系统应用信息', '系统设置 → 应用 → DDL雷达，查看受限设置。'); }
+  });
   const reminderToggle = (id, key) => $(id).addEventListener('change', () => {
     if (S.settings.remindSilent) return;
     S.settings[key] = $(id).checked;
@@ -1577,7 +1628,7 @@ function bindSettings() {
       toast('诊断已复制', '包含设备、权限和提醒各阶段记录，可直接粘贴反馈');
     } catch (error) { toast('复制失败', '请运行诊断查看最后执行的阶段'); }
   });
-  $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
+  $('notifyBtn').addEventListener('click', async () => { await askNotify(); await refreshNotifyBtn(); });
 
   $('verText').textContent = 'v' + APP_VERSION;
   // 版本显示以 CI 写入的 version.json 为准（version+构建号），杜绝手改遗漏：

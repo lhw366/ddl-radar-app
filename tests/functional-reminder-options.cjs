@@ -2,6 +2,45 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
 
+test('APK notification controls use native permission without the browser Notification API', async () => {
+  let opened = 0;
+  const h = harness(['app.js'], { globals: {
+    Capacitor: { Plugins: { DdlNotify: {
+      notifyStatus: async () => ({ granted: true }),
+      openNotificationSettings: async () => { opened++; }
+    } } }
+  } });
+  assert.equal('Notification' in h.context, false);
+  h.el('notifyBtn').disabled = true;
+  await h.run('refreshNotifyBtn()');
+  assert.equal(h.el('notifyBtn').disabled, false);
+  assert.match(h.el('notifyBtn').textContent, /系统通知已开启/);
+  await h.run('askNotify()');
+  assert.equal(opened, 1);
+});
+
+test('APK notification denial requests native permission and opens settings only if still denied', async () => {
+  let granted = false, requests = 0, opened = 0, allowRequest = false;
+  const h = harness(['app.js'], { globals: {
+    Capacitor: { Plugins: { DdlNotify: {
+      notifyStatus: async () => ({ granted }),
+      requestPermissions: async () => { requests++; granted = allowRequest; },
+      openNotificationSettings: async () => { opened++; }
+    } } }
+  } });
+  await h.run('refreshNotifyBtn()');
+  assert.match(h.el('notifyBtn').textContent, /开启系统通知/);
+  await h.run('askNotify()');
+  assert.equal(requests, 1);
+  assert.equal(opened, 1);
+  allowRequest = true;
+  await h.run('askNotify()');
+  await h.run('refreshNotifyBtn()');
+  assert.equal(requests, 2);
+  assert.equal(opened, 1);
+  assert.match(h.el('notifyBtn').textContent, /系统通知已开启/);
+});
+
 test('old reminder presets migrate to independent sound, vibration, and banner fields', () => {
   const h = harness(['nativenotify.js', 'app.js']);
   const migrated = h.run(`normalizeState({
@@ -20,6 +59,21 @@ test('old reminder presets migrate to independent sound, vibration, and banner f
     settings: { remindMode: 'silent' }
   }).settings`);
   assert.equal(silent.remindSilent, true);
+});
+
+test('diagnostic repair opens the actual native vibration channel when a custom overlay is used', async () => {
+  let opened;
+  const h = harness(['nativenotify.js', 'app.js'], { globals: {
+    Capacitor: { isNativePlatform: () => true, Plugins: { DdlAlarm: {}, DdlNotify: {
+      openChannelSettings: async ({id}) => { opened = id; }
+    } } }
+  } });
+  h.context.NativeNotify.diag = async () => ({ native: true, notify: true, overlayAllowed: true,
+    channels: 8, pending: 1, channelVibration: false, channelImportance: 3, headsUp: false,
+    channelId: 'ddlr_gentle_v4_vib_sound' });
+  await h.run('renderDiag()');
+  await h.el('diagList').querySelector('[data-fix="channel"]').click();
+  assert.equal(opened, 'ddlr_gentle_v4_vib_sound');
 });
 
 test('reminder controls are checked independently and silent disables the three outputs', async () => {
@@ -46,7 +100,7 @@ test('reminder controls are checked independently and silent disables the three 
   assert.equal(h.run('reminderOutputsEnabled()'), false);
 });
 
-test('native channel combines only banner and sound; vibration remains a separate flag', () => {
+test('native channel encodes independent banner, sound and vibration choices', () => {
   const h = harness(['nativenotify.js']);
   const channel = h.run(`NativeNotify.channelIdFor({
     sound: true,
@@ -54,7 +108,7 @@ test('native channel combines only banner and sound; vibration remains a separat
     banner: false,
     remindSilent: false
   })`);
-  assert.equal(channel, 'ddlr_gentle_v3_sound');
+  assert.equal(channel, 'ddlr_gentle_v4_still_sound');
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:false,vibrate:true,banner:false,remindSilent:false})'), true);
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:true,vibrate:true,banner:true,remindSilent:true})'), false);
 });
@@ -81,7 +135,7 @@ test('five-second reminder uses the same reconciliation as real events', async (
   const ok = await h.context.NativeNotify.test();
   assert.equal(ok, true);
   assert.equal(scheduled.at - h.context.Date.now(), 5000);
-  assert.equal(scheduled.channelId, 'ddlr_gentle_v3_silent');
+  assert.equal(scheduled.channelId, 'ddlr_gentle_v4_vib_silent');
   assert.equal(scheduled.vibrate, true);
 });
 
@@ -121,7 +175,7 @@ test('silent clears native alarms and vibration-only schedules a silent channel 
   h.context.S.settings = { sound: false, vibrate: true, banner: false, remindSilent: false };
   h.context.NativeNotify._sig = null;
   await h.context.NativeNotify.sync(h.context.S);
-  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v3_silent');
+  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v4_vib_silent');
   assert.equal(applied[1].alarms[0].vibrate, true);
 });
 
@@ -167,4 +221,19 @@ test('banner-only reminders use the migrated high importance silent channel', as
   assert.equal(definition.importance, 4);
   assert.equal(definition.vibration, false);
   assert.equal(definition.sound, 'ddlr_silence.wav');
+});
+
+test('all eight output combinations have separate immutable channel vibration settings', async()=>{
+  const created=[];
+  const h=harness(['nativenotify.js'],{globals:{Capacitor:{Plugins:{DdlNotify:{ensureChannel:async d=>created.push(d)}}}}});
+  await h.context.NativeNotify.ensureChannels();
+  assert.equal(created.length,8);
+  for(const banner of [false,true]) for(const sound of [false,true]) for(const vibrate of [false,true]) {
+    const id=h.context.NativeNotify.channelIdFor({banner,sound,vibrate});
+    const channel=created.find(c=>c.id===id);
+    assert.ok(channel);
+    assert.equal(channel.vibration,vibrate);
+    assert.equal(channel.importance,banner?4:3);
+    assert.equal(id.endsWith('_sound'),sound);
+  }
 });

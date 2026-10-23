@@ -17,10 +17,12 @@
     return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify) || null;
   }
 
-  var CHANNELS = [
-    'ddlr_high_v3_sound', 'ddlr_high_v3_silent',
-    'ddlr_gentle_v3_sound', 'ddlr_gentle_v3_silent'
-  ];
+  var CHANNELS = [];
+  ['high','gentle'].forEach(function(level) {
+    ['vib','still'].forEach(function(vibration) {
+      ['sound','silent'].forEach(function(sound) {CHANNELS.push('ddlr_'+level+'_v4_'+vibration+'_'+sound);});
+    });
+  });
 
   function settingEnabled(settings, key) {
     return !!(settings && settings[key] !== false);
@@ -35,7 +37,7 @@
   function channelIdFor(settings) {
     var banner = settingEnabled(settings, 'banner');
     var sound = settingEnabled(settings, 'sound');
-    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v3_' + (sound ? 'sound' : 'silent');
+    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v4_' + (settingEnabled(settings, 'vibrate') ? 'vib_' : 'still_') + (sound ? 'sound' : 'silent');
   }
 
   var N = {
@@ -123,15 +125,14 @@
     ensureChannels: async function (force) {
       var ddp = DDP();
       if (!ddp) return;
-      // Four fixed channels encode only two independent system-level choices:
-      // heads-up banner on/off and chime on/off. Vibration is executed directly
-      // by the native receiver and is therefore independent of channel history.
-      var defs = [
-        { id: 'ddlr_high_v3_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
-        { id: 'ddlr_high_v3_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
-        { id: 'ddlr_gentle_v3_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_silence.wav' },
-        { id: 'ddlr_gentle_v3_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
-      ];
+      // All three choices are encoded in immutable notification channels.
+      // System-owned vibration survives background app restrictions.
+      var defs = CHANNELS.map(function(id) {
+        var banner=id.indexOf('ddlr_high_')===0, vibrate=id.indexOf('_vib_')>=0;
+        return {id:id, name:'提醒 · '+(banner?'横幅':'通知')+(vibrate?' · 震动':' · 无震动')
+          +(id.endsWith('_sound')?' · 响铃':' · 静音'),importance:banner?4:3,vibration:vibrate,
+          sound:banner||id.endsWith('_sound')?'ddlr_silence.wav':''};
+      });
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
       // 注意：原生侧复用已存在通道，用户手动调整过的
       // 通道设置（静音/换铃声）不再被每次启动抹掉。
@@ -202,6 +203,8 @@
         out.guard = p.guard === true;
         out.wakeHeld = p.wakeHeld === true;
         out.sdk = p.sdk || null;
+        out.environment = p.environment || {};
+        out.channelVibration = p.channelVibration;
         out.device = p.device || '';
         out.appVersion = p.appVersion;
         out.appBuild = p.appBuild;

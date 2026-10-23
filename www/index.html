@@ -257,6 +257,8 @@
           <select id="setBannerDuration"><option value="manual">手动点关闭</option><option value="5s">5 秒后自动消失</option></select>
         </div>
         <button id="bannerPermissionBtn" class="btn full">💬 允许顶部悬浮横幅（跨应用）</button>
+        <button id="restrictedSettingsBtn" class="btn full">🔐 未知来源权限受限？打开应用信息</button>
+        <div class="tip">若系统提示“限制未知来源应用获取部分权限”，请在应用信息页查看右上角菜单中的“允许受限设置”（以手机实际提供的选项为准），再回到悬浮窗授权。签名不能自动解除安装来源限制。无法授权悬浮窗时，提醒仍使用系统通知与震动。</div>
         <div class="tip">开启系统「显示在其他应用上层 / 悬浮窗」后，提醒可在其他 App 上方显示，点击「知道了」关闭。未授权时使用系统通知，系统横幅停留时间由手机控制。锁屏时可在通知栏查看。</div>
         <button id="testRemBtn" class="btn full">🧪 测试提醒（5 秒后触发，验证链路）</button>
         <button id="backgroundTestBtn" class="btn full">⏱️ 后台验证（60 秒后，请退到桌面）</button>
