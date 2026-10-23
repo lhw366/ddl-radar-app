@@ -304,6 +304,7 @@
     // 去重（同一门课可能被相邻格重复解析）
     var seen = {};
     courses = courses.filter(function (c) {
+      if (!isMeaningfulCourseName(c.name)) return false;
       var k = c.day + '|' + c.start + '|' + c.end + '|' + c.name;
       if (seen[k]) return false;
       seen[k] = 1;
@@ -413,6 +414,8 @@
     var t = norm(value);
     if (!t || t.length < 2) return false;
     if (/^[（(]/.test(t)) return false;
+    if (looksLikeRoom(t) && /\d/.test(t)) return false;
+    if (/^(暂无|版权|版权所有|考试方式|考试时间|上课教室|周$|每$)/.test(t)) return false;
     if (/(备注|考试|上课时间|上课教室|每周|单周|双周|学分|教师|教学班|课程代码)/.test(t)) return false;
     if (/^\d+$/.test(t)) return false;
     if (/^第?[一二三四五六七八九十\d]+(?:大)?节?$/.test(t)) return false;

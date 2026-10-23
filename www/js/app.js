@@ -1089,7 +1089,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.2.15';
+const APP_VERSION = '2.3.0';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1162,6 +1162,64 @@ function bindUpdater() {
   const plugin = window.Capacitor && Capacitor.Plugins.ApkInstaller;
   let requestPending = false, nativeBusy = false, pollTimer = null;
   let stateRevision = 0;
+  const announce = (rem, automatic) => {
+    pendingUpdateMirrors = rem.mirrors || [];
+    b.dataset.url = rem.apk || rem.url || pendingUpdateMirrors[0] || '';
+    b.dataset.code = String(rem.code);
+    b.classList.add('primary');
+    b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
+    let notice = $('updateNotice');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.id = 'updateNotice';
+      notice.setAttribute('role', 'status');
+      notice.style.cssText = 'position:fixed;top:env(safe-area-inset-top,12px);left:12px;right:12px;z-index:3000;background:#232a46;color:white;border-radius:14px;padding:16px;box-shadow:0 4px 24px #0005';
+      document.body.appendChild(notice);
+    }
+    notice.innerHTML = '<strong>发现新版本 ' + escapeHtml(String(rem.version || '')) + ' · b' + rem.code + '</strong>'
+      + '<p>更新需要你确认安装。</p><button id="updateNow">立即更新</button> <button id="updateLater">稍后提醒</button>';
+    $('updateNow').onclick = () => { notice.remove(); b.click(); };
+    $('updateLater').onclick = () => {
+      localStorage.setItem('ddlr_updateDismiss', JSON.stringify({code: rem.code, until: Date.now() + 86400000}));
+      notice.remove();
+    };
+    const notify = window.Capacitor && Capacitor.Plugins.DdlNotify;
+    if (automatic && notify && notify.notifyUpdate) {
+      notify.notifyUpdate({code: rem.code, version: String(rem.version || '')}).catch(() => {});
+    }
+  };
+  async function installedCode() {
+    try {
+      const app = window.Capacitor && Capacitor.Plugins.App;
+      if (app && app.getInfo) {
+        const info = await app.getInfo();
+        if (Number(info.build) > 0) return Number(info.build);
+      }
+      const r = await fetch('version.json', {cache: 'no-store'});
+      return r.ok ? Number((await r.json()).code) || 0 : 0;
+    } catch (e) { return 0; }
+  }
+  let autoChecking = false;
+  async function autoCheck() {
+    // Foreground only, at most twice a day; no timer/worker/background network.
+    if (!plugin || document.hidden || autoChecking || requestPending || nativeBusy) return;
+    const last = Number(localStorage.getItem('ddlr_updateChecked') || 0);
+    if (last && Date.now() - last < 12 * 3600000) return;
+    autoChecking = true;
+    try {
+      await initialization;
+      if (requestPending || nativeBusy || b.dataset.url) return;
+      const local = await installedCode();
+      if (!local) return; // Unknown installed version must never produce a false update.
+      localStorage.setItem('ddlr_updateChecked', String(Date.now()));
+      const rem = await fetchRemoteVersion();
+      if (!rem || rem.code <= local) return;
+      const dismissed = JSON.parse(localStorage.getItem('ddlr_updateDismiss') || '{}');
+      if (dismissed.code === rem.code && dismissed.until > Date.now()) return;
+      if (!requestPending && !nativeBusy) announce(rem, true);
+    } catch (e) { /* Offline checks stay quiet; manual retry remains available. */ }
+    finally { autoChecking = false; }
+  }
   const setBusy = () => {
     b.disabled = requestPending || nativeBusy;
     if (b.disabled) b.dataset.busy = '1'; else delete b.dataset.busy;
@@ -1228,15 +1286,16 @@ function bindUpdater() {
     await recoverState();
   })();
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) recoverState();
+    if (!document.hidden) { recoverState(); autoCheck(); }
   });
   if (window.Capacitor && Capacitor.Plugins.App && Capacitor.Plugins.App.addListener) {
     try {
       Promise.resolve(Capacitor.Plugins.App.addListener('appStateChange', (s) => {
-        if (s.isActive) recoverState();
+        if (s.isActive) { recoverState(); autoCheck(); }
       })).catch(() => {});
     } catch (e) { /* 网页端没有 App 生命周期 */ }
   }
+  initialization.then(autoCheck);
   b.addEventListener('click', async () => {
     if (requestPending || nativeBusy) return;
     requestPending = true;
@@ -1278,12 +1337,7 @@ function bindUpdater() {
       const rem = await fetchRemoteVersion();
       if (!rem) throw new Error('暂时无法取得版本信息，请稍后重试');
       if (Number(rem.code) > local) {
-        pendingUpdateMirrors = rem.mirrors || [];
-        b.dataset.url = rem.apk || rem.url || pendingUpdateMirrors[0] || '';
-        if (!b.dataset.url) throw new Error('新版本没有可用的下载地址');
-        b.dataset.code = String(rem.code);
-        b.classList.add('primary');
-        b.textContent = '⬇️ 更新到 ' + (rem.version || '') + ' (b' + rem.code + ')';
+        announce(rem, false);
         toast('🚀 发现新版本 ' + (rem.version || '') + ' (b' + rem.code + ')',
           plugin ? '再点一次获取更新，完成后打开系统安装确认页' : '再点一次按钮，浏览器会下载新 APK');
       } else {
@@ -1731,7 +1785,7 @@ function init() {
   }, 1000);
   setInterval(() => {
     // 提醒补弹：前台 2s 一次；后台降到 ~10s（靠计数跳过，不新增定时器）
-    if (document.hidden && (++tickCount % 5) !== 0) return;
+    if (document.hidden) return;
     tickReminders();
   }, 2000);
   setInterval(() => {

@@ -100,7 +100,7 @@ public class DdlOcrPlugin extends Plugin {
     }
 
     /** 把 ML Kit 结果转成 JS 结构（含坐标，供前端做网格还原） */
-    private JSObject toJs(Text result, Bitmap source) {
+    static JSObject toJs(Text result, Bitmap source) {
         JSObject out = new JSObject();
         out.put("text", result.getText());
         out.put("imageWidth", source.getWidth());

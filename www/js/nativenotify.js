@@ -18,8 +18,8 @@
   }
 
   var CHANNELS = [
-    'ddlr_high_v2_sound', 'ddlr_high_v2_silent',
-    'ddlr_gentle_v2_sound', 'ddlr_gentle_v2_silent'
+    'ddlr_high_v3_sound', 'ddlr_high_v3_silent',
+    'ddlr_gentle_v3_sound', 'ddlr_gentle_v3_silent'
   ];
 
   function settingEnabled(settings, key) {
@@ -35,7 +35,7 @@
   function channelIdFor(settings) {
     var banner = settingEnabled(settings, 'banner');
     var sound = settingEnabled(settings, 'sound');
-    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v2_' + (sound ? 'sound' : 'silent');
+    return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v3_' + (sound ? 'sound' : 'silent');
   }
 
   var N = {
@@ -98,6 +98,9 @@
 
     init: async function () {
       if (!this.available()) return;
+      // Register native alarms before permission dialogs can suspend the WebView.
+      this._sig = null;
+      await this.sync(window.S);
       await this.ensureChannels();
       await this.ensureNotifyPermission();
       // 启动时强制重排一次：SCHED_VER（原生调度规格版本）升级后，
@@ -124,10 +127,10 @@
       // heads-up banner on/off and chime on/off. Vibration is executed directly
       // by the native receiver and is therefore independent of channel history.
       var defs = [
-        { id: 'ddlr_high_v2_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_high_v2_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
-        { id: 'ddlr_gentle_v2_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_chime.wav' },
-        { id: 'ddlr_gentle_v2_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
+        { id: 'ddlr_high_v3_sound',    name: '提醒 · 横幅+响铃', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
+        { id: 'ddlr_high_v3_silent',   name: '提醒 · 横幅静音', importance: 4, vibration: false, sound: 'ddlr_silence.wav' },
+        { id: 'ddlr_gentle_v3_sound',  name: '提醒 · 通知+响铃', importance: 3, vibration: false, sound: 'ddlr_silence.wav' },
+        { id: 'ddlr_gentle_v3_silent', name: '提醒 · 静音通知', importance: 3, vibration: false, sound: '' }
       ];
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
       // 注意：原生侧复用已存在通道，用户手动调整过的
@@ -251,7 +254,7 @@
         try {
           var p = await ddl.pending();
           ok = (p.items || []).some(function (i) { return i.id === 990000001; });
-        } catch (e) { /* 验证失败不否定排定，按已排定提示 */ ok = true; }
+        } catch (e) { throw new Error('无法确认系统闹钟，请重试'); }
         if (ok) {
           if (window.toast) {
             var head = granted ? '✅ 已排定，' + seconds + ' 秒后应提醒'
@@ -323,7 +326,7 @@
       var tiered = (S.settings && S.settings.tiered) ? 1 : 0;
       var dailyTime = (S.settings && S.settings.dailyTime) || '';
       var sig = JSON.stringify([enabled, channelId, vibrate, settings.bannerDuration,
-        tiered, dailyTime, dayKey, slot10, S.tasks, S.timetable || null]);
+        tiered, dailyTime, dayKey, slot10, localStorage.getItem('ddlr_testAt'), S.tasks, S.timetable || null]);
       if (this._sig === sig) return true;
       // ⚠️ 注意：这里**不能**先给 _sig 赋值。
       // 早前是 `this._sig = sig` 写在 try 之前，一旦下面 apply() 抛异常，
@@ -347,7 +350,9 @@
             var list = (typeof planReminders === 'function') ? planReminders(S.tasks[i], settings) : [];
             for (var j = 0; j < list.length; j++) {
               var r = list[j];
-              if (r.at < now - 15 * 60000) continue;      // 已过期
+              // The web catch-up window must not schedule already-past tiers
+              // as a burst of native alarms when a task is first saved.
+              if (r.at < now - 2000) continue;
               if (r.at > now + HORIZON && /\|d\d{4}-/.test(r.key)) continue;    // 超出 7 天窗口
               var id = hashId(r.key);
               if (scheduledIds.has(id)) continue;

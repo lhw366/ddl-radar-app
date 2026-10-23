@@ -17,6 +17,9 @@ import org.junit.runner.RunWith;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
@@ -88,6 +91,69 @@ public class ReminderRuntimeTest {
         for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications()) {
             assertNotEquals(AlarmDelivery.notificationId(11002), notification.getId());
         }
+    }
+
+    @Test public void realSavedGradientAndDeadlineDeliverFromBackgroundWithFiniteSound() throws Exception {
+        shell("cmd notification set_dnd off");
+        shell("media volume --stream 5 --set 5");
+        MainActivity activity = (MainActivity) instrumentation.startActivitySync(
+                new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long ready = System.currentTimeMillis() + 30000;
+        while (!"true".equals(js(activity, "!!(window.S && window.NativeNotify && window.planReminders)"))) {
+            assertTrue("Web app failed to load", System.currentTimeMillis() < ready);
+            Thread.sleep(300);
+        }
+        // Actual five-minute tier and actual deadline, without shortening the
+        // production gradient constants or bypassing save()/the Capacitor bridge.
+        js(activity, "window.__saved='pending'; S.tasks=[{id:'runtime-gradient',name:'真实梯度验收',"
+                + "dueAt:Date.now()+315000,tiers:{120:false,60:false,30:false,5:true},custom:[],"
+                + "daily:false,done:false,quadrant:'q1'}];"
+                + "S.settings.tiered=true;S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;"
+                + "S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
+                + "save().then(ok=>window.__saved=ok?'ready':'failed')");
+        while (!"\"ready\"".equals(js(activity, "window.__saved"))) {
+            assertTrue("Real event save was not acknowledged", System.currentTimeMillis() < ready);
+            Thread.sleep(150);
+        }
+        JSONArray pending = AlarmScheduler.load(ctx);
+        assertEquals("Exactly the enabled tier and the deadline", 2, pending.length());
+        JSONObject tier = pending.getJSONObject(0), due = pending.getJSONObject(1);
+        assertEquals(300000L, due.getLong("at") - tier.getLong("at"));
+        shell("input keyevent KEYCODE_HOME");
+        awaitStage(tier.getInt("id"), "sound_started", 25000);
+        awaitStage(tier.getInt("id"), "sound_completed", 6000);
+        awaitStage(tier.getInt("id"), "overlay_visible", 3000);
+        Thread.sleep(6000);
+        assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+        awaitStage(due.getInt("id"), "sound_started", 315000);
+        awaitStage(due.getInt("id"), "sound_completed", 6000);
+        for (JSONObject item : new JSONObject[]{tier, due}) {
+            long delay = 0;
+            int count = 0;
+            JSONArray events = ReminderTrace.read(ctx);
+            for (int i = 0; i < events.length(); i++) {
+                JSONObject event = events.getJSONObject(i);
+                if (event.optLong("id") == item.getLong("id") && "delivery".equals(event.optString("stage"))) {
+                    count++;
+                    delay = event.getLong("at") - item.getLong("at");
+                }
+            }
+            assertEquals("Each normal occurrence executes once", 1, count);
+            assertTrue("Normal reminder was late by " + delay, delay < 2500);
+        }
+        Thread.sleep(6000);
+        assertFalse(AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+    }
+
+    private String js(MainActivity activity, String script) throws Exception {
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<String> output = new AtomicReference<>();
+        instrumentation.runOnMainSync(() -> activity.getBridge().getWebView().evaluateJavascript(script,
+                value -> { output.set(value); completed.countDown(); }));
+        assertTrue("JavaScript bridge timeout", completed.await(10, TimeUnit.SECONDS));
+        return output.get();
     }
 
     private int visibleCards() {

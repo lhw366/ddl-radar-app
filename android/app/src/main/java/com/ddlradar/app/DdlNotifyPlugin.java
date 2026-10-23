@@ -31,6 +31,39 @@ import java.util.List;
 public class DdlNotifyPlugin extends Plugin {
 
     @PluginMethod
+    public void notifyUpdate(PluginCall call) {
+        int code = call.getInt("code", 0);
+        Context ctx = getContext();
+        if (code <= 0 || !NotificationManagerCompat.from(ctx).areNotificationsEnabled()) {
+            call.resolve(); return;
+        }
+        android.content.SharedPreferences prefs = ctx.getSharedPreferences("ddlr_updates", 0);
+        if (prefs.getInt("announced", 0) >= code) { call.resolve(); return; }
+        try {
+            NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            String channel = "ddlr_updates";
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel definition = new NotificationChannel(channel, "版本更新", NotificationManager.IMPORTANCE_DEFAULT);
+                definition.setSound(null, null);
+                definition.enableVibration(false);
+                manager.createNotificationChannel(definition);
+            }
+            android.content.Intent open = new android.content.Intent(ctx, MainActivity.class)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            android.app.PendingIntent content = android.app.PendingIntent.getActivity(ctx, 19900215, open,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+            android.app.Notification.Builder notification = Build.VERSION.SDK_INT >= 26
+                    ? new android.app.Notification.Builder(ctx, channel) : new android.app.Notification.Builder(ctx);
+            manager.notify(19900215, notification.setSmallIcon(R.drawable.ic_stat_ddlr)
+                    .setContentTitle("DDL雷达有新版本 " + call.getString("version", ""))
+                    .setContentText("点击打开应用，确认后更新 · b" + code)
+                    .setContentIntent(content).setAutoCancel(true).setOnlyAlertOnce(true).build());
+            prefs.edit().putInt("announced", code).apply();
+            call.resolve();
+        } catch (Exception error) { call.reject("更新通知不可用", error); }
+    }
+
+    @PluginMethod
     public void copyDiagnostics(PluginCall call) {
         try {
             android.content.ClipboardManager clipboard = (android.content.ClipboardManager)

@@ -16,6 +16,52 @@ function nativeHarness(apply, extra = {}, alarm = {}) {
   return h;
 }
 
+test('all four normal tiers, custom reminder and deadline have exact times and stable distinct ids', async () => {
+  let alarms;
+  const h = nativeHarness(async p => { alarms = p.alarms; });
+  h.run(`S.settings.tiered=true; S.tasks=[{id:'gradient',name:'正常梯度',
+    dueAt:Date.now()+3*3600000,tiers:{},custom:[{v:45,u:'m'}],daily:false,quadrant:'q1'}]`);
+  await h.run('save()');
+  const due = h.context.S.tasks[0].dueAt;
+  assert.deepEqual(Array.from(alarms, a => (due-a.at)/60000), [120,60,45,30,5,0]);
+  assert.equal(new Set(alarms.map(a => a.id)).size,6);
+  for (const min of [120,60,30,5]) {
+    assert.equal(alarms.find(a => a.id === h.context.NativeNotify.idOf('gradient|t'+min)).at, due-min*60000);
+  }
+});
+
+test('new tasks do not replay already-past gradients as a native alarm burst', async () => {
+  let alarms;
+  const h = nativeHarness(async p => { alarms = p.alarms; });
+  h.run(`S.settings.tiered=true; S.tasks=[{id:'short',name:'十分钟后',dueAt:Date.now()+600000,tiers:{},daily:false,quadrant:'q1'}]`);
+  await h.run('save()');
+  assert.deepEqual(Array.from(alarms,a=>(h.context.S.tasks[0].dueAt-a.at)/60000),[5,0]);
+});
+
+test('a five-second test queued behind an in-flight normal save cannot disappear by signature de-duplication', async () => {
+  let finish;
+  const plans=[];
+  const h=nativeHarness(p=>{
+    plans.push(p.alarms);
+    return plans.length===1 ? new Promise(r=>finish=r) : Promise.resolve({});
+  },{}, {pending:async()=>({items:plans.at(-1)||[]})});
+  const initial=h.run('save()');
+  await new Promise(r=>setImmediate(r));
+  const testing=h.context.NativeNotify.test();
+  await new Promise(r=>setImmediate(r));
+  finish({});
+  await initial;
+  assert.equal(await testing,true);
+  assert.equal(plans.length,2);
+  assert.ok(plans[1].some(a=>a.id===990000001));
+});
+
+test('a readback failure cannot report the test alarm as confirmed', async()=>{
+  const h=nativeHarness(async()=>({}),{}, {pending:async()=>{throw new Error('bridge unavailable')}});
+  assert.equal(await h.context.NativeNotify.test(),false);
+  assert.ok(h.toasts.some(t=>/失败/.test(t[0])));
+});
+
 test('a real saved event reaches native scheduling before its deadline without opening it again', async () => {
   const plans = [];
   const h = nativeHarness(async payload => { plans.push(payload.alarms); });
