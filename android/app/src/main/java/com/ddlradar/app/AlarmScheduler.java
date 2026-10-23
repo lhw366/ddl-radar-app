@@ -18,24 +18,11 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 提醒调度核心：系统闹钟时钟（AlarmManager.setAlarmClock）。
- *
- * 为什么是 setAlarmClock 而不是 setExactAndAllowWhileIdle（v2.2.15 回退）：
- * - setExactAndAllowWhileIdle 属于「可推迟的精确闹钟」：设备进入 Doze、应用被
- *   打入 App Standby 分桶后，系统只承诺在「维护窗口」里派发；国产 ROM
- *   （ColorOS/MIUI 等）对冻结（frozen）应用再压一层，实测延迟可到小时级。
- * - setAlarmClock 被系统当作「用户可见的闹钟」：不参与 Doze 推迟、会唤醒设备、
- *   并且触发时给进程一段临时提权——这三条正是「切后台/锁屏必须响」的前提。
- * - 省电的正确做法是「每个事件只注册一条闹钟」，而不是把唯一可靠的那条通道
- *   换掉。v2.2.10 的双通道（clock + exact 同时刻各一条）才是真正的耗电源：
- *   每条提醒两次唤醒。v2.2.14 为了省电把 clock 整个去掉，等于连可靠性一起删了。
- * - 代价：状态栏一个闹钟图标。这是系统闹钟语义的固有表现，也是可靠性的来源。
- *
- * 权限不可用时逐级降级：setAlarmClock → setExactAndAllowWhileIdle →
- * setAndAllowWhileIdle，并把实际生效的模式写进诊断（不再静默降级）。
- *
- * 闹钟列表持久化在 SharedPreferences，开机/改时间/替换安装后由
- * BootReceiver 调 reapplyAll() 自动恢复（AlarmManager 闹钟不跨重启）。
+ * User-visible reminders use one AlarmClock per occurrence; no duplicate backup
+ * or polling alarm. Android may exit Doze shortly before an AlarmClock fires.
+ * Exact-idle fallback can also run during Doze but has frequency restrictions.
+ * Persisted schedules are restored after reboot, time changes and app updates.
+ * OEM behavior and battery impact require device measurements, not API guesses.
  */
 public final class AlarmScheduler {
 
@@ -48,8 +35,8 @@ public final class AlarmScheduler {
      * v8 = 同时刻备份、临期短唤醒、新版横幅通道
      * v10 = 单路 exact-idle 提醒，退役闹钟时钟与预唤醒，保护系统休眠
      * v11 = 回到单路 setAlarmClock（不再有 exact 备份通道）：v10 的 exact-idle
-     *       单通道在 Doze/ROM 冻结下会被推迟到小时级，是「切后台不响」的根因。
-     *       单通道不变，只换回更可靠的那一条，唤醒次数与 v10 完全一致。
+     *       通道可能受系统频率/ROM 限制，实际问题应依据设备日志判断。
+     *       单通道不变；AlarmClock 可能提前退出 Doze，不能假定功耗与 v10 一样。
      * 放在这里（而不是 DdlAlarmPlugin）是为了让 reapplyAll 也能写入最新版本号：
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
@@ -323,7 +310,7 @@ public final class AlarmScheduler {
 
     /**
      * 注册一条提醒：优先系统闹钟时钟（不可推迟），权限不足时逐级降级。
-     * 无论走到哪一级，每个事件只有一条系统闹钟，唤醒次数不增加。
+     * 无论走到哪一级，每个事件仅注册一条系统闹钟。
      */
     public static synchronized void schedule(Context ctx, long id, long at,
                                 String title, String body, String channelId, boolean vibrate) {
@@ -341,7 +328,7 @@ public final class AlarmScheduler {
             mode = "clock";
         } catch (SecurityException clockDenied) {
             // Android 12+ 用户撤销了「闹钟和提醒」，或个别 ROM 自定义拦截。
-            // 此时退回可推迟的精确闹钟：Doze 里仍有分钟级延迟，但远好于 set()。
+            // 精确空闲闹钟也可在 Doze 派发，但受频率等系统限制。
             try {
                 if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
                 else am.setExact(AlarmManager.RTC_WAKEUP, at, op);

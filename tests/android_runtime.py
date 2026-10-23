@@ -66,7 +66,7 @@ def prepare():
 
 def instrument(cls, expected):
     output = adb('shell', 'am', 'instrument', '-w', '-r', '-e', 'class', f'{PKG}.{cls}',
-                 f'{PKG}.test/androidx.test.runner.AndroidJUnitRunner', timeout=180)
+                 f'{PKG}.test/androidx.test.runner.AndroidJUnitRunner', timeout=440)
     (OUT / f'{cls}.txt').write_text(output, encoding='utf-8')
     # am instrument can exit zero even when the tests failed.
     assert not re.search(r'INSTRUMENTATION_STATUS_CODE: -[12]\b|FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed', output), output
@@ -76,6 +76,11 @@ def instrument(cls, expected):
 assert adb('get-state') == 'device'
 assert adb('shell', 'getprop', 'ro.kernel.qemu') == '1', 'This script only runs on a disposable emulator.'
 try:
+    prepare()
+    instrument('TimetableOcrTest', 1)
+    ocr = adb('exec-out', 'run-as', PKG, 'cat', 'files/timetable-ocr.json')
+    (OUT / 'timetable-ocr.json').write_text(ocr, encoding='utf-8')
+    subprocess.run(['node', 'tests/verify-timetable-ocr.cjs', str(OUT / 'timetable-ocr.json')], check=True)
     prepare()
     instrument('ColdReminderFixture', 1)
     registered = next(e for e in traces() if e['stage'] == 'scheduled' and e['id'] == 11003)
@@ -150,7 +155,7 @@ try:
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 2)
+    instrument('ReminderRuntimeTest', 4)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
     (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')

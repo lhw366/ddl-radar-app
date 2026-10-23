@@ -54,7 +54,7 @@ test('native channel combines only banner and sound; vibration remains a separat
     banner: false,
     remindSilent: false
   })`);
-  assert.equal(channel, 'ddlr_gentle_v2_sound');
+  assert.equal(channel, 'ddlr_gentle_v3_sound');
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:false,vibrate:true,banner:false,remindSilent:false})'), true);
   assert.equal(h.run('NativeNotify.outputsEnabled({sound:true,vibrate:true,banner:true,remindSilent:true})'), false);
 });
@@ -81,7 +81,7 @@ test('five-second reminder uses the same reconciliation as real events', async (
   const ok = await h.context.NativeNotify.test();
   assert.equal(ok, true);
   assert.equal(scheduled.at - h.context.Date.now(), 5000);
-  assert.equal(scheduled.channelId, 'ddlr_gentle_v2_silent');
+  assert.equal(scheduled.channelId, 'ddlr_gentle_v3_silent');
   assert.equal(scheduled.vibrate, true);
 });
 
@@ -121,7 +121,7 @@ test('silent clears native alarms and vibration-only schedules a silent channel 
   h.context.S.settings = { sound: false, vibrate: true, banner: false, remindSilent: false };
   h.context.NativeNotify._sig = null;
   await h.context.NativeNotify.sync(h.context.S);
-  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v2_silent');
+  assert.equal(applied[1].alarms[0].channelId, 'ddlr_gentle_v3_silent');
   assert.equal(applied[1].alarms[0].vibrate, true);
 });
 

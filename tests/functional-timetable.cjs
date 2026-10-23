@@ -1,6 +1,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
+const reference = require('../www/data/timetable-reference.json');
+
+test('one-click reference import adds all 13 verified placements once and preserves lesson times', async()=>{
+  const h=setup([], {fetch:async()=>({ok:true,json:async()=>JSON.parse(JSON.stringify(reference))})});
+  h.context.S.timetable.slots[0]='08:10-09:00';
+  await h.bind();
+  await h.el('ttReferenceBtn').click();
+  assert.equal(h.context.S.timetable.courses.length,13);
+  assert.equal(h.context.S.timetable.slots[0],'08:10-09:00');
+  assert.equal(h.context.S.timetable.courses.find(c=>c.day===3 && c.start===7).end,9);
+  assert.equal(h.context.S.timetable.courses.find(c=>c.day===5 && c.start===5).room,'计算中心二层7-10号机房');
+  await h.el('ttReferenceBtn').click();
+  assert.equal(h.context.S.timetable.courses.length,13);
+});
 
 function course(overrides = {}) {
   return { id: 'math', name: '数学', room: '一教101', day: 4, start: 1, end: 2, week: 'all', remindMin: 15, ...overrides };

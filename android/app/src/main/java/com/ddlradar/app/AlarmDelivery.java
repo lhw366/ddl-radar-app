@@ -127,7 +127,7 @@ final class AlarmDelivery {
         // channel vibration. A silent PCM cue keeps banner-only reminders
         // alerting without adding audible sound or changing direct vibration.
         Uri cue = (sound || banner) ? Uri.parse("android.resource://" + context.getPackageName()
-                + (sound ? "/raw/ddlr_chime" : "/raw/ddlr_silence")) : null;
+                + "/raw/ddlr_silence") : null;
         channel.setSound(cue, cue == null ? null : new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
@@ -136,14 +136,15 @@ final class AlarmDelivery {
     }
 
     static String normalizeChannelId(String id) {
-        if (id != null && (id.equals("ddlr_high_v2_sound") || id.equals("ddlr_high_v2_silent")
-                || id.equals("ddlr_gentle_v2_sound") || id.equals("ddlr_gentle_v2_silent"))) return id;
+        if (id != null) id = id.replace("_v2_", "_v3_");
+        if (id != null && (id.equals("ddlr_high_v3_sound") || id.equals("ddlr_high_v3_silent")
+                || id.equals("ddlr_gentle_v3_sound") || id.equals("ddlr_gentle_v3_silent"))) return id;
         if (id != null && (id.equals("ddlr_high_sound") || id.equals("ddlr_high_silent")
                 || id.equals("ddlr_gentle_sound") || id.equals("ddlr_gentle_silent"))) {
-            return id.replace("_sound", "_v2_sound").replace("_silent", "_v2_silent");
+            return id.replace("_sound", "_v3_sound").replace("_silent", "_v3_silent");
         }
-        if ("ddlr_vib".equals(id)) return "ddlr_high_v2_silent";
-        return "ddlr_high_v2_sound";
+        if ("ddlr_vib".equals(id)) return "ddlr_high_v3_silent";
+        return "ddlr_high_v3_sound";
     }
 
     static int notificationId(int id) {
@@ -183,8 +184,7 @@ final class AlarmDelivery {
             int defaults = channelId.endsWith("_sound") ? Notification.DEFAULT_SOUND : 0;
             builder.setDefaults(defaults);
         }
-        // System-owned sound survives process suspension and avoids double sound
-        // from a notification channel and an additional MediaPlayer.
+        // A finite native service cue owns audible sound; channels never double it.
         builder.setSmallIcon(R.drawable.ic_stat_ddlr)
                 .setContentTitle(title.isEmpty() ? "DDL雷达" : title)
                 .setContentText(body)

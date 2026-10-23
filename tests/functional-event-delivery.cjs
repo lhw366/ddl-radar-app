@@ -16,6 +16,92 @@ function nativeHarness(apply, extra = {}, alarm = {}) {
   return h;
 }
 
+test('backgrounding removes page intervals and resuming creates only one replacement', async()=>{
+  let started=0,stopped=0;
+  const h=harness(['app.js'],{globals:{setInterval:()=>++started,clearInterval:()=>stopped++}});
+  h.run('foregroundInterval(()=>{},1000)');
+  assert.equal(started,1);
+  h.document.hidden=true;
+  await h.document.dispatch('visibilitychange');
+  assert.equal(stopped,1);
+  h.document.hidden=false;
+  await h.document.dispatch('visibilitychange');
+  await h.document.dispatch('visibilitychange');
+  assert.equal(started,2);
+});
+
+test('all four normal tiers, custom reminder and deadline have exact times and stable distinct ids', async () => {
+  let alarms;
+  const h = nativeHarness(async p => { alarms = p.alarms; });
+  h.run(`S.settings.tiered=true; S.tasks=[{id:'gradient',name:'正常梯度',
+    dueAt:Date.now()+3*3600000,tiers:{},custom:[{v:45,u:'m'}],daily:false,quadrant:'q1'}]`);
+  await h.run('save()');
+  const due = h.context.S.tasks[0].dueAt;
+  assert.deepEqual(Array.from(alarms, a => (due-a.at)/60000), [120,60,45,30,5,0]);
+  assert.equal(new Set(alarms.map(a => a.id)).size,6);
+  for (const min of [120,60,30,5]) {
+    assert.equal(alarms.find(a => a.id === h.context.NativeNotify.idOf('gradient|t'+min)).at, due-min*60000);
+  }
+});
+
+test('daily reminders register one native recurrence through the day before the deadline', async()=>{
+  let alarms;
+  const h=nativeHarness(async p=>{alarms=p.alarms;});
+  h.run(`S.settings.tiered=false;S.tasks=[{id:'daily-long',name:'长期任务',dueAt:Date.now()+60*86400000,daily:true,dailyTime:'12:00',quadrant:'q2'}]`);
+  await h.run('save()');
+  const daily=alarms.filter(a=>a.repeatDays===1);
+  assert.equal(daily.length,1);
+  assert.equal(daily[0].id,h.context.NativeNotify.idOf('daily-long|daily'));
+  const midnight=new Date(h.context.S.tasks[0].dueAt);midnight.setHours(0,0,0,0);
+  assert.equal(daily[0].repeatUntil,midnight.getTime()-1);
+});
+
+test('weekly and odd-week courses register native recurrence rather than expiring after seven days', async()=>{
+  let alarms;
+  const h=harness(['timetable.js','nativenotify.js','app.js'],{globals:{Capacitor:{isNativePlatform:()=>true,Plugins:{
+    DdlAlarm:{apply:async p=>{alarms=p.alarms;}}, DdlNotify:{configureDisplay:async()=>({})}
+  }}}});
+  h.run(`S.timetable={slots:Timetable.ensureState().slots,termStart:'2026-10-19',courses:[
+    {id:'weekly',name:'每周课',day:1,start:1,end:2,week:'all'},
+    {id:'odd',name:'单周课',day:2,start:3,end:4,week:'odd'}]}`);
+  await h.run('save()');
+  assert.equal(alarms.length,2);
+  assert.equal(alarms.find(a=>a.id===h.context.NativeNotify.idOf('tt:weekly:recurring')).repeatDays,7);
+  assert.equal(alarms.find(a=>a.id===h.context.NativeNotify.idOf('tt:odd:recurring')).repeatDays,14);
+});
+
+test('new tasks do not replay already-past gradients as a native alarm burst', async () => {
+  let alarms;
+  const h = nativeHarness(async p => { alarms = p.alarms; });
+  h.run(`S.settings.tiered=true; S.tasks=[{id:'short',name:'十分钟后',dueAt:Date.now()+600000,tiers:{},daily:false,quadrant:'q1'}]`);
+  await h.run('save()');
+  assert.deepEqual(Array.from(alarms,a=>(h.context.S.tasks[0].dueAt-a.at)/60000),[5,0]);
+});
+
+test('a five-second test queued behind an in-flight normal save cannot disappear by signature de-duplication', async () => {
+  let finish;
+  const plans=[];
+  const h=nativeHarness(p=>{
+    plans.push(p.alarms);
+    return plans.length===1 ? new Promise(r=>finish=r) : Promise.resolve({});
+  },{}, {pending:async()=>({items:plans.at(-1)||[]})});
+  const initial=h.run('save()');
+  await new Promise(r=>setImmediate(r));
+  const testing=h.context.NativeNotify.test();
+  await new Promise(r=>setImmediate(r));
+  finish({});
+  await initial;
+  assert.equal(await testing,true);
+  assert.equal(plans.length,2);
+  assert.ok(plans[1].some(a=>a.id===990000001));
+});
+
+test('a readback failure cannot report the test alarm as confirmed', async()=>{
+  const h=nativeHarness(async()=>({}),{}, {pending:async()=>{throw new Error('bridge unavailable')}});
+  assert.equal(await h.context.NativeNotify.test(),false);
+  assert.ok(h.toasts.some(t=>/失败/.test(t[0])));
+});
+
 test('a real saved event reaches native scheduling before its deadline without opening it again', async () => {
   const plans = [];
   const h = nativeHarness(async payload => { plans.push(payload.alarms); });

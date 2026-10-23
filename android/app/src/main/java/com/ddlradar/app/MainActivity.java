@@ -27,7 +27,7 @@ public class MainActivity extends BridgeActivity {
         if (bridge != null && bridge.getWebView() != null) {
             // Native alarms and native overlay windows do not use WebView timers.
             bridge.getWebView().onPause();
-            bridge.getWebView().pauseTimers();
+            // Do not globally pause Chromium: pending bridge acknowledgements must drain.
         }
         super.onStop();
     }

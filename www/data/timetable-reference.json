@@ -1,0 +1,18 @@
+{
+  "source": "用户提供的北大课表，仅包含常规课程；习题课备注未作为额外课程导入。截图无作息时间，保留用户已有作息。",
+  "courses": [
+    {"name":"线性代数A（Ⅰ）","day":1,"start":3,"end":4,"room":"理教408","week":"all"},
+    {"name":"高等数学A（一）","day":2,"start":1,"end":2,"room":"二教309","week":"all"},
+    {"name":"英语词汇与英美文化","day":2,"start":5,"end":6,"room":"二教313","week":"all"},
+    {"name":"《周易》讲读","day":2,"start":7,"end":8,"room":"一教203","week":"all"},
+    {"name":"地球系统模拟的成就、困惑与未来","day":2,"start":10,"end":11,"room":"地学304","week":"all"},
+    {"name":"线性代数A（Ⅰ）","day":3,"start":1,"end":2,"room":"理教408","week":"all"},
+    {"name":"计算概论A","day":3,"start":5,"end":6,"room":"理教403","week":"all"},
+    {"name":"习近平新时代中国特色社会主义思想概论","day":3,"start":7,"end":9,"room":"哲学201","week":"all"},
+    {"name":"太极拳","day":4,"start":1,"end":2,"room":"","week":"all","note":"截图无上课教室数据，请按实际安排填写场地"},
+    {"name":"高等数学A（一）","day":4,"start":3,"end":4,"room":"二教309","week":"all"},
+    {"name":"人工智能初级研讨班","day":4,"start":10,"end":11,"room":"三教203","week":"all"},
+    {"name":"计算概论A","day":5,"start":3,"end":4,"room":"理教403","week":"all"},
+    {"name":"计算概论A上机实习课","day":5,"start":5,"end":6,"room":"计算中心二层7-10号机房","week":"all"}
+  ]
+}

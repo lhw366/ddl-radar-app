@@ -119,7 +119,7 @@ function harness(files = ['timetable.js'], options = {}) {
   }
   const context = {
     console, Date: Clock, document, navigator: {}, AbortController,
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1,
+    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     S: options.state || { tasks: [], fired: [], settings: {} },
     confirm: () => true,
     toast: (...args) => toasts.push(args),
