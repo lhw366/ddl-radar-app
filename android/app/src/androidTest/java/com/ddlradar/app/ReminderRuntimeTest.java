@@ -121,18 +121,22 @@ public class ReminderRuntimeTest {
         assertEquals("Exactly the enabled tier and the deadline", 2, pending.length());
         JSONObject tier = pending.getJSONObject(0), due = pending.getJSONObject(1);
         assertEquals(300000L, due.getLong("at") - tier.getLong("at"));
+        String beforeTier = shellText("dumpsys vibrator_manager");
         shell("input keyevent KEYCODE_HOME");
         awaitStage(tier.getInt("id"), "sound_started", 25000);
         awaitStage(tier.getInt("id"), "sound_completed", 6000);
         assertSystemVibrationChannel(tier.getInt("id"));
+        awaitNewSystemVibration(beforeTier);
         assertEquals("No overlay permission is required for system delivery", 0, visibleCards());
         assertFalse(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
+        String beforeDeadline = shellText("dumpsys vibrator_manager");
         awaitStage(due.getInt("id"), "sound_started", 315000);
         awaitStage(due.getInt("id"), "sound_completed", 6000);
         assertSystemVibrationChannel(due.getInt("id"));
+        awaitNewSystemVibration(beforeDeadline);
         for (JSONObject item : new JSONObject[]{tier, due}) {
             long delay = 0;
             int count = 0;
@@ -166,6 +170,32 @@ public class ReminderRuntimeTest {
             }
         }
         fail("Real system notification missing for " + id);
+    }
+
+    private void awaitNewSystemVibration(String before) throws Exception {
+        long until = System.currentTimeMillis() + 4000;
+        String after = "";
+        while (System.currentTimeMillis() < until) {
+            after = shellText("dumpsys vibrator_manager");
+            for (String line : after.split("\\n")) {
+                if (line.contains("Notification (" + ctx.getPackageName() + " ")
+                        && line.contains("finished") && !before.contains(line.trim())) return;
+            }
+            Thread.sleep(150);
+        }
+        fail("No new completed system vibration for real reminder: " + after
+                + "\nNotifications:\n" + shellText("dumpsys notification --noredact"));
+    }
+
+    private String shellText(String command) throws Exception {
+        try (ParcelFileDescriptor output = instrumentation.getUiAutomation().executeShellCommand(command);
+             java.io.InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(output);
+             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+            return bytes.toString("UTF-8");
+        }
     }
 
     @Test public void vibrationOffUsesSeparateSilentSystemChannel() {
@@ -269,7 +299,9 @@ public class ReminderRuntimeTest {
 
     private void awaitCompositedBanner() throws Exception {
         // A pre-draw callback/visible rectangle is not proof of screen pixels.
-        long until = System.currentTimeMillis() + 3500;
+        // SystemUI's heads-up window has higher priority than app overlays.
+        // A retained card must still be composited after that temporary cover.
+        long until = System.currentTimeMillis() + 8000;
         while (System.currentTimeMillis() < until) {
             Thread.sleep(200);
             Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();

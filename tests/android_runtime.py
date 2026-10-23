@@ -27,6 +27,7 @@ def capture(prefix):
         'alarm': ['shell', 'dumpsys', 'alarm'],
         'services': ['shell', 'dumpsys', 'activity', 'services', PKG],
         'vibrations': ['shell', 'dumpsys', 'vibrator_manager'],
+        'notifications': ['shell', 'dumpsys', 'notification', '--noredact'],
         'windows': ['shell', 'dumpsys', 'window', 'windows'],
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
@@ -63,6 +64,7 @@ def prepare():
     adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
     adb('shell', 'wm', 'dismiss-keyguard')
     adb('logcat', '-c')
+    adb('shell', 'setprop', 'log.tag.NotifAttentionHelper', 'DEBUG')
 
 
 def instrument(cls, expected):
