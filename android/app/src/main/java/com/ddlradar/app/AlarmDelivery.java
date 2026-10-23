@@ -44,7 +44,8 @@ final class AlarmDelivery {
             if (title == null || title.isEmpty()) title = "DDL雷达";
             if (body == null) body = "";
             if (channelId == null || channelId.isEmpty()) channelId = "ddlr_high_sound";
-            ReminderTrace.mark(context, id, "delivery", "lateMs=" + (System.currentTimeMillis() - at));
+            ReminderTrace.mark(context, id, "delivery", "lateMs=" + (System.currentTimeMillis() - at)
+                    + ";appVisible=" + MainActivity.visible);
             channelId = channelFor(channelId, vibrate);
             intent.putExtra("channelId", channelId);
             boolean notified = post(context, id, title, body, channelId);
@@ -188,7 +189,6 @@ final class AlarmDelivery {
             builder = new Notification.Builder(context, channelId);
         } else {
             builder = new Notification.Builder(context);
-            int defaults = channelId.endsWith("_sound") ? Notification.DEFAULT_SOUND : 0;
             builder.setDefaults(0);
             if (channelId.contains("_vib_")) builder.setVibrate(new long[]{0, 350, 150, 350, 150, 650});
         }

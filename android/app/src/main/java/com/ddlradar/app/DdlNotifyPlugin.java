@@ -212,7 +212,24 @@ public class DdlNotifyPlugin extends Plugin {
         openAppDetails(call);
     }
 
-    /** 打开系统应用详情页（ColorOS 后台保活引导：自启动/耗电管理在此页内） */
+    /** Open per-app notification controls using the public Settings intent. */
+    @PluginMethod
+    public void openNotificationSettings(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.content.Intent intent = new android.content.Intent(
+                        android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+                call.resolve(new JSObject().put("opened", true));
+                return;
+            }
+        } catch (Exception error) { /* Some OEMs only expose the app info page. */ }
+        openAppDetails(call);
+    }
+
+    /** Open app info; restricted settings, when offered, require user confirmation here. */
     @PluginMethod
     public void openAppDetails(PluginCall call) {
         try {

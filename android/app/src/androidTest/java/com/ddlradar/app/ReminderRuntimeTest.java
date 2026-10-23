@@ -141,6 +141,8 @@ public class ReminderRuntimeTest {
                 JSONObject event = events.getJSONObject(i);
                 if (event.optLong("id") == item.getLong("id") && "delivery".equals(event.optString("stage"))) {
                     count++;
+                    assertTrue("Delivery must happen while the app is in background",
+                            event.optString("detail").contains("appVisible=false"));
                     delay = event.getLong("at") - item.getLong("at");
                 }
             }

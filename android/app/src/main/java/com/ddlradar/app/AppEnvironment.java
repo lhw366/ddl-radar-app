@@ -42,8 +42,10 @@ final class AppEnvironment {
             result.put("ringerMode", audio.getRingerMode());
             result.put("notificationVolume", audio.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION));
         }
-        result.put("notificationVibrationIntensity", android.provider.Settings.System.getInt(
-                context.getContentResolver(), "notification_vibration_intensity", -1));
+        try {
+            result.put("notificationVibrationIntensity", android.provider.Settings.System.getInt(
+                    context.getContentResolver(), "notification_vibration_intensity", -1));
+        } catch (Exception error) { result.put("vibrationIntensityError", error.toString()); }
         if (power != null) {
             result.put("powerSaveMode", power.isPowerSaveMode());
             if (Build.VERSION.SDK_INT >= 23) result.put("batteryExempt", power.isIgnoringBatteryOptimizations(context.getPackageName()));

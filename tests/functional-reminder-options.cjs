@@ -2,6 +2,45 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
 
+test('APK notification controls use native permission without the browser Notification API', async () => {
+  let opened = 0;
+  const h = harness(['app.js'], { globals: {
+    Capacitor: { Plugins: { DdlNotify: {
+      notifyStatus: async () => ({ granted: true }),
+      openNotificationSettings: async () => { opened++; }
+    } } }
+  } });
+  assert.equal('Notification' in h.context, false);
+  h.el('notifyBtn').disabled = true;
+  await h.run('refreshNotifyBtn()');
+  assert.equal(h.el('notifyBtn').disabled, false);
+  assert.match(h.el('notifyBtn').textContent, /系统通知已开启/);
+  await h.run('askNotify()');
+  assert.equal(opened, 1);
+});
+
+test('APK notification denial requests native permission and opens settings only if still denied', async () => {
+  let granted = false, requests = 0, opened = 0, allowRequest = false;
+  const h = harness(['app.js'], { globals: {
+    Capacitor: { Plugins: { DdlNotify: {
+      notifyStatus: async () => ({ granted }),
+      requestPermissions: async () => { requests++; granted = allowRequest; },
+      openNotificationSettings: async () => { opened++; }
+    } } }
+  } });
+  await h.run('refreshNotifyBtn()');
+  assert.match(h.el('notifyBtn').textContent, /开启系统通知/);
+  await h.run('askNotify()');
+  assert.equal(requests, 1);
+  assert.equal(opened, 1);
+  allowRequest = true;
+  await h.run('askNotify()');
+  await h.run('refreshNotifyBtn()');
+  assert.equal(requests, 2);
+  assert.equal(opened, 1);
+  assert.match(h.el('notifyBtn').textContent, /系统通知已开启/);
+});
+
 test('old reminder presets migrate to independent sound, vibration, and banner fields', () => {
   const h = harness(['nativenotify.js', 'app.js']);
   const migrated = h.run(`normalizeState({

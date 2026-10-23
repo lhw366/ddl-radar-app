@@ -40,8 +40,8 @@ public class AlarmReceiver extends BroadcastReceiver {
             delivered = false;
         }
         if (delivered) {
-            // 前台服务不再是投递链路的一环，只用来把悬浮横幅所在的进程留住。
-            // 没有悬浮窗权限时横幅根本不会挂载，起服务纯属白耗电 + 多一条常驻通知。
+            // A finite service is needed only for sound, an allowed overlay,
+            // or direct vibration when notification permission is unavailable.
             String channel = intent.getStringExtra("channelId");
             boolean effects = intent.getBooleanExtra("directVibration", false)
                     || (channel != null && channel.endsWith("_sound"))

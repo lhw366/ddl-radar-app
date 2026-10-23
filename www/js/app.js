@@ -1066,12 +1066,36 @@ function idleNudge() {
 }
 
 /* ---------------- 通知权限 ---------------- */
-function askNotify() {
+async function askNotify() {
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  if (native && native.notifyStatus) {
+    try {
+      let status = await native.notifyStatus();
+      if (!status.granted && native.requestPermissions) {
+        await native.requestPermissions({ permissions: ['notifications'] });
+        status = await native.notifyStatus();
+        if (status.granted) return;
+      }
+      // Runtime denial and per-channel banner controls both live in this page.
+      if (native.openNotificationSettings) await native.openNotificationSettings();
+      else if (native.openAppDetails) await native.openAppDetails();
+    } catch (error) { toast('通知权限', '请在系统应用信息中查看通知设置。', 'daily'); }
+    return;
+  }
   if (!('Notification' in window)) return;
-  if (Notification.permission === 'default') Notification.requestPermission();
+  if (Notification.permission === 'default') await Notification.requestPermission();
 }
-function refreshNotifyBtn() {
+async function refreshNotifyBtn() {
   const b = $('notifyBtn');
+  b.disabled = false;
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  if (native && native.notifyStatus) {
+    try {
+      const status = await native.notifyStatus();
+      b.textContent = status.granted ? '✅ 系统通知已开启 · 查看通知设置' : '🔔 开启系统通知';
+    } catch (error) { b.textContent = '🔔 查看系统通知设置'; }
+    return;
+  }
   if (!('Notification' in window)) { b.textContent = '此浏览器不支持系统通知'; b.disabled = true; return; }
   const p = Notification.permission;
   b.textContent = p === 'granted' ? '✅ 系统通知已开启' :
@@ -1599,7 +1623,7 @@ function bindSettings() {
       toast('诊断已复制', '包含设备、权限和提醒各阶段记录，可直接粘贴反馈');
     } catch (error) { toast('复制失败', '请运行诊断查看最后执行的阶段'); }
   });
-  $('notifyBtn').addEventListener('click', () => { askNotify(); setTimeout(refreshNotifyBtn, 600); });
+  $('notifyBtn').addEventListener('click', async () => { await askNotify(); await refreshNotifyBtn(); });
 
   $('verText').textContent = 'v' + APP_VERSION;
   // 版本显示以 CI 写入的 version.json 为准（version+构建号），杜绝手改遗漏：

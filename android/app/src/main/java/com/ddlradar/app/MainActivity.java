@@ -5,6 +5,7 @@ import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+    static volatile boolean visible;
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ApkInstallerPlugin.class);
@@ -17,6 +18,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override public void onStart() {
         super.onStart();
+        visible = true;
         if (bridge != null && bridge.getWebView() != null) {
             bridge.getWebView().resumeTimers();
             bridge.getWebView().onResume();
@@ -24,6 +26,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override public void onStop() {
+        visible = false;
         if (bridge != null && bridge.getWebView() != null) {
             // Native alarms and native overlay windows do not use WebView timers.
             bridge.getWebView().onPause();
