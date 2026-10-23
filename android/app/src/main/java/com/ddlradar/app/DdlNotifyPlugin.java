@@ -31,6 +31,15 @@ import java.util.List;
 public class DdlNotifyPlugin extends Plugin {
 
     @PluginMethod
+    public void testVibration(PluginCall call) {
+        if (!MainActivity.visible) {
+            call.reject("请保持应用在前台进行原生震动自检");
+            return;
+        }
+        call.resolve(AlarmDelivery.requestNativeVibration(getContext(), 990000002));
+    }
+
+    @PluginMethod
     public void notifyUpdate(PluginCall call) {
         int code = call.getInt("code", 0);
         Context ctx = getContext();

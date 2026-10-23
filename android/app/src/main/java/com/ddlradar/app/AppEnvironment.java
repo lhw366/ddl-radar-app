@@ -37,6 +37,17 @@ final class AppEnvironment {
         ActivityManager activity = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         if (Build.VERSION.SDK_INT >= 28 && activity != null) result.put("backgroundRestricted", activity.isBackgroundRestricted());
         PowerManager power = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        try {
+            android.os.Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= 31) {
+                android.os.VibratorManager manager = (android.os.VibratorManager) context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager == null ? null : manager.getDefaultVibrator();
+            } else vibrator = (android.os.Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            result.put("hasVibrator", vibrator != null && vibrator.hasVibrator());
+        } catch (Exception error) { result.put("vibratorError", error.toString()); }
+        android.app.NotificationManager notifications = (android.app.NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= 23 && notifications != null)
+            result.put("interruptionFilter", notifications.getCurrentInterruptionFilter());
         android.media.AudioManager audio = (android.media.AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (audio != null) {
             result.put("ringerMode", audio.getRingerMode());

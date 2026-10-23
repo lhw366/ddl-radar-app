@@ -22,6 +22,7 @@
     ['vib','still'].forEach(function(vibration) {
       ['sound','silent'].forEach(function(sound) {CHANNELS.push('ddlr_'+level+'_v4_'+vibration+'_'+sound);});
     });
+    ['sound','silent'].forEach(function(sound) {CHANNELS.push('ddlr_'+level+'_v5_native_'+sound);});
   });
 
   function settingEnabled(settings, key) {
@@ -37,7 +38,16 @@
   function channelIdFor(settings) {
     var banner = settingEnabled(settings, 'banner');
     var sound = settingEnabled(settings, 'sound');
+    // Compatibility vibration is an explicit user choice. Keep existing system
+    // channel settings until the user chooses the finite native alarm route.
+    if (settings && settings.vibrationMode === 'native') {
+      return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v5_native_' + (sound ? 'sound' : 'silent');
+    }
     return 'ddlr_' + (banner ? 'high' : 'gentle') + '_v4_' + (settingEnabled(settings, 'vibrate') ? 'vib_' : 'still_') + (sound ? 'sound' : 'silent');
+  }
+
+  function vibrationModeFor(settings) {
+    return settings && settings.vibrationMode === 'native' ? 'native' : 'notification';
   }
 
   var N = {
@@ -125,13 +135,14 @@
     ensureChannels: async function (force) {
       var ddp = DDP();
       if (!ddp) return;
-      // All three choices are encoded in immutable notification channels.
-      // System-owned vibration survives background app restrictions.
+      // Keep existing channels and user settings. The opt-in native route has
+      // its own non-vibrating channels so one alarm never vibrates twice.
       var defs = CHANNELS.map(function(id) {
         var banner=id.indexOf('ddlr_high_')===0, vibrate=id.indexOf('_vib_')>=0;
-        return {id:id, name:'提醒 · '+(banner?'横幅':'通知')+(vibrate?' · 震动':' · 无震动')
+        var nativeVibration=id.indexOf('_v5_native_')>=0;
+        return {id:id, name:'提醒 · '+(banner?'横幅':'通知')+(nativeVibration?' · 原生兼容震动':(vibrate?' · 震动':' · 无震动'))
           +(id.endsWith('_sound')?' · 响铃':' · 静音'),importance:banner?4:3,vibration:vibrate,
-          sound:banner||id.endsWith('_sound')?'ddlr_silence.wav':''};
+          sound:!nativeVibration && (banner||id.endsWith('_sound'))?'ddlr_silence.wav':''};
       });
       // 通道设置签名：与上次一致则跳过（避免反复删通道影响已排定的提醒）。
       // 注意：原生侧复用已存在通道，用户手动调整过的
@@ -184,7 +195,8 @@
       try {
         var settings = (window.S && window.S.settings) || {};
         var channelId = channelIdFor(settings);
-        var p = await DDL().pending({ channelId: channelId });
+        var mode = vibrationModeFor(settings);
+        var p = await DDL().pending({ channelId: channelId, vibrationMode: mode });
         out.pending = (p.items || []).length;
         out.queued = p.queued || 0;
         out.channelId = outputsEnabled(settings) ? (p.channelId || channelId) : null;
@@ -205,6 +217,10 @@
         out.sdk = p.sdk || null;
         out.environment = p.environment || {};
         out.channelVibration = p.channelVibration;
+        out.vibrationMode = p.vibrationMode || mode;
+        out.vibrationStatus = p.vibrationStatus;
+        out.lastVibrationStatus = p.lastVibrationStatus;
+        out.lastVibrationChannel = p.lastVibrationChannel;
         out.device = p.device || '';
         out.appVersion = p.appVersion;
         out.appBuild = p.appBuild;
@@ -241,7 +257,7 @@
       }
       var at = Date.now() + seconds * 1000;
       try {
-        // 权限预检：被拒时系统会静默丢弃通知横幅（原生接收器仍会响铃/震动兜底）
+        // 通知通道模式尊重系统通知权限；原生兼容震动须由用户显式启用。
         var granted = true;
         var ddp = DDP();
         if (ddp) {
@@ -253,27 +269,43 @@
         // Exactly the same reconciliation and delivery route as a saved event.
         if (await this.sync(window.S) === false) throw new Error('后台排定失败');
         // 回读验证：这条闹钟确实在原生存储里
-        var ok = false;
+        var ok = false, readback = null;
         try {
-          var p = await ddl.pending();
+          var p = await ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings) });
+          readback = p;
           ok = (p.items || []).some(function (i) { return i.id === 990000001; });
         } catch (e) { throw new Error('无法确认系统闹钟，请重试'); }
         if (ok) {
           if (window.toast) {
-            var head = granted ? '✅ 已排定，' + seconds + ' 秒后应提醒'
-              : '✅ 已排定 · ' + seconds + ' 秒后应响铃/震动（横幅需通知权限）';
-            window.toast(head, '验证中：退 App 也行。若毫无动静，开「运行诊断」看「上次闹钟触发」', 'urgent');
+            var head = '✅ 已排定，' + seconds + ' 秒后触发系统闹钟';
+            var detail = '请退到桌面验收；闹钟送达与手机实际响铃、震动需分别确认。';
+            if (!granted) detail += vibrationModeFor(settings) === 'native'
+              ? '系统通知权限尚未开启，原生兼容震动将独立尝试。'
+              : '系统通知权限未开启，系统通知与通知通道震动不可用。';
+            if (settingEnabled(settings, 'vibrate') && vibrationModeFor(settings) === 'notification' && readback.channelVibration === false) {
+              detail += '当前系统提醒通道的震动已关闭，请打开「运行诊断」修复。';
+            }
+            window.toast(head, detail, 'urgent');
           }
           // +8s 自报告（留在 App 内时）：确证闹钟真的触发了，不用再开诊断
           setTimeout(function () {
             if (document.hidden) return; // 退到后台的验证场景以实际通知为准
-            ddl.pending().then(function (p) {
+            ddl.pending({ channelId: channelIdFor(settings), vibrationMode: vibrationModeFor(settings) }).then(function (p) {
               var gone = !(p.items || []).some(function (i) { return i.id === 990000001; });
               var fired = p.lastFireId === 990000001 && p.lastFireAt >= at - 2000;
               if (fired && gone && window.toast) {
                 var viaTxt = p.lastFireVia === 'exact' ? '经精确闹钟备份' : '经系统闹钟';
-                window.toast('🔔 测试闹钟已触发（' + viaTxt + '）',
-                  '刚才应已响铃/震动。若什么都没感觉到，请把「运行诊断」截图反馈', 'urgent');
+                var detail = '提醒已到达原生接收器；请以手机实际声音、震动和横幅为准。';
+                if (settingEnabled(settings, 'vibrate')) {
+                  if (vibrationModeFor(settings) === 'native') {
+                    detail = '当前使用原生兼容震动；调用记录不能证明硬件已震动，请以实际触感为准。';
+                  } else if (p.channelVibration === false) {
+                    detail = '系统已关闭当前提醒通道的震动，请打开「运行诊断」修复。闹钟送达不代表手机已震动。';
+                  } else {
+                    detail = '震动由系统通知通道处理；闹钟送达不能证明硬件已震动，请以实际触感为准。';
+                  }
+                }
+                window.toast('🔔 测试闹钟已送达（' + viaTxt + '）', detail, 'urgent');
               } else if (!gone && window.toast) {
                 window.toast('⚠️ 闹钟到点未触发', '系统未派发广播：请把「运行诊断」截图反馈', 'tt-urgent');
               }

@@ -85,6 +85,9 @@ try:
     (OUT / 'timetable-ocr.json').write_text(ocr, encoding='utf-8')
     subprocess.run(['node', 'tests/verify-timetable-ocr.cjs', str(OUT / 'timetable-ocr.json')], check=True)
     prepare()
+    instrument('VibrationPolicyTest', 2)
+    capture('blocked-channel')
+    prepare()
     instrument('ColdReminderFixture', 1)
     registered = next(e for e in traces() if e['stage'] == 'scheduled' and e['id'] == 11003)
     adb('shell', 'input', 'keyevent', 'KEYCODE_HOME')
@@ -146,19 +149,22 @@ try:
     events = []
     while time.monotonic() < until:
         events = [e for e in traces() if e['id'] == 11003]
-        if {'receiver', 'service', 'vibration_requested', 'notification', 'wake_released'} <= {e['stage'] for e in events}:
+        if {'receiver', 'service', 'direct_vibration_requested', 'notification', 'wake_released'} <= {e['stage'] for e in events}:
             break
         time.sleep(1)
     else:
         raise AssertionError(f'Cold/Doze event was not delivered: {events}')
     receiver = next(e for e in events if e['stage'] == 'receiver')
     assert receiver['pid'] != registered['pid'], 'System must restart the process to deliver this event.'
+    cold_vibrations = adb('shell', 'dumpsys', 'vibrator_manager')
+    assert any(f'| {PKG} (uid=' in line and 'finished' in line and 'usage: NOTIFICATION' in line
+               for line in cold_vibrations.splitlines()), 'Cold native vibration was not completed by the system.'
     (OUT / 'cold-doze-trace.json').write_text(json.dumps(events, indent=2), encoding='utf-8')
     capture('cold-doze')
     adb('shell', 'dumpsys', 'deviceidle', 'unforce')
     adb('shell', 'dumpsys', 'battery', 'reset')
     prepare()
-    instrument('ReminderRuntimeTest', 6)
+    instrument('ReminderRuntimeTest', 8)
     capture('desktop')
     (OUT / 'manual-banner.png').write_bytes(adb('exec-out', 'run-as', PKG, 'cat', 'files/runtime-manual.png', binary=True))
     (OUT / 'desktop-trace.json').write_text(json.dumps(traces(), indent=2), encoding='utf-8')

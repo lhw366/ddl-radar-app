@@ -106,7 +106,8 @@ public class AlarmService extends Service {
             // Keep foreground priority through the short, finite vibration.
             AlarmDelivery.vibrateFallback(this, lastId, intent.getBooleanExtra("directVibration", false));
             ReminderSound.play(this, lastId, intent.getStringExtra("channelId"));
-            effectsUntil = SystemClock.uptimeMillis() + 4000L;
+            String channel = intent.getStringExtra("channelId");
+            effectsUntil = SystemClock.uptimeMillis() + (channel != null && channel.endsWith("_sound") ? 4000L : 2200L);
         }
         handler.removeCallbacks(finishEffects);
         handler.postDelayed(finishEffects, Math.max(1L, effectsUntil - SystemClock.uptimeMillis()));

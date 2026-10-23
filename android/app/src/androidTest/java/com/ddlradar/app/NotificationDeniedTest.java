@@ -21,10 +21,10 @@ public class NotificationDeniedTest {
         context.startActivity(new Intent(context, AlarmActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         long at = System.currentTimeMillis() + 4000;
         JSONObject event = new JSONObject().put("id", 11004).put("at", at).put("title", "通知拒绝时兜底")
-                .put("body", "有限前台服务").put("channel", "ddlr_high_v4_vib_silent").put("vibrate", true)
+                .put("body", "有限前台服务").put("channel", "ddlr_high_v5_native_silent").put("vibrate", true)
                 .put("scheduled", true).put("v", AlarmScheduler.SCHED_VER);
         AlarmScheduler.save(context, new JSONArray().put(event));
-        AlarmScheduler.schedule(context, 11004, at, "通知拒绝时兜底", "有限前台服务", "ddlr_high_v4_vib_silent", true);
+        AlarmScheduler.schedule(context, 11004, at, "通知拒绝时兜底", "有限前台服务", "ddlr_high_v5_native_silent", true);
         instrument.getUiAutomation().executeShellCommand("input keyevent KEYCODE_HOME").close();
         boolean service = false, request = false;
         long end = System.currentTimeMillis() + 16000;
