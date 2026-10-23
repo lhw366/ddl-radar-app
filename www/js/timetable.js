@@ -848,9 +848,9 @@
     });
   }
 
-  function confirmImport() {
+  async function confirmImport(skipReview) {
     if (!pendingCourses || !pendingCourses.length) return;
-    readReview();
+    if (skipReview !== true) readReview();
     if (!pendingCourses.some(function (c) { return !!c.name; })) {
       if (window.toast) toast('⚠️ 课程名不能为空', '请填写课程名后再确认导入');
       return;
@@ -878,15 +878,13 @@
       added++;
     });
     if (pendingSlots) tt.slots = pendingSlots;
-    if (window.save) save();
+    var scheduled = window.save ? await save() : true;
     cancelImport();
     document.getElementById('ttImportHint').classList.add('hidden');
     document.getElementById('ttOcrStatus').textContent = '';
     render();
-    if (window.NativeNotify && window.NativeNotify.syncTimetable) {
-      try { window.NativeNotify.syncTimetable(window.S); } catch (e) {}
-    }
-    if (window.toast) toast('📚 课表已导入', '共 ' + added + ' 门课，已按上课时间生成提醒');
+    if (window.toast) toast('📚 课表已导入', '新增 ' + added + ' 个上课时段。'
+      + (scheduled === false ? '后台提醒未排定，请打开运行诊断重试。' : '请核对开学日期与每节课时刻。'));
   }
 
   /* ---------------- 绑定 ---------------- */
@@ -927,6 +925,23 @@
       });
     }
     updateTermHint();
+
+    var reference = document.getElementById('ttReferenceBtn');
+    if (reference) reference.addEventListener('click', async function () {
+      if (reference.disabled) return;
+      reference.disabled = true;
+      try {
+        var response = await fetch('data/timetable-reference.json');
+        if (!response.ok) throw new Error('参考课表读取失败');
+        var sample = await response.json();
+        cancelImport();
+        pendingCourses = sample.courses;
+        pendingSlots = null; // The supplied screenshot has no lesson clock times.
+        await confirmImport(true);
+      } catch (error) {
+        if (window.toast) toast('课表导入未完成', error.message || String(error));
+      } finally { reference.disabled = false; }
+    });
 
     var importBtn = document.getElementById('ttImportBtn');
     if (importBtn) importBtn.addEventListener('click', function () {
