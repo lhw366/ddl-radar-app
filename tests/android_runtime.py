@@ -88,6 +88,14 @@ def instrument(cls, expected):
     assert len(re.findall(r'INSTRUMENTATION_STATUS_CODE: 0\b', output)) == expected, output
 
 
+def process_block(processes, pid):
+    # `dumpsys activity processes` exposes per-process isFrozen, but does not
+    # include CachedAppOptimizer's separate "Apps frozen" summary on all builds.
+    match = re.search(r'^  \*APP\*[^\n]*\b' + re.escape(str(pid)) + ':' + re.escape(PKG)
+                      + r'/[^\n]*\n(.*?)(?=^  \*|\Z)', processes, re.M | re.S)
+    return match.group(1) if match else ''
+
+
 def frozen_real_task():
     # Instrumentation is over: the host drives HOME/freeze and only reads files
     # and system dumps. No test thread or WebView callback keeps the app active.
@@ -99,7 +107,21 @@ def frozen_real_task():
     adb('shell', 'am', 'start', '-W', '-n', PKG + '/.MainActivity')
     time.sleep(3)
     adb('shell', 'input', 'keyevent', 'KEYCODE_HOME')
-    time.sleep(2)
+    # Never freeze a pending HOME/stop transaction: that manufactures an input
+    # ANR instead of exercising the cached app state we intend to test.
+    stopped = False
+    for _ in range(40):
+        raw_lifecycle = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/ddlr_lifecycle.xml', check=False)
+        try:
+            entries = {e.attrib['name']: int(e.attrib['value']) for e in ET.fromstring(raw_lifecycle).findall('long')}
+            stopped = entries.get('lastBackgroundAt', 0) > entries.get('lastForegroundAt', 0) > 0
+        except (ET.ParseError, KeyError, ValueError):
+            pass
+        if stopped:
+            break
+        time.sleep(0.5)
+    assert stopped, 'HOME must complete onStop before freezing the app.'
+    time.sleep(1)
     pid = adb('shell', 'pidof', PKG)
     assert pid.isdigit(), 'The cached test needs one live application process.'
     before_vibration = adb('shell', 'dumpsys', 'vibrator_manager')
@@ -108,8 +130,9 @@ def frozen_real_task():
     frozen = ''
     for _ in range(20):
         processes = adb('shell', 'dumpsys', 'activity', 'processes')
-        section = processes.split('Apps frozen:', 1)[-1].split('\n\n', 1)[0]
-        if re.search(r':\s+' + re.escape(pid) + r'\s+' + re.escape(PKG) + r'\b', section):
+        section = process_block(processes, pid)
+        if 'isFrozen=true' in section:
+            assert 'mNotResponding=true' not in section, 'Must not manufacture an ANR by freezing an active activity.'
             frozen = processes
             break
         time.sleep(0.2)
