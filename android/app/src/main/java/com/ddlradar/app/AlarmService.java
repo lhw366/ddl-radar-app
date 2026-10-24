@@ -103,11 +103,20 @@ public class AlarmService extends Service {
             // 保留这次调用是为了覆盖「服务被系统/测试单独拉起」的场景。
             try { AlarmDelivery.deliver(this, intent); }
             catch (Exception error) { Log.e("DdlAlarm", "Reminder delivery failed", error); }
+            // Add the native window only after startForeground succeeded.
+            // Background overlays must not depend on a paused WebView or on
+            // the short-lived broadcast receiver keeping the process alive.
+            String channel = intent.getStringExtra("channelId");
+            if (channel != null && channel.startsWith("ddlr_high_")) {
+                boolean autoDismiss = getSharedPreferences("ddlr_display", MODE_PRIVATE)
+                        .getBoolean("autoDismiss", false);
+                ReminderBanner.show(this, AlarmDelivery.notificationId(lastId),
+                        intent.getStringExtra("title"), intent.getStringExtra("body"), autoDismiss);
+            }
             // Keep foreground priority through the short, finite vibration.
             AlarmDelivery.vibrateFallback(this, lastId, intent.getBooleanExtra("directVibration", false),
                     intent.getBooleanExtra("vibrateInSilent", true));
             ReminderSound.play(this, lastId, intent.getStringExtra("channelId"));
-            String channel = intent.getStringExtra("channelId");
             effectsUntil = SystemClock.uptimeMillis() + (ReminderSound.canPlay(this, channel) ? 4000L : 2200L);
         }
         handler.removeCallbacks(finishEffects);

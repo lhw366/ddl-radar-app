@@ -99,19 +99,71 @@ test('light accent buttons use legible foregrounds and dark-to-light gradients r
   assert.ok(api.contrast(api.color(mixed['--on-accent']), api.color(mixed['--action-bg'])) >= 4.5);
 });
 
-test('light and dark photo skins keep body, muted text and accents legible without altering the saved palette', () => {
+test('photo skins keep light lettering and translucent glass without altering the saved palette', () => {
   const h = harness(['readability.js']), api = h.context.AppReadability;
   for (const palette of [tokens(), tokens({ card: 'rgba(28,30,40,.78)', strong: 'rgba(34,36,48,.96)',
     tab: 'rgba(22,24,34,.9)', text: '#eef0f6', dim: '#9aa0b5', accent: '#c5df50', accent2: '#814cf0' })]) {
     const before = JSON.stringify(palette), derived = api.derive(palette, true);
-    for (const fg of ['--readable-text', '--readable-dim', '--readable-accent', '--readable-accent-2']) {
-      for (const bg of ['--surface-card', '--surface-strong', '--surface-tab']) {
-        assert.ok(api.contrast(api.color(derived[fg]), api.color(derived[bg])) >= 4.5, fg + ' on ' + bg);
-      }
+    const foreground = api.color(derived['--readable-text']);
+    assert.ok(foreground.slice(0, 3).every(channel => channel > 240), 'photo lettering stays light');
+    for (const bg of ['--surface-card', '--surface-strong', '--surface-tab']) {
+      assert.ok(api.color(derived[bg])[3] < 0.8, bg + ' preserves the photo');
     }
-    assert.doesNotMatch(derived['--surface-card'], /rgba/);
+    assert.equal(derived['--ui-color-scheme'], 'dark');
     assert.equal(JSON.stringify(palette), before);
   }
+});
+
+test('image-region sampling distinguishes bright and dark areas and only adds a thin local shade', () => {
+  const h = harness(['readability.js']), api = h.context.AppReadability;
+  const grid = { width: 4, height: 2, values: [0.98, 0.70, 0.03, 0.02, 0.91, 0.96, 0.01, 0.05] };
+  const bright = api.sampleRegion(grid, { left: 0, top: 0, right: 0.5, bottom: 1 });
+  const dark = api.sampleRegion(grid, { left: 0.5, top: 0, right: 1, bottom: 1 });
+  assert.ok(bright.mean > 0.85 && dark.mean < 0.06);
+  const strong = api.lightingFor(bright), soft = api.lightingFor(dark);
+  assert.equal(strong.tone, 'bright');
+  assert.equal(soft.tone, 'dark');
+  assert.ok(strong.shade > soft.shade && strong.shade <= 0.16);
+  assert.notEqual(strong.shadow, soft.shadow);
+  assert.ok(api.sampleRegion(grid, { left: -1, top: -1, right: 2, bottom: 2 }).mean > 0, 'cover bounds are clamped');
+  const flat = api.lightingFor({ mean: 0.98, p90: 1, spread: 0.02 });
+  assert.equal(flat.tone, 'flat-light');
+  assert.equal(flat.shadow, 'none');
+  assert.equal(flat.shade, 0);
+  assert.ok(api.color(flat.ink).slice(0, 3).every(channel => channel > 60 && channel < 100), 'flat white regions use soft slate, not harsh black or a panel');
+});
+
+test('wallpaper decoding is cached and a stale image callback cannot replace the current image', () => {
+  const images = [], properties = new Map();
+  let draws = 0;
+  class Photo {
+    constructor() { this.naturalWidth = 64; this.naturalHeight = 64; images.push(this); }
+    set src(value) { this.source = value; }
+  }
+  const palette = tokens();
+  const h = harness(['readability.js'], { globals: { Image: Photo, innerWidth: 360, innerHeight: 800,
+    getComputedStyle: () => ({ getPropertyValue: name => ({ '--card': palette.card, '--card-strong': palette.strong,
+      '--tab-bg': palette.tab, '--text': palette.text, '--text-dim': palette.dim, '--accent': palette.accent,
+      '--accent-2': palette.accent2, '--chip-on': palette.chip })[name] || '' })
+  } });
+  h.document.body.style = { setProperty: (key, value) => properties.set(key, value), getPropertyValue: key => properties.get(key) || '' };
+  h.document.createElement = () => ({ getContext: () => ({ drawImage: () => { draws++; },
+    getImageData: (x, y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4).fill(255) }) }) });
+  h.context.S.settings = { bgImage: 'first-local-photo', bgDim: 35 };
+  h.context.AppReadability.refresh();
+  h.context.AppReadability.refresh();
+  assert.equal(images.length, 1);
+  h.context.S.settings.bgImage = 'second-local-photo';
+  h.context.AppReadability.refresh();
+  assert.equal(images.length, 2);
+  images[0].onload();
+  assert.equal(draws, 0);
+  images[1].onload();
+  assert.equal(draws, 1);
+  h.context.S.settings.bgDim = 70;
+  h.context.AppReadability.refresh();
+  assert.equal(images.length, 2);
+  assert.equal(draws, 1, 'brightness changes reuse the thumbnail');
 });
 
 test('readability refresh follows theme changes, is idempotent and never modifies stored settings', () => {
@@ -144,5 +196,9 @@ test('mobile layout constrains overflowing settings descendants and photo/gestur
   assert.match(css, /\.diag-row > span\{[^}]*overflow-wrap:anywhere/);
   assert.match(css, /\.slider-row input\[type=range\]\{[^}]*min-width:0/);
   assert.match(css, /\.set-line > select\{[^}]*flex:1 1 9rem/);
+  assert.doesNotMatch(css, /body\[data-wallpaper=true\] #topbar\{ background:/);
+  assert.match(css, /radial-gradient\(ellipse at center,rgba\(2,7,15,var\(--photo-shade/);
+  assert.match(css, /\.toast\.compact\{[^}]*max-height:48px/);
+  assert.match(css, /\.toast button\{[^}]*min-height:28px/);
   assert.match(html, /js\/app\.js[\s\S]*js\/gestures\.js[\s\S]*js\/readability\.js/);
 });

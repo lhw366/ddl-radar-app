@@ -1,132 +1,170 @@
 package com.ddlradar.app;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/**
- * 闹钟式全屏提醒页：系统闹钟响铃时的同款体验——
- * 锁屏/灭屏状态下由通知的全屏 Intent（fullScreenIntent）直接拉起，
- * 亮屏、越过锁屏显示，确保后台/锁屏时的提醒「看得见」。
- */
+/** Small lock-screen card opened through the existing full-screen notification intent. */
 public class AlarmActivity extends Activity {
-
-    /** 通知 id：用于用户点「知道了」后撤销对应提醒通知 */
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable timeout = () -> closeReminder("timeout", true);
     private int notifId = -1;
+    private long expiresAt;
+    private boolean receiverRegistered;
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            // Preserve the notification for later; the screen may sleep normally.
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) closeReminder("screen_off", false);
+        }
+    };
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
         } else {
-            getWindow().addFlags(WindowManagerFlags.showWhenLocked | WindowManagerFlags.turnScreenOn);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
         }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF));
+        receiverRegistered = true;
+        render(getIntent(), state == null ? 0 : state.getLong("expiresAt", 0));
+    }
 
-        String title = getIntent().getStringExtra("title");
-        String body = getIntent().getStringExtra("body");
-        notifId = getIntent().getIntExtra("notifId", -1);
+    private void render(Intent intent, long restoredExpiry) {
+        main.removeCallbacks(timeout);
+        notifId = intent.getIntExtra("notifId", -1);
+        String title = intent.getStringExtra("title"), body = intent.getStringExtra("body");
         if (title == null || title.isEmpty()) title = "DDL雷达 提醒";
         if (body == null) body = "";
+        boolean automatic = intent.getBooleanExtra("autoDismiss", false);
 
-        int pad = dp(24);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(Color.parseColor("#1b2140"));
+        LinearLayout card = new LinearLayout(this);
+        card.setTag("ddlr-alarm-card");
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(14), dp(18), dp(12));
+        GradientDrawable surface = new GradientDrawable();
+        surface.setColor(Color.argb(246, 30, 35, 52));
+        surface.setCornerRadius(dp(20));
+        surface.setStroke(dp(1), Color.argb(45, 224, 235, 255));
+        card.setBackground(surface);
 
-        TextView icon = new TextView(this);
-        icon.setText("⏰");
-        icon.setTextSize(56);
-        icon.setGravity(Gravity.CENTER);
-        root.addView(icon);
+        card.addView(text("DDL雷达 · 到点提醒", 11, Color.rgb(151, 222, 204)));
+        TextView heading = text(title, 17, Color.rgb(242, 246, 255));
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        heading.setMaxLines(2);
+        heading.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams headingLayout = new LinearLayout.LayoutParams(-1, -2);
+        headingLayout.topMargin = dp(8);
+        card.addView(heading, headingLayout);
+        TextView detail = text(body, 13, Color.rgb(185, 197, 218));
+        detail.setMaxLines(3);
+        detail.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams bodyLayout = new LinearLayout.LayoutParams(-1, -2);
+        bodyLayout.topMargin = dp(6);
+        card.addView(detail, bodyLayout);
+        if (body.isEmpty()) detail.setVisibility(View.GONE);
 
-        TextView tv = new TextView(this);
-        tv.setText(title);
-        tv.setTextSize(22);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(Color.WHITE);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(0, dp(20), 0, dp(8));
-        root.addView(tv);
+        Button acknowledge = new Button(this);
+        acknowledge.setTag("ddlr-alarm-ack");
+        acknowledge.setText("知道了");
+        acknowledge.setTextSize(13);
+        acknowledge.setTextColor(Color.rgb(211, 246, 235));
+        acknowledge.setAllCaps(false);
+        acknowledge.setPadding(0, 0, 0, 0);
+        acknowledge.setMinimumHeight(0);
+        acknowledge.setMinimumWidth(0);
+        acknowledge.setStateListAnimator(null);
+        GradientDrawable button = new GradientDrawable();
+        button.setColor(Color.rgb(42, 68, 67));
+        button.setCornerRadius(dp(14));
+        acknowledge.setBackground(button);
+        acknowledge.setOnClickListener(view -> closeReminder("user", true));
+        LinearLayout.LayoutParams buttonLayout = new LinearLayout.LayoutParams(dp(88), dp(44));
+        buttonLayout.gravity = Gravity.END;
+        buttonLayout.topMargin = dp(10);
+        card.addView(acknowledge, buttonLayout);
+        setContentView(card);
 
-        TextView bv = new TextView(this);
-        bv.setText(body);
-        bv.setTextSize(15);
-        bv.setTextColor(Color.parseColor("#c9cff2"));
-        bv.setGravity(Gravity.CENTER);
-        bv.setPadding(0, 0, 0, dp(28));
-        root.addView(bv);
-
-        Button ok = new Button(this);
-        ok.setText("知道了");
-        ok.setTextColor(Color.WHITE);
-        ok.setTextSize(16);
-        ok.setBackground(rounded("#5b6bd6"));
-        ok.setPadding(dp(40), dp(12), dp(40), dp(12));
-        ok.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // 顺手撤销对应的提醒通知：否则用户点完「知道了」，
-                // 通知栏里那条提醒还挂着，得再去划掉一次。
-                try {
-                    if (notifId != -1) {
-                        AlarmDelivery.cancelNotification(AlarmActivity.this, notifId);
-                    }
-                } catch (Exception ignore) {}
-                finish();
+        Window window = getWindow();
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        window.setDimAmount(.3f);
+        window.setGravity(Gravity.CENTER);
+        window.setLayout(Math.min(dp(360), getResources().getDisplayMetrics().widthPixels - dp(32)),
+                WindowManager.LayoutParams.WRAP_CONTENT);
+        card.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+            @Override public boolean onPreDraw() {
+                card.getViewTreeObserver().removeOnPreDrawListener(this);
+                if (notifId != -1) ReminderTrace.mark(AlarmActivity.this, notifId & Integer.MAX_VALUE, "alarm_page_shown",
+                        "autoDismiss=" + automatic + ";width=" + card.getWidth() + ";height=" + card.getHeight()
+                                + ";keepScreenOn=" + ((getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0));
+                return true;
             }
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.gravity = Gravity.CENTER_HORIZONTAL;
-        root.addView(ok, lp);
-
-        setContentView(root);
-        Window w = getWindow();
-        if (w != null) {
-            w.addFlags(WindowManagerFlags.keepScreenOn);
-            w.setStatusBarColor(Color.parseColor("#1b2140"));
-        }
+        expiresAt = automatic ? (restoredExpiry > 0 ? restoredExpiry : SystemClock.uptimeMillis() + 5000) : 0;
+        if (automatic) main.postDelayed(timeout, Math.max(1, expiresAt - SystemClock.uptimeMillis()));
     }
 
-    @Override
-    protected void onNewIntent(Intent intent) {
+    private TextView text(String value, int size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setIncludeFontPadding(false);
+        return view;
+    }
+
+    private void closeReminder(String reason, boolean acknowledge) {
+        if (isFinishing()) return;
+        if (notifId != -1) {
+            if (acknowledge) {
+                AlarmDelivery.cancelNotification(this, notifId);
+                ReminderBanner.dismiss(notifId);
+            }
+            ReminderTrace.mark(this, notifId & Integer.MAX_VALUE, "alarm_page_closed", "reason=" + reason);
+        }
+        finish();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        // singleTask avoids duplicate lock-screen activities when both the
-        // notification route and direct fallback fire. Rebuild for the newest
-        // reminder when an activity is already visible.
-        recreate();
+        render(intent, 0); // Reuse the small singleTask card without recreating a full-screen page.
     }
 
-    private int dp(int v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putLong("expiresAt", expiresAt);
+        super.onSaveInstanceState(state);
     }
 
-    private android.graphics.drawable.Drawable rounded(String color) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(Color.parseColor(color));
-        d.setCornerRadius(dp(24));
-        return d;
+    @Override protected void onDestroy() {
+        main.removeCallbacksAndMessages(null);
+        if (receiverRegistered) unregisterReceiver(screenOff);
+        super.onDestroy();
     }
 
-    /** API 27 以下的窗口标志位（27+ 用 setShowWhenLocked/setTurnScreenOn） */
-    private static final class WindowManagerFlags {
-        static final int showWhenLocked = 0x00080000; // FLAG_SHOW_WHEN_LOCKED
-        static final int turnScreenOn = 0x00600000;   // FLAG_TURN_SCREEN_ON
-        static final int keepScreenOn = 0x00000080;   // FLAG_KEEP_SCREEN_ON
-    }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 }

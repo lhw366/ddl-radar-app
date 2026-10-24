@@ -29,7 +29,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         // 与投递是两条独立的失败路径：Android 12+ 后台启动前台服务受限、进程刚被
         // 系统冻结、startForeground 抛异常 —— 任何一种都会让这次提醒彻底静默，
         // 既没有通知也没有人重试（闹钟已经响过了）。广播接收器执行期间系统持有
-        // 唤醒锁，在这里同步完成通知 + 震动是有保证的。
+        // 唤醒锁，在这里先同步完成系统通知；震动与悬浮窗在前台服务内执行。
         boolean delivered;
         try {
             delivered = AlarmDelivery.deliver(context, intent);

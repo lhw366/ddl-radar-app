@@ -54,6 +54,11 @@ final class AlarmDelivery {
             channelId = channelFor(channelId, vibrate);
             intent.putExtra("channelId", channelId);
             intent.putExtra("vibrateInSilent", vibrateInSilent);
+            // The receiver posts the system notification synchronously. The
+            // service receives the resolved content, even if the stored event
+            // changed after its PendingIntent was originally registered.
+            intent.putExtra("title", title);
+            intent.putExtra("body", body);
             boolean notified = post(context, id, title, body, channelId);
             String actualChannel = notificationChannelFor(context, channelId);
             boolean channelVibration = channelVibration(context, actualChannel);
@@ -314,10 +319,16 @@ final class AlarmDelivery {
     }
 
     static String notificationChannelFor(Context context, String channelId) {
-        // SystemUI heads-up windows cover application overlays. With a visible
-        // custom banner, keep native vibration but omit the duplicate heads-up.
-        String display = channelId.startsWith("ddlr_high_") && ReminderBanner.allowed(context) && !screenOff(context)
+        // Permission is not proof that an OEM will display a background window.
+        // Keep the system heads-up as an independent fallback outside the App.
+        // Only a visible App may use the quieter duplicate notification route.
+        String display = MainActivity.visible && channelId.startsWith("ddlr_high_")
+                && ReminderBanner.allowed(context) && !screenOff(context)
                 ? channelId.replace("ddlr_high_", "ddlr_gentle_") : channelId;
+        return backgroundNotificationChannelFor(context, display);
+    }
+
+    static String backgroundNotificationChannelFor(Context context, String display) {
         if (ringerSilent(context)) return "ddlr_" + (display.startsWith("ddlr_high_") ? "high" : "gentle") + "_v6_quiet";
         return display;
     }
@@ -346,6 +357,8 @@ final class AlarmDelivery {
         boolean allowed = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
                 && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                 || manager.getNotificationChannel(channelId).getImportance() != NotificationManager.IMPORTANCE_NONE);
+        boolean autoDismiss = context.getSharedPreferences("ddlr_display", Context.MODE_PRIVATE)
+                .getBoolean("autoDismiss", false);
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = new Notification.Builder(context, channelId);
@@ -377,11 +390,10 @@ final class AlarmDelivery {
             page.putExtra("title", title);
             page.putExtra("body", body);
             page.putExtra("notifId", notificationId(id));
+            page.putExtra("autoDismiss", autoDismiss);
             builder.setFullScreenIntent(PendingIntent.getActivity(context, notificationId(id), page,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE), true);
         }
-        boolean autoDismiss = context.getSharedPreferences("ddlr_display", Context.MODE_PRIVATE)
-                .getBoolean("autoDismiss", false);
         if (Build.VERSION.SDK_INT >= 24) builder.setGroup(GROUP);
         if (Build.VERSION.SDK_INT >= 26) builder.setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN);
         if (autoDismiss && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(5000L);
@@ -411,11 +423,10 @@ final class AlarmDelivery {
             Log.w("DdlAlarm", "System notification blocked", error);
         }
         context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
-                .putBoolean("lastNotificationAllowed", allowed).apply();
+                .putBoolean("lastNotificationAllowed", allowed)
+                .putString("lastDisplayChannel", channelId)
+                .putBoolean("lastDeliveryAppVisible", MainActivity.visible).apply();
         ReminderTrace.mark(context, id, "notification", "allowed=" + allowed + ";channel=" + channelId + ";vibration=" + (Build.VERSION.SDK_INT < 26 ? channelId.contains("_vib_") : manager.getNotificationChannel(channelId).shouldVibrate()));
-        if (banner) {
-            ReminderBanner.show(context, notificationId(id), title, body, autoDismiss);
-        }
         return allowed;
     }
 
