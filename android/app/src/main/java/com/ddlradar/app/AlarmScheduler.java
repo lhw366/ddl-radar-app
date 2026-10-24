@@ -41,7 +41,8 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    public static final int SCHED_VER = 14;
+    // v15: urgent broadcast identity; migrate existing immutable PendingIntents.
+    public static final int SCHED_VER = 15;
 
     /** 最近一次注册实际使用的通道（诊断用）：clock / exact_idle / inexact_idle */
     private static final String KEY_SCHED_MODE = "schedMode";
@@ -310,7 +311,7 @@ public final class AlarmScheduler {
     }
 
     /**
-     * 注册一条提醒：优先系统闹钟时钟（不可推迟），权限不足时逐级降级。
+     * 注册一条提醒：优先系统闹钟时钟，权限不足时逐级降级。OEM 投递仍须实测。
      * 无论走到哪一级，每个事件仅注册一条系统闹钟。
      */
     public static synchronized void schedule(Context ctx, long id, long at,
@@ -347,6 +348,9 @@ public final class AlarmScheduler {
                 mode = "inexact_idle";
             }
         }
+        // Register the new identity BEFORE retiring v14. UPDATE_CURRENT only
+        // replaces extras, not Intent flags on an existing PendingIntent.
+        cancelBackgroundBroadcast(ctx, id);
         recordSchedMode(ctx, mode);
         ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode);
     }
@@ -375,7 +379,7 @@ public final class AlarmScheduler {
         } catch (Exception error) { return ""; }
     }
 
-    /** 系统侧真实登记的最近一条闹钟时钟（诊断用，仅 clock 模式有效） */
+    /** Device-wide next alarm, possibly owned by another app; not proof of ours. */
     public static long nextClockAt(Context ctx) {
         try {
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
@@ -392,6 +396,7 @@ public final class AlarmScheduler {
         am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
+        cancelBackgroundBroadcast(ctx, id);
         cancelLegacy(ctx, id);
     }
 
@@ -504,7 +509,10 @@ public final class AlarmScheduler {
         i.setAction("com.ddlradar.app.DELIVER_REMINDER");
         // Extras do not participate in PendingIntent identity. Preserve the full id,
         // with a separate URI for each route, instead of truncating it to 30 bits.
-        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot));
+        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot + (slot == 0 ? "/urgent" : "")));
+        // The AlarmManager clock wakeup and the broadcast's delivery priority
+        // are separate. Only due reminders get this short-lived priority.
+        i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
         i.putExtra("slot", slot);
@@ -515,6 +523,20 @@ public final class AlarmScheduler {
         i.putExtra("vibrateInSilent", vibrateInSilent);
         return PendingIntent.getBroadcast(ctx, slot, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /** Retire v14 and earlier background-priority broadcasts without creating one. */
+    private static void cancelBackgroundBroadcast(Context ctx, long id) {
+        Intent old = new Intent(ctx, AlarmReceiver.class)
+                .setAction("com.ddlradar.app.DELIVER_REMINDER")
+                .setData(Uri.parse("ddlr://alarm/" + id + "/0"));
+        PendingIntent pending = PendingIntent.getBroadcast(ctx, 0, old,
+                PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+        if (pending != null) {
+            AlarmManager manager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+            if (manager != null) manager.cancel(pending);
+            pending.cancel();
+        }
     }
 
     /** Retire v5 and older service PendingIntents when migrating or cancelling. */

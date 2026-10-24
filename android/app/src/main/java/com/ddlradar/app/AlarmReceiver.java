@@ -23,7 +23,17 @@ public class AlarmReceiver extends BroadcastReceiver {
             return;
         }
         AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0), "exact");
-        ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", intent.getDataString());
+        long elapsed = android.os.SystemClock.elapsedRealtime();
+        long foregroundAgo = MainActivity.lastForegroundElapsed == 0 ? -1 : elapsed - MainActivity.lastForegroundElapsed;
+        long backgroundAgo = MainActivity.lastBackgroundElapsed == 0 ? -1 : elapsed - MainActivity.lastBackgroundElapsed;
+        boolean urgent = (intent.getFlags() & Intent.FLAG_RECEIVER_FOREGROUND) != 0;
+        context.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE).edit()
+                .putBoolean("lastReceiverUrgent", urgent)
+                .putLong("lastReceiverSinceForegroundMs", foregroundAgo)
+                .putLong("lastReceiverSinceBackgroundMs", backgroundAgo).apply();
+        ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver",
+                "urgent=" + urgent + ";appVisible=" + MainActivity.visible
+                        + ";sinceForegroundMs=" + foregroundAgo + ";sinceBackgroundMs=" + backgroundAgo);
         // ── 顺序很重要：先同步投递，再尝试前台服务 ──
         // 早前是「交给 startForegroundService 成功就 return」。问题是前台服务的启动
         // 与投递是两条独立的失败路径：Android 12+ 后台启动前台服务受限、进程刚被
