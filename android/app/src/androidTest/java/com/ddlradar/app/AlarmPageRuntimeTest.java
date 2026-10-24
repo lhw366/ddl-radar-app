@@ -5,11 +5,14 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.ParcelFileDescriptor;
 import android.os.PowerManager;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.TextView;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
@@ -62,31 +65,28 @@ public class AlarmPageRuntimeTest {
     @Test public void automaticSmallCardClosesAfterFiveSecondsWithoutHoldingScreenAwake() throws Exception {
         open(14001, true);
         assertCompactCard();
+        JSONObject composition = awaitCompositedCard("alarm-page-auto.png");
         awaitClosed(14001, "timeout", 8000);
         long shown = event(14001, "alarm_page_shown").getLong("at");
         long closed = event(14001, "alarm_page_closed").getLong("at");
         assertTrue("Automatic card must remain briefly visible", closed - shown >= 3500);
         assertTrue("Automatic card has a finite five-second lifetime", closed - shown < 8000);
-        record("automatic", new JSONObject().put("visibleMs", closed - shown));
+        record("automatic", new JSONObject().put("visibleMs", closed - shown).put("composition", composition));
     }
 
     @Test public void manualSmallCardSurvivesFiveSecondsAndClosesThroughItsRealButton() throws Exception {
         open(14002, false);
         assertCompactCard();
-        Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();
-        assertNotNull(screen);
-        try (FileOutputStream out = new FileOutputStream(new File(ctx.getFilesDir(), "alarm-page-compact.png"))) {
-            screen.compress(Bitmap.CompressFormat.PNG, 100, out);
-        } finally { screen.recycle(); }
         Thread.sleep(5600);
         assertFalse("Manual mode must wait for the user", activity.isFinishing());
         assertFalse(activity.isDestroyed());
+        JSONObject composition = awaitCompositedCard("alarm-page-compact.png");
         AtomicReference<Rect> button = new AtomicReference<>();
         instrumentation.runOnMainSync(() -> button.set(bounds(activity.getWindow().getDecorView().findViewWithTag("ddlr-alarm-ack"))));
         Rect target = button.get();
         shell("input tap " + target.centerX() + " " + target.centerY());
         awaitClosed(14002, "user", 3000);
-        record("manual_real_tap", new JSONObject().put("buttonBounds", target.toShortString()));
+        record("manual_real_tap", new JSONObject().put("buttonBounds", target.toShortString()).put("composition", composition));
     }
 
     @Test public void manualCardClosesWhenTheActualSystemScreenSleeps() throws Exception {
@@ -165,6 +165,81 @@ public class AlarmPageRuntimeTest {
         int[] position = new int[2];
         view.getLocationOnScreen(position);
         return new Rect(position[0], position[1], position[0] + view.getWidth(), position[1] + view.getHeight());
+    }
+
+    private JSONObject awaitCompositedCard(String screenshotName) throws Exception {
+        // A preDraw callback runs before SurfaceFlinger commits the frame. Read
+        // actual screen pixels after the manual lifetime check, not just isShown().
+        AtomicReference<Rect[]> areas = new AtomicReference<>();
+        instrumentation.runOnMainSync(() -> {
+            View card = activity.getWindow().getDecorView().findViewWithTag("ddlr-alarm-card");
+            TextView title = findText(card, "紧凑锁屏提醒");
+            TextView body = findText(card, "到点后确认即可关闭，不持续保持屏幕常亮。");
+            assertNotNull(title);
+            assertNotNull(body);
+            areas.set(new Rect[]{bounds(card), bounds(title), bounds(body)});
+        });
+        Rect[] frame = areas.get();
+        long end = System.currentTimeMillis() + 2000;
+        int surfacePixels = 0, titlePixels = 0, bodyPixels = 0;
+        while (System.currentTimeMillis() < end) {
+            Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();
+            assertNotNull(screen);
+            try {
+                Rect area = new Rect(frame[0]);
+                assertTrue("The actual card must be inside the composed screen",
+                        area.intersect(0, 0, screen.getWidth(), screen.getHeight()));
+                assertEquals("The card must not be clipped", frame[0], area);
+                surfacePixels = 0;
+                for (int y = area.top; y < area.bottom; y++) for (int x = area.left; x < area.right; x++) {
+                    int pixel = screen.getPixel(x, y);
+                    // The surface has alpha 246/255, so any underlying screen
+                    // contributes at most nine levels to each encoded channel.
+                    if (Math.abs(Color.red(pixel) - 30) <= 12 && Math.abs(Color.green(pixel) - 35) <= 12
+                            && Math.abs(Color.blue(pixel) - 52) <= 12) surfacePixels++;
+                }
+                titlePixels = lightPixels(screen, frame[1], 190);
+                bodyPixels = lightPixels(screen, frame[2], 150);
+                if (surfacePixels > area.width() * area.height() / 3 && titlePixels > 20 && bodyPixels > 30) {
+                    try (FileOutputStream out = new FileOutputStream(new File(ctx.getFilesDir(), screenshotName))) {
+                        screen.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    }
+                    return new JSONObject().put("cardBounds", frame[0].toShortString())
+                            .put("titleBounds", frame[1].toShortString()).put("bodyBounds", frame[2].toShortString())
+                            .put("surfacePixels", surfacePixels).put("titlePixels", titlePixels).put("bodyPixels", bodyPixels);
+                }
+                if (System.currentTimeMillis() >= end - 150) {
+                    try (FileOutputStream out = new FileOutputStream(new File(ctx.getFilesDir(), "alarm-page-missing.png"))) {
+                        screen.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    }
+                }
+            } finally { screen.recycle(); }
+            Thread.sleep(100);
+        }
+        fail("Small reminder card absent from the actual composed frame: surface=" + surfacePixels
+                + ";title=" + titlePixels + ";body=" + bodyPixels);
+        return null;
+    }
+
+    private static int lightPixels(Bitmap screen, Rect area, int minimum) {
+        int count = 0;
+        for (int y = area.top; y < area.bottom; y++) for (int x = area.left; x < area.right; x++) {
+            int pixel = screen.getPixel(x, y);
+            if (Color.red(pixel) > minimum && Color.green(pixel) > minimum && Color.blue(pixel) > minimum) count++;
+        }
+        return count;
+    }
+
+    private static TextView findText(View view, String expected) {
+        if (view instanceof TextView && expected.contentEquals(((TextView) view).getText())) return (TextView) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                TextView result = findText(group.getChildAt(i), expected);
+                if (result != null) return result;
+            }
+        }
+        return null;
     }
 
     private void record(String name, JSONObject result) throws Exception {

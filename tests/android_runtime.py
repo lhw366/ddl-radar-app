@@ -35,7 +35,7 @@ def capture(prefix):
     (OUT / f'{prefix}-screen.png').write_bytes(adb('exec-out', 'screencap', '-p', binary=True, check=False))
     for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
                  'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
-                 'alarm-page-compact.png']:
+                 'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png']:
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
