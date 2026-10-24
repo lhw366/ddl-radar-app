@@ -29,7 +29,7 @@ public class AlarmPriorityMigrationTest {
         manager.setAlarmClock(new AlarmManager.AlarmClockInfo(at, null), legacy);
         JSONObject event = new JSONObject().put("id", id).put("at", at).put("v", 14)
                 .put("title", "升级迁移").put("body", "只投递一次")
-                .put("channel", "ddlr_gentle_v6_quiet").put("vibrate", false).put("scheduled", true);
+                .put("channel", "ddlr_gentle_v4_still_silent").put("vibrate", false).put("scheduled", true);
         AlarmScheduler.save(ctx, new JSONArray().put(event));
         AlarmScheduler.reapplyAll(ctx);
         assertEquals(15, AlarmScheduler.load(ctx).getJSONObject(0).getInt("v"));
