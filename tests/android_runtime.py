@@ -33,12 +33,15 @@ def capture(prefix):
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
     (OUT / f'{prefix}-screen.png').write_bytes(adb('exec-out', 'screencap', '-p', binary=True, check=False))
-    for name in ['runtime-manual.png', 'missing-banner.png']:
+    for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
+                 'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
+                 'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png']:
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
     for name in ['runtime-silent-test.json', 'runtime-silent-disabled.json',
-                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json']:
+                 'runtime-silent-dnd.json', 'runtime-normal-sound.json', 'runtime-foreground-feedback.json',
+                 'runtime-banner-composition.json', 'alarm-page-runtime.json']:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, check=False)
         try:
             json.loads(raw)
@@ -100,6 +103,12 @@ try:
     prepare()
     instrument('VibrationPolicyTest', 2)
     capture('blocked-channel')
+    prepare()
+    instrument('BackgroundFallbackTest', 1)
+    capture('background-fallback')
+    prepare()
+    instrument('AlarmPageRuntimeTest', 3)
+    capture('alarm-page')
     prepare()
     instrument('ColdReminderFixture', 1)
     registered = next(e for e in traces() if e['stage'] == 'scheduled' and e['id'] == 11003)

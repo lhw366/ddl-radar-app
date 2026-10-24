@@ -284,6 +284,17 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("overlayAllowed", ReminderBanner.allowed(ctx));
             ret.put("trace", ReminderTrace.read(ctx));
             ret.put("environment", AppEnvironment.read(ctx));
+            ret.put("lastDisplayChannel", diagnostics.getString("lastDisplayChannel", ""));
+            if (diagnostics.contains("lastDeliveryAppVisible"))
+                ret.put("lastDeliveryAppVisible", diagnostics.getBoolean("lastDeliveryAppVisible", false));
+            JSObject displayState = new JSObject().put("appVisible", MainActivity.visible)
+                    .put("serviceRunning", AlarmService.isRunning()).put("wakeHeld", AlarmService.isWakeHeld())
+                    .put("overlayCards", ReminderBanner.visibleCount());
+            try {
+                android.os.PowerManager power = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+                if (power != null) displayState.put("interactive", power.isInteractive());
+            } catch (Exception ignored) { }
+            ret.put("displayState", displayState);
 
             // ── 诊断增强：检查当前提醒模式实际使用的通知通道 ──
             // 通道重要性一旦被用户调低（或旧版建成了 LOW），App 改不回来，
@@ -292,7 +303,8 @@ public class DdlAlarmPlugin extends Plugin {
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             String channelId = normalizeChannelId(call.getString("channelId", "ddlr_high_sound"));
             boolean nativeMode = AlarmDelivery.nativeVibration(channelId);
-            channelId = AlarmDelivery.notificationChannelFor(ctx, channelId);
+            ret.put("foregroundChannelId", AlarmDelivery.notificationChannelFor(ctx, channelId));
+            channelId = AlarmDelivery.backgroundNotificationChannelFor(ctx, channelId);
             int imp = AlarmService.channelImportance(nm, channelId);
             ret.put("channelId", channelId);
             ret.put("vibrationMode", nativeMode ? "native" : "notification");

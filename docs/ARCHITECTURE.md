@@ -17,8 +17,9 @@ sequenceDiagram
   DB-->>UI: 成功后确认排定
   AM->>RX: 到点广播（无需打开页面）
   RX->>DB: 核对 id 和 at，去重
-  RX->>FX: 系统通知、震动、横幅
+  RX->>FX: 同步提交系统通知（后台保持 HIGH）
   RX->>FX: 启动有限效果服务
+  FX->>FX: startForeground 成功后创建悬浮窗、执行触觉与声音
   FX->>FX: 纯触觉约 2.2 秒；有声效果约 4 秒释放 CPU 锁
   FX->>FX: 横幅关闭后退出服务
 ```
@@ -53,7 +54,7 @@ WebView 不再调用全局 `pauseTimers()` 截断正在等待的桥接确认；�
 
 `gestures.js` 监听触摸事件，通过既有页签按钮切换页面；输入控件、弹层、课表横向区域、文字选择及系统边缘返回手势不参与切页。模块自身不写任务或课表数据，不创建计时轮询。
 
-`readability.js` 在页面初始化和皮肤/壁纸更新时计算派生 CSS 颜色，使用签名跳过未变化的重复计算；只调整展示变量，不改保存的皮肤配色或业务数据。壁纸下使用不透明内容表面，并根据背景提高正文、次要文字和按钮的对比度；不持续采样图片或定时重绘。
+`readability.js` 在页面初始化和皮肤/壁纸更新时计算派生 CSS 颜色，使用签名跳过未变化的重复计算；只调整展示变量，不改保存的皮肤配色或业务数据。照片壁纸下保留透明日历与标题；通过缩略亮度缓存，对可见文字位置做局部采样，调节白字阴影与薄遮罩，避免整块不透明底。按钮独立选择对比色。图片与布局变化时更新，不使用后台轮询。
 
 ## 课表与 OCR
 
@@ -70,3 +71,15 @@ ML Kit 离线中文模型 → 带坐标的块/行 → 星期与节次定位 → 
 Web VM 检查逻辑和表单，不模拟真实安卓通知。Instrumentation 启动真实 WebView、经过实际 save / Capacitor / AlarmManager；不缩短生产五分钟梯度常量，实际等待梯度与截止。播放器检查开始/完成，不能证明用户静音模式下有声。冷进程检查系统能重新派发；临近 AlarmClock 可能阻止模拟器进入深度 Doze，记录达到的状态，不能声称没达到的深度已通过。
 
 每次失败都上传 trace、logcat、系统闹钟/服务/窗口状态、OCR JSON 和截图。OPPO 真机仍需桌面、锁屏、系统清理后的场景验证；Android “强行停止”与普通退到桌面是不同状态。
+
+## 后台显示与证据（v2.3.4）
+
+`SYSTEM_ALERT_WINDOW` 已授予仅说明可以尝试添加窗口，不证明 ColorOS 最终合成显示。旧版在亮屏且权限允许时预先将 high 改成 gentle，造成悬浮窗被隐藏时系统横幅也失去资格。现在仅 `MainActivity.visible` 为 true 时减少重复；后台一律保留原来的 high/gentle 偏好，静音时仍保持对应 high/gentle quiet 通道。
+
+系统通知在广播接收器内先提交，悬浮窗只在 `AlarmService.startForeground` 成功后创建。服务无法启动不会撤掉已经提交的系统通知。系统通知是否真正弹横幅由系统通知设置、勿扰和 ROM 决定；高重要性不能当作用户已看见。自定义卡片初期可能被系统横幅遮挡，因此真实桌面截图检查在手动保留的卡片上进行，自动五秒用例分别检查系统通知、创建与撤销时刻。
+
+锁屏页面取消永久保持亮屏标志，自动模式五秒退出；手动模式允许系统按原超时熄屏。没有新的省电白名单或权限。
+
+诊断完整记录仍在本地，复制时使用小于 4500 字符的完整 JSON，最近事件优先。用户提供的 b86 附件归一化换行后恰好 5000 字符且在 JSON 中间结束，应用原剪贴板实现未发现此上限，因此只将其判为输入/传输截断的证据，不声称原生没有执行缺失的阶段。
+
+[Android 通知通道](https://developer.android.com/develop/ui/compose/notifications/channels) · [TYPE_APPLICATION_OVERLAY 的系统可见性控制](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#TYPE_APPLICATION_OVERLAY) · [精确闹钟的后台服务启动例外](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)

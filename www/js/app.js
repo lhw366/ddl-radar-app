@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.3';
+const APP_VERSION = '2.3.4';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1716,6 +1716,124 @@ async function renderDiag() {
   }));
 }
 
+// Clipboard exports have a transport budget: retain valid JSON and the newest
+// delivery stages, rather than losing them after a long list of future alarms.
+function compactReminderDiagnostics(d) {
+  const short = (value, limit = 96) => typeof value === 'string'
+    ? (value.length > limit ? value.slice(0, limit - 1) + '…' : value)
+    : typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ? value : null;
+  const pick = (source, keys) => Object.fromEntries(keys.filter(key => source && source[key] !== undefined)
+    .map(key => [key, short(source[key])]));
+  const detailKeys = new Set(['lateMs', 'appVisible', 'foregroundService', 'hardwareConfirmed', 'usage',
+    'status', 'reason', 'route', 'channelVibration', 'vibrateInSilent', 'allowed', 'channel', 'vibration',
+    'playing', 'durationMs', 'volume', 'foreground', 'on_demand', 'interactive', 'width', 'height']);
+  const cleanDetail = value => {
+    const text = typeof value === 'string' ? value : '';
+    const fields = {};
+    text.split(';').forEach(part => {
+      const split = part.indexOf('=');
+      if (split > 0 && detailKeys.has(part.slice(0, split))) fields[part.slice(0, split)] = short(part.slice(split + 1));
+    });
+    if (Object.keys(fields).length) return fields;
+    if (/^(permission|awaiting_layout|handoff complete|already_delivered|finite_cue|\d+x\d+)$/.test(text)) return short(text);
+    const errorClass = text.match(/^([\w.$]+(?:Exception|Error))(?::|$)/);
+    if (errorClass) return short(errorClass[1]);
+    return undefined; // Never copy a task title, body or arbitrary exception message.
+  };
+  const retained = (Array.isArray(d.trace) ? d.trace : []).slice(-60);
+  const groups = [], active = new Map(), expected = new Map();
+  for (const entry of retained) {
+    if (!entry || !Number.isFinite(entry.id) || !Number.isFinite(entry.at) || typeof entry.stage !== 'string') continue;
+    if (entry.stage === 'scheduled') {
+      const match = String(entry.detail || '').match(/(?:^|;)at=(\d+)/);
+      if (match) expected.set(entry.id, Number(match[1]));
+      continue;
+    }
+    const selfCheck = entry.id === 990000002 && /^(direct_vibration_requested|vibration_blocked|vibration_unavailable|vibration_error)$/.test(entry.stage);
+    let group = active.get(entry.id);
+    if (!group || (entry.stage === 'receiver' && entry.detail !== 'already_delivered') || selfCheck) {
+      group = { id: entry.id, at: entry.at, pid: Number.isFinite(entry.pid) ? entry.pid : null, steps: [] };
+      if (expected.has(entry.id)) group.expectedAt = expected.get(entry.id);
+      groups.push(group); active.set(entry.id, group);
+    }
+    const step = [entry.at - group.at, short(entry.stage, 32)];
+    const detail = cleanDetail(entry.detail);
+    if (detail !== undefined) step.push(detail);
+    if (Number.isFinite(entry.pid) && entry.pid !== group.pid) { if (step.length === 2) step.push(null); step.push(entry.pid); }
+    group.steps.push(step);
+    group.lastAt = entry.at;
+  }
+  groups.sort((a, b) => b.lastAt - a.lastAt);
+  const recent = groups.slice(0, 3);
+  const overlay = [...retained].reverse().find(entry => entry && /^overlay_/.test(entry.stage));
+  const output = {
+    schema: 1, version: short(d.appVersion || d.version), build: short(d.appBuild), capturedAt: short(d.capturedAt),
+    device: short(d.device), android: short(d.androidRelease), sdk: short(d.sdk),
+    permissions: pick(d, ['notify', 'overlayAllowed', 'canFullScreen', 'exactOk']),
+    notification: pick(d, ['channelId', 'foregroundChannelId', 'channelImportance', 'channelVibration', 'headsUp', 'lastNotificationAllowed', 'channels']),
+    environment: pick(d.environment, ['debuggable', 'backgroundRestricted', 'hasVibrator', 'interruptionFilter', 'ringerMode',
+      'notificationVolume', 'notificationVibrationIntensity', 'powerSaveMode', 'batteryExempt', 'vibrateAppOp']),
+    display: { ...pick(d.displayState, ['appVisible', 'interactive', 'serviceRunning', 'wakeHeld', 'overlayCards']),
+      ...pick(d, ['lastDisplayChannel', 'lastDeliveryAppVisible', 'guard', 'wakeHeld']) },
+    alarm: { pending: Array.isArray(d.items) ? d.items.length : (typeof d.pending === 'number' ? d.pending : 0),
+      ...pick(d, ['queued', 'nextAt', 'sysNextAt', 'schedMode', 'lastFireAt', 'lastFireId', 'lastFireVia',
+        'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt']) },
+    vibration: pick(d, ['vibrationMode', 'lastVibrationStatus', 'lastVibrationChannel', 'lastVibrationUsage', 'vibrateInSilent']),
+    trace: { retained: retained.length, availableEvents: groups.length, exportedEvents: recent.length,
+      retainedStagesOnly: true, stepFormat: '[milliseconds after event.at, stage, optional detail, optional changed pid]', events: recent }
+  };
+  if (overlay) output.display.lastOverlay = { ...pick(overlay, ['at', 'stage']), detail: cleanDetail(overlay.detail) };
+  let text = JSON.stringify(output);
+  // Keep every retained stage of the selected events. If detail is too large,
+  // remove oldest details first and explicitly report that reduction.
+  for (let i = recent.length - 1; i >= 0 && text.length > 4500; i--) {
+    for (const step of recent[i].steps) {
+      if (step.length < 3 || step[2] === null) continue;
+      if (step.length === 4) step[2] = null; else step.pop();
+      recent[i].detailsOmitted = (recent[i].detailsOmitted || 0) + 1;
+      text = JSON.stringify(output);
+      if (text.length <= 4500) break;
+    }
+  }
+  if (text.length > 4500) {
+    const names = [];
+    for (const event of recent) for (const step of event.steps) {
+      let index = names.indexOf(step[1]);
+      if (index < 0) { index = names.length; names.push(step[1]); }
+      step[1] = index;
+    }
+    output.trace.stageNames = names;
+    output.trace.stepFormat = '[milliseconds after event.at, stageNames index, optional detail, optional changed pid]';
+    text = JSON.stringify(output);
+  }
+  // Never place a partial or oversized diagnostic on the clipboard.
+  if (text.length > 4500) throw new Error('诊断超出复制预算，请使用完整诊断文件反馈');
+  return text;
+}
+
+async function copyReminderDiagnostics() {
+  try {
+    await renderDiag();
+    let diagnostics = window.lastReminderDiagnostics || { version: APP_VERSION };
+    const plugins = window.Capacitor && Capacitor.Plugins;
+    if (plugins && plugins.DdlAlarm && plugins.DdlAlarm.pending) {
+      try {
+        const raw = await plugins.DdlAlarm.pending({
+          channelId: window.NativeNotify ? NativeNotify.channelIdFor(S.settings) : diagnostics.channelId,
+          vibrateInSilent: S.settings.vibrateInSilent !== false
+        });
+        diagnostics = { ...diagnostics, ...raw, capturedAt: new Date().toISOString() };
+      } catch (error) { /* The last complete UI snapshot remains useful. */ }
+    }
+    await plugins.DdlNotify.copyDiagnostics({ text: compactReminderDiagnostics(diagnostics) });
+    toast('诊断已复制', '已保留最近三次事件的阶段和当前状态，可直接粘贴反馈。');
+    return true;
+  } catch (error) {
+    toast('复制失败', '请运行诊断查看最后执行的阶段。');
+    return false;
+  }
+}
+
 function bindSettings() {
   const restricted = $('restrictedSettingsBtn');
   if (restricted) restricted.addEventListener('click', async () => {
@@ -1799,13 +1917,7 @@ function bindSettings() {
   $('backgroundTestBtn').addEventListener('click', async () => {
     if (window.NativeNotify && NativeNotify.available()) await NativeNotify.test(60);
   });
-  $('copyDiagBtn').addEventListener('click', async () => {
-    await renderDiag();
-    try {
-      await Capacitor.Plugins.DdlNotify.copyDiagnostics({ text: JSON.stringify(window.lastReminderDiagnostics, null, 2) });
-      toast('诊断已复制', '包含设备、权限和提醒各阶段记录，可直接粘贴反馈');
-    } catch (error) { toast('复制失败', '请运行诊断查看最后执行的阶段'); }
-  });
+  $('copyDiagBtn').addEventListener('click', copyReminderDiagnostics);
   $('notifyBtn').addEventListener('click', async () => { await askNotify(); await refreshNotifyBtn(); });
 
   $('verText').textContent = 'v' + APP_VERSION;
