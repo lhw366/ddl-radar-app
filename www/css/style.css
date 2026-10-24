@@ -726,6 +726,16 @@ body[data-wallpaper=true] .cal-cell[data-photo-tone=flat-light] .d-sub:is(.fest,
 body[data-wallpaper=true] .cal-cell[data-photo-tone=flat-light] .d-sub.jq{ color:#3e6285; }
 body[data-wallpaper=true] :is(.btn.primary,#fab,.cal-cell.sel){ text-shadow:none; }
 body[data-wallpaper=true] .toast{ background:rgba(14,20,30,.72); text-shadow:none; }
+/* Ordinary card copy shares the photo's local ink decision. Controls, badges
+   and colored statuses retain their own foregrounds and darker surfaces. */
+body[data-wallpaper=true] :is(.card .f-label,.card .set-line > div:first-child,
+  .card .set-line > label:not(.switch),.card .tip,.card .hero-label,#heroName,#heroCount,#heroMeta,
+  .card .he-title,.card .he-sub,.card .bored-head,#boredText,.card .t-name,.card .t-meta,.card .t-detail)[data-photo-tone=flat-light]{
+  color:rgb(52,62,76); text-shadow:none;
+}
+body[data-wallpaper=true] :is(.card .tip,#heroMeta,.card .he-sub,.card .t-meta,.card .t-detail)[data-photo-tone=flat-light]{
+  color:rgb(64,74,88);
+}
 .hero-count,body.theme-cat .hero-count{
   background:none; color:var(--readable-accent,var(--text));
   -webkit-background-clip:initial; background-clip:initial;

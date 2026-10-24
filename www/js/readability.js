@@ -131,7 +131,10 @@
     if (!settings || !settings.bgImage) return;
     const grid = currentGrid(settings), width = window.innerWidth, height = window.innerHeight;
     if (!width || !height) return;
-    const regions = document.querySelectorAll('#topbar,.sec-title,.cal-toolbar,.cal-week,.cal-cell,.cal-legend,.cal-note,.mx-tip,.empty-tip,.tt-empty');
+    const regions = document.querySelectorAll('#topbar,.sec-title,.cal-toolbar,.cal-week,.cal-cell,.cal-legend,.cal-note,.mx-tip,.empty-tip,.tt-empty,' +
+      '.card .f-label,.card .set-line > div:first-child,.card .set-line > label:not(.switch),.card .tip,' +
+      '.card .hero-label,#heroName,#heroCount,#heroMeta,.card .he-title,.card .he-sub,.card .bored-head,#boredText,' +
+      '.card .t-name,.card .t-meta,.card .t-detail');
     regions.forEach(el => {
       if (!el.getBoundingClientRect) return;
       const rect = el.getBoundingClientRect();
@@ -191,12 +194,17 @@
     bound = true;
     document.querySelectorAll('.tab,.cal-nav,.cal-today').forEach(el => el.addEventListener('click', scheduleRegions));
     const views = document.getElementById('views');
-    if (views) views.addEventListener('scroll', scheduleRegions, { capture: true, passive: true });
+    if (views) {
+      views.addEventListener('scroll', scheduleRegions, { capture: true, passive: true });
+      views.addEventListener('click', scheduleRegions, { passive: true });
+    }
     const calendar = document.getElementById('calGrid');
     if (calendar && window.MutationObserver) {
       // Holiday data and date selection can replace the calendar asynchronously.
       // Observe that one container's children, never the ticking app subtree.
-      new MutationObserver(scheduleRegions).observe(calendar, { childList: true });
+      const observer = new MutationObserver(scheduleRegions);
+      observer.observe(calendar, { childList: true });
+      document.querySelectorAll('.task-list').forEach(list => observer.observe(list, { childList: true }));
     }
     window.addEventListener('resize', () => { buildPixels(); scheduleRegions(); }, { passive: true });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRegions(); });
