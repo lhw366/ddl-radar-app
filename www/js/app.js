@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.4';
+const APP_VERSION = '2.3.5';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1590,7 +1590,7 @@ async function renderDiag() {
   if (typeof environment.debuggable === 'boolean') {
     html += diagRow(!environment.debuggable, environment.debuggable ? '安装包为可调试构建' : '安装包为正式 Release 构建');
   }
-  if (environment.signerSha256) html += diagRow(true, 'APK 已签名；证书指纹已包含在复制诊断中');
+  if (environment.signerSha256) html += diagRow(true, 'APK 已签名');
   if ([3, 4].includes(environment.packageSource)) {
     html += diagRow(null, '系统记录为本地/下载文件安装；若被限制权限，请打开应用信息确认受限设置', 'appinfo');
   }
@@ -1599,15 +1599,16 @@ async function renderDiag() {
   }
   const queued = d.queued || 0;
   html += diagRow((d.pending || 0) > 0 || queued > 0,
-    '系统闹钟已排定 ' + d.pending + ' 条' + (queued ? '，候补 ' + queued + ' 条' : '') +
+    '本机记录已提交 ' + d.pending + ' 条闹钟' + (queued ? '，候补 ' + queued + ' 条' : '') +
       (d.nextAt ? '，下一条 ' + fmtDT(d.nextAt) : ''),
     (d.pending || 0) > 0 || queued > 0 ? '' : 'notask');
   if (d.clockMode === true) {
-    // setAlarmClock：系统闹钟同款，不参与 Doze/省电分桶推迟
-    html += diagRow(d.sysNextAt > 0,
+    // getNextAlarmClock is device-wide, not an acknowledgement of our queue.
+    const ownClock = d.sysNextOwner === 'com.ddlradar.app';
+    html += diagRow(d.sysNextAt > 0 ? null : false,
       d.sysNextAt > 0
-        ? '系统闹钟通道已登记，最近一条 ' + fmtDT(d.sysNextAt) + '（不参与省电推迟）'
-        : '系统闹钟通道在用，但系统当前没有登记中的闹钟（可能已被 ROM 撤销）',
+        ? '设备最近闹钟 ' + fmtDT(d.sysNextAt) + (ownClock ? '（DDL雷达）' : '（可能来自其他应用，不能证明本 App 已排定）')
+        : '本机有闹钟记录，但系统未返回设备最近闹钟；需要检查实际投递',
       d.sysNextAt > 0 ? '' : 'appinfo');
   } else if (d.schedMode === 'exact_idle' || d.schedMode === 'inexact_idle') {
     html += diagRow(false,
@@ -1636,6 +1637,13 @@ async function renderDiag() {
     html += diagRow(true, '系统已把闹钟送到 App：' + fmtDT(d.lastReceiverAt) +
       (d.lastFireAt > 0 ? '' : '，但提醒内容未完成展示'));
   }
+  if (d.lastDelayMs >= 1000 && d.lastDeliveryAppVisible === true) {
+    const nearReturn = d.lastReceiverSinceForegroundMs >= 0 && d.lastReceiverSinceForegroundMs < 1500 &&
+      d.lastReceiverSinceBackgroundMs > d.lastReceiverSinceForegroundMs;
+    html += diagRow(false, nearReturn
+      ? '延迟提醒在返回 App 后才收到：后台投递尚未通过；需要系统侧日志区分冻结与广播排队'
+      : '这次延迟提醒到达时 App 在前台，不能据此判定后台提醒正常');
+  }
 
   // ── 新增：直接回答「为什么没横幅 / 为什么不准时」 ──
   if (!reminderOutputsEnabled()) {
@@ -1657,7 +1665,7 @@ async function renderDiag() {
   }
 
   html += diagRow(true, d.guard ? '派发服务正在处理提醒或显示横幅' : '派发服务已休眠：未来事件由系统闹钟唤醒');
-  html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不需要关闭电池优化。异常时请复制诊断。');
+  html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不修改电池优化。后台是否准时以实际投递记录为准。');
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
   const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
     delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
@@ -1726,7 +1734,8 @@ function compactReminderDiagnostics(d) {
     .map(key => [key, short(source[key])]));
   const detailKeys = new Set(['lateMs', 'appVisible', 'foregroundService', 'hardwareConfirmed', 'usage',
     'status', 'reason', 'route', 'channelVibration', 'vibrateInSilent', 'allowed', 'channel', 'vibration',
-    'playing', 'durationMs', 'volume', 'foreground', 'on_demand', 'interactive', 'width', 'height']);
+    'playing', 'durationMs', 'volume', 'foreground', 'on_demand', 'interactive', 'width', 'height',
+    'urgent', 'sinceForegroundMs', 'sinceBackgroundMs']);
   const cleanDetail = value => {
     const text = typeof value === 'string' ? value : '';
     const fields = {};
@@ -1774,10 +1783,11 @@ function compactReminderDiagnostics(d) {
     environment: pick(d.environment, ['debuggable', 'backgroundRestricted', 'hasVibrator', 'interruptionFilter', 'ringerMode',
       'notificationVolume', 'notificationVibrationIntensity', 'powerSaveMode', 'batteryExempt', 'vibrateAppOp']),
     display: { ...pick(d.displayState, ['appVisible', 'interactive', 'serviceRunning', 'wakeHeld', 'overlayCards']),
-      ...pick(d, ['lastDisplayChannel', 'lastDeliveryAppVisible', 'guard', 'wakeHeld']) },
+      ...pick(d, ['lastDisplayChannel', 'lastDeliveryAppVisible', 'guard', 'wakeHeld', 'lastForegroundAt', 'lastBackgroundAt']) },
     alarm: { pending: Array.isArray(d.items) ? d.items.length : (typeof d.pending === 'number' ? d.pending : 0),
       ...pick(d, ['queued', 'nextAt', 'sysNextAt', 'schedMode', 'lastFireAt', 'lastFireId', 'lastFireVia',
-        'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt']) },
+        'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt', 'sysNextOwner', 'scheduleVersion',
+        'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs']) },
     vibration: pick(d, ['vibrationMode', 'lastVibrationStatus', 'lastVibrationChannel', 'lastVibrationUsage', 'vibrateInSilent']),
     trace: { retained: retained.length, availableEvents: groups.length, exportedEvents: recent.length,
       retainedStagesOnly: true, stepFormat: '[milliseconds after event.at, stage, optional detail, optional changed pid]', events: recent }

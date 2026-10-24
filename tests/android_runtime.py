@@ -88,6 +88,68 @@ def instrument(cls, expected):
     assert len(re.findall(r'INSTRUMENTATION_STATUS_CODE: 0\b', output)) == expected, output
 
 
+def frozen_real_task():
+    # Instrumentation is over: the host drives HOME/freeze and only reads files
+    # and system dumps. No test thread or WebView callback keeps the app active.
+    raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/frozen-task.json')
+    task = json.loads(raw)
+    (OUT / 'frozen-task.json').write_text(raw, encoding='utf-8')
+    adb('shell', 'cmd', 'notification', 'set_dnd', 'off')
+    adb('shell', 'cmd', 'audio', 'set-ringer-mode', 'SILENT')
+    adb('shell', 'am', 'start', '-W', '-n', PKG + '/.MainActivity')
+    time.sleep(3)
+    adb('shell', 'input', 'keyevent', 'KEYCODE_HOME')
+    time.sleep(2)
+    pid = adb('shell', 'pidof', PKG)
+    assert pid.isdigit(), 'The cached test needs one live application process.'
+    before_vibration = adb('shell', 'dumpsys', 'vibrator_manager')
+    command = adb('shell', 'am', 'freeze', pid)
+    (OUT / 'frozen-command.txt').write_text(command, encoding='utf-8')
+    frozen = ''
+    for _ in range(20):
+        processes = adb('shell', 'dumpsys', 'activity', 'processes')
+        section = processes.split('Apps frozen:', 1)[-1].split('\n\n', 1)[0]
+        if re.search(r':\s+' + re.escape(pid) + r'\s+' + re.escape(PKG) + r'\b', section):
+            frozen = processes
+            break
+        time.sleep(0.2)
+    (OUT / 'frozen-before.txt').write_text(frozen or processes, encoding='utf-8')
+    assert frozen, 'The emulator never confirmed an actually frozen process.'
+    assert task['at'] - int(time.time() * 1000) > 5000, 'Must freeze before the event is due.'
+    end = time.monotonic() + 70
+    events = []
+    while time.monotonic() < end:
+        events = [e for e in traces() if e['id'] == task['id']]
+        if {'receiver', 'notification', 'service', 'direct_vibration_requested', 'overlay_visible', 'wake_released'} <= {e['stage'] for e in events}:
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError(f'Frozen normal task did not wake/deliver: {events}')
+    receiver = next(e for e in events if e['stage'] == 'receiver')
+    delivery = next(e for e in events if e['stage'] == 'delivery')
+    assert 'urgent=true' in receiver['detail']
+    assert 'appVisible=false' in delivery['detail'], 'Must deliver without reopening the app.'
+    assert receiver['pid'] == int(pid), 'Frozen cached process, not a cold restart, must wake.'
+    assert 0 <= receiver['at'] - task['at'] < 2500, 'The normal deadline arrived late.'
+    assert len([e for e in events if e['stage'] == 'delivery']) == 1
+    assert not any(e['stage'] == 'sound_started' for e in events), 'System silent must remain soundless.'
+    activities = adb('shell', 'dumpsys', 'activity', 'activities')
+    resumed = [line for line in activities.splitlines() if 'ResumedActivity' in line]
+    assert resumed and all(PKG not in line for line in resumed), 'The app must not open itself.'
+    vibration = adb('shell', 'dumpsys', 'vibrator_manager')
+    assert any(f'| {PKG} (uid=' in line and 'finished' in line and 'usage: ALARM' in line
+               and line not in before_vibration for line in vibration.splitlines()), 'Missing new completed silent haptic.'
+    (OUT / 'frozen-delivery.json').write_text(json.dumps({
+        'taskId': task['id'], 'expectedAt': task['at'], 'frozenPid': int(pid),
+        'receiverDelayMs': receiver['at'] - task['at'], 'resumed': resumed, 'events': events
+    }, indent=2), encoding='utf-8')
+    capture('frozen')
+    time.sleep(6)
+    assert '(nothing)' in adb('shell', 'dumpsys', 'activity', 'services', PKG), 'Idle service must stop.'
+    # Host-only test setting; the product never changes the system ringer.
+    adb('shell', 'cmd', 'audio', 'set-ringer-mode', 'NORMAL')
+
+
 assert adb('get-state') == 'device'
 assert adb('shell', 'getprop', 'ro.kernel.qemu') == '1', 'This script only runs on a disposable emulator.'
 original_ringer = adb('shell', 'settings', 'get', 'global', 'mode_ringer')
@@ -103,6 +165,12 @@ try:
     prepare()
     instrument('VibrationPolicyTest', 2)
     capture('blocked-channel')
+    prepare()
+    instrument('AlarmPriorityMigrationTest', 1)
+    capture('priority-migration')
+    prepare()
+    instrument('FrozenReminderFixture', 1)
+    frozen_real_task()
     prepare()
     instrument('BackgroundFallbackTest', 1)
     capture('background-fallback')
@@ -211,6 +279,7 @@ finally:
         capture('final')
     except Exception as error:
         print('Capture failed:', error)
+    adb('shell', 'am', 'unfreeze', PKG, check=False)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
     # Failure/crash fallback: instrumentation normally restores these in @After.
