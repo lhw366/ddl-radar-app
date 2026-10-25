@@ -184,7 +184,12 @@ def frozen_real_task():
     }, indent=2), encoding='utf-8')
     capture('frozen')
     time.sleep(6)
-    assert '(nothing)' in adb('shell', 'dumpsys', 'activity', 'services', PKG), 'Idle service must stop.'
+    services = adb('shell', 'dumpsys', 'activity', 'services', PKG)
+    # The stopped Activity may still bind a cached Chromium renderer. Only the
+    # due-reminder foreground service must terminate after the five-second card.
+    assert not re.search(r'ServiceRecord\{[^\n]*com\.ddlradar\.app/(?:\.|com\.ddlradar\.app\.)AlarmService\b', services), \
+        'The reminder foreground service must stop.'
+    (OUT / 'frozen-idle-services.txt').write_text(services, encoding='utf-8')
     # Host-only test setting; the product never changes the system ringer.
     adb('shell', 'cmd', 'audio', 'set-ringer-mode', 'NORMAL')
 
