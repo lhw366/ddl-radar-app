@@ -17,7 +17,7 @@ import com.getcapacitor.JSObject;
 
 import org.json.JSONObject;
 
-/** Short, synchronous delivery while AlarmManager holds the receiver's wake lock. */
+/** Shared, idempotent delivery for the direct service and legacy broadcasts. */
 final class AlarmDelivery {
     private static final String GROUP = "com.ddlradar.app.reminders";
     private static final int SUMMARY_ID = 19900216;
@@ -54,9 +54,8 @@ final class AlarmDelivery {
             channelId = channelFor(channelId, vibrate);
             intent.putExtra("channelId", channelId);
             intent.putExtra("vibrateInSilent", vibrateInSilent);
-            // The receiver posts the system notification synchronously. The
-            // service receives the resolved content, even if the stored event
-            // changed after its PendingIntent was originally registered.
+            // Resolve effects from persisted content, even if it changed after
+            // the PendingIntent was originally registered.
             intent.putExtra("title", title);
             intent.putExtra("body", body);
             boolean notified = post(context, id, title, body, channelId);
@@ -90,7 +89,8 @@ final class AlarmDelivery {
             int slot = intent.getIntExtra("slot", 0);
             String mode = AlarmScheduler.lastSchedMode(context);
             AlarmScheduler.markFired(context, id,
-                    slot == 2 ? "service" : "clock".equals(mode) ? "clock" : "exact");
+                    AlarmService.ACTION_DUE.equals(intent.getAction()) ? "direct_service"
+                            : slot == 2 ? "service" : "clock".equals(mode) ? "clock" : "exact");
             if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;
         }

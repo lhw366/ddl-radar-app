@@ -15,42 +15,94 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class AlarmPriorityMigrationTest {
-    @Test public void upgradeRetiresOldTokenAndSystemDeliversUrgentBroadcastOnce() throws Exception {
-        Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        int id = 11415;
+    private final Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
+
+    @Test public void migratePlainBroadcast() throws Exception { migrate(14, ""); }
+    @Test public void migrateUrgentBroadcastFromBuild96() throws Exception { migrate(15, "/urgent"); }
+
+    private void migrate(int version, String suffix) throws Exception {
+        int id = 11400 + version;
         long at = System.currentTimeMillis() + 4000;
         Intent old = new Intent(ctx, AlarmReceiver.class)
                 .setAction("com.ddlradar.app.DELIVER_REMINDER")
-                .setData(Uri.parse("ddlr://alarm/" + id + "/0"))
+                .setData(Uri.parse("ddlr://alarm/" + id + "/0" + suffix))
                 .putExtra("id", id).putExtra("at", at);
+        if (version == 15) old.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         PendingIntent legacy = PendingIntent.getBroadcast(ctx, 0, old,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         AlarmManager manager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         manager.setAlarmClock(new AlarmManager.AlarmClockInfo(at, null), legacy);
-        JSONObject event = new JSONObject().put("id", id).put("at", at).put("v", 14)
+        JSONObject event = new JSONObject().put("id", id).put("at", at).put("v", version)
                 .put("title", "升级迁移").put("body", "只投递一次")
                 .put("channel", "ddlr_gentle_v4_still_silent").put("vibrate", false).put("scheduled", true);
         AlarmScheduler.save(ctx, new JSONArray().put(event));
-        AlarmScheduler.reapplyAll(ctx);
-        assertEquals(15, AlarmScheduler.load(ctx).getJSONObject(0).getInt("v"));
-        try { legacy.send(); fail("The old background-priority PendingIntent must be cancelled"); }
-        catch (PendingIntent.CanceledException expected) { }
-        long end = System.currentTimeMillis() + 10000;
-        while (!AlarmScheduler.wasDelivered(ctx, id, at) && System.currentTimeMillis() < end) Thread.sleep(50);
-        assertTrue(AlarmScheduler.wasDelivered(ctx, id, at));
-        Thread.sleep(300);
-        int receivers = 0;
+        try {
+            AlarmScheduler.reapplyAll(ctx);
+            assertEquals(16, AlarmScheduler.load(ctx).getJSONObject(0).getInt("v"));
+            PendingIntent replacement = AlarmScheduler.operation(ctx, id, at, "升级迁移", "只投递一次",
+                    "ddlr_gentle_v4_still_silent", false, 0);
+            assertTrue("The system token must target a foreground service", replacement.isForegroundService());
+            try { legacy.send(); fail("The old broadcast token must be cancelled"); }
+            catch (PendingIntent.CanceledException expected) { }
+            awaitDelivery(id, at);
+            awaitIdle();
+            assertEquals(1, count(id, "alarm_entry"));
+            assertEquals(0, count(id, "receiver"));
+            assertEquals(1, count(id, "notification"));
+            assertEquals("foreground_service", ctx.getSharedPreferences("ddlr_alarms", 0).getString("lastEntryRoute", ""));
+        } finally { AlarmScheduler.cancel(ctx, id); }
+    }
+
+    @Test public void duplicateServiceStartCannotReplayNativeEffects() throws Exception {
+        int id = 11618;
+        long at = System.currentTimeMillis() + 2000;
+        AlarmScheduler.schedule(ctx, id, at, "一次提醒", "不可重复震动", "ddlr_gentle_v5_native_silent", true);
+        try {
+            awaitDelivery(id, at);
+            long end = System.currentTimeMillis() + 3000;
+            while (count(id, "direct_vibration_requested") == 0 && System.currentTimeMillis() < end) Thread.sleep(25);
+            assertEquals(1, count(id, "direct_vibration_requested"));
+            ctx.startForegroundService(new Intent(ctx, AlarmService.class).setAction(AlarmService.ACTION_DUE)
+                    .putExtra("id", id).putExtra("at", at).putExtra("channelId", "ddlr_gentle_v5_native_silent")
+                    .putExtra("vibrate", true).putExtra("directVibration", true));
+            Thread.sleep(300);
+            awaitIdle();
+            assertEquals(1, count(id, "notification"));
+            assertEquals(1, count(id, "direct_vibration_requested"));
+            assertEquals(1, count(id, "delivery_skipped"));
+        } finally { AlarmScheduler.cancel(ctx, id); }
+    }
+
+    @Test public void cancelledServiceAlarmNeverStarts() throws Exception {
+        int id = 11619;
+        long at = System.currentTimeMillis() + 2000;
+        AlarmScheduler.schedule(ctx, id, at, "已取消", "不可投递", "ddlr_gentle_v4_still_silent", false);
+        AlarmScheduler.cancel(ctx, id);
+        Thread.sleep(3000);
+        assertFalse(AlarmScheduler.wasDelivered(ctx, id, at));
+        assertEquals(0, count(id, "alarm_entry"));
+        assertFalse(AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
+    }
+
+    private int count(int id, String stage) throws Exception {
+        int n = 0;
         JSONArray trace = ReminderTrace.read(ctx);
         for (int i = 0; i < trace.length(); i++) {
             JSONObject entry = trace.getJSONObject(i);
-            if (entry.optLong("id") == id && entry.optString("stage").equals("receiver")) {
-                receivers++;
-                assertTrue("Check the ACTUAL received flags, not the factory source",
-                        entry.optString("detail").contains("urgent=true"));
-            }
+            if (entry.optLong("id") == id && stage.equals(entry.optString("stage"))) n++;
         }
-        assertEquals(1, receivers);
-        AlarmScheduler.cancel(ctx, id);
-        assertFalse(AlarmService.isRunning());
+        return n;
+    }
+    private void awaitDelivery(int id, long at) throws Exception {
+        long end = System.currentTimeMillis() + 10000;
+        while (!AlarmScheduler.wasDelivered(ctx, id, at) && System.currentTimeMillis() < end) Thread.sleep(25);
+        assertTrue(AlarmScheduler.wasDelivered(ctx, id, at));
+    }
+    private void awaitIdle() throws Exception {
+        long end = System.currentTimeMillis() + 4000;
+        while (AlarmService.isRunning() && System.currentTimeMillis() < end) Thread.sleep(25);
+        assertFalse("The finite service must exit", AlarmService.isRunning());
+        assertFalse(AlarmService.isWakeHeld());
     }
 }

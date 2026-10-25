@@ -22,6 +22,7 @@ public class AlarmReceiver extends BroadcastReceiver {
             ReminderTrace.mark(context, intent.getIntExtra("id", -1), "receiver", "already_delivered");
             return;
         }
+        AlarmArrival.record(context, intent, "legacy_broadcast");
         AlarmScheduler.markReceiverHit(context, intent.getIntExtra("id", 0), "exact");
         long elapsed = android.os.SystemClock.elapsedRealtime();
         long foregroundAgo = MainActivity.lastForegroundElapsed == 0 ? -1 : elapsed - MainActivity.lastForegroundElapsed;

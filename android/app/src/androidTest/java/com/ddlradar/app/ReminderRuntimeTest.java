@@ -73,7 +73,7 @@ public class ReminderRuntimeTest {
         awaitCompositedBanner(11001);
         assertHomeResumed();
         assertServicePrecedesBackgroundOverlay(11001);
-        assertTrue(hasStage(11001, "receiver"));
+        assertTrue(hasStage(11001, "alarm_entry"));
         assertTrue(hasStage(11001, "service"));
         assertTrue(hasStage(11001, "vibration_requested"));
         NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -203,7 +203,7 @@ public class ReminderRuntimeTest {
         assertFalse(AlarmService.isWakeHeld());
     }
 
-    @Test public void realVibrationOnlyTaskDeliversWithoutOverlayOrForegroundService() throws Exception {
+    @Test public void realVibrationOnlyTaskReleasesServiceAfterNotification() throws Exception {
         shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -230,7 +230,10 @@ public class ReminderRuntimeTest {
         awaitStage(id, "notification", 15000);
         assertSystemVibrationChannel(id);
         awaitNewSystemVibration(before, false);
-        assertFalse("Vibration-only delivery must not start a service", hasStage(id, "service"));
+        assertTrue("The alarm must enter through the direct service", hasStage(id, "alarm_entry"));
+        awaitStage(id, "wake_released", 3000);
+        long idle = System.currentTimeMillis() + 3000;
+        while (AlarmService.isRunning() && System.currentTimeMillis() < idle) Thread.sleep(25);
         assertFalse(AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
         assertFalse(hasStage(id, "direct_vibration_requested"));

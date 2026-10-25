@@ -13,6 +13,11 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 def adb(*args, check=True, binary=False, timeout=40):
+    # Only the disposable emulator has root. Read evidence without changing the
+    # production application's debuggable flag or adding an export endpoint.
+    if os.environ.get('DDLR_TEST_RELEASE') == '1' and len(args) == 5 and args[1:4] == ('run-as', PKG, 'cat'):
+        assert args[4].startswith(('files/', 'shared_prefs/')) and '..' not in args[4]
+        args = (args[0], 'su', '0', 'cat', '/data/user/0/' + PKG + '/' + args[4])
     result = subprocess.run(['adb', *args], capture_output=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError(f'adb {args}: {result.stderr.decode(errors="replace")}')
@@ -75,12 +80,17 @@ def display_state():
 def prepare():
     adb('shell', 'pm', 'clear', PKG)
     adb('shell', 'pm', 'clear', PKG + '.test')
+    adb('shell', 'pm', 'enable', PKG + '/.AlarmReceiver')
     adb('shell', 'appops', 'set', PKG, 'SYSTEM_ALERT_WINDOW', 'allow')
     adb('shell', 'pm', 'grant', PKG, 'android.permission.POST_NOTIFICATIONS')
     adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
     adb('shell', 'wm', 'dismiss-keyguard')
     adb('logcat', '-c')
     adb('shell', 'setprop', 'log.tag.NotifAttentionHelper', 'DEBUG')
+    if os.environ.get('DDLR_TEST_RELEASE') == '1':
+        package = adb('shell', 'dumpsys', 'package', PKG)
+        assert 'DEBUGGABLE' not in package, 'Background checks must run the non-debuggable release.'
+        (OUT / 'release-package.txt').write_text(package, encoding='utf-8')
 
 
 def instrument(cls, expected):
@@ -106,6 +116,11 @@ def frozen_real_task():
     raw = adb('exec-out', 'run-as', PKG, 'cat', 'files/frozen-task.json')
     task = json.loads(raw)
     (OUT / 'frozen-task.json').write_text(raw, encoding='utf-8')
+    # Stronger than "receiver happened to run": new deadlines must still work
+    # when the old receiver cannot run at all. No product setting changes.
+    disabled = adb('shell', 'pm', 'disable', PKG + '/.AlarmReceiver')
+    assert 'disabled' in disabled
+    (OUT / 'disabled-receiver.txt').write_text(disabled, encoding='utf-8')
     adb('shell', 'cmd', 'notification', 'set_dnd', 'off')
     adb('shell', 'cmd', 'audio', 'set-ringer-mode', 'SILENT')
     adb('shell', 'am', 'start', '-W', '-n', PKG + '/.MainActivity')
@@ -159,14 +174,15 @@ def frozen_real_task():
     events = []
     while time.monotonic() < end:
         events = [e for e in traces() if e['id'] == task['id']]
-        if {'receiver', 'notification', 'service', 'direct_vibration_requested', 'overlay_visible', 'wake_released'} <= {e['stage'] for e in events}:
+        if {'alarm_entry', 'notification', 'service', 'direct_vibration_requested', 'overlay_visible', 'wake_released'} <= {e['stage'] for e in events}:
             break
         time.sleep(0.5)
     else:
         raise AssertionError(f'Frozen normal task did not wake/deliver: {events}')
-    receiver = next(e for e in events if e['stage'] == 'receiver')
+    receiver = next(e for e in events if e['stage'] == 'alarm_entry')
     delivery = next(e for e in events if e['stage'] == 'delivery')
-    assert 'urgent=true' in receiver['detail']
+    assert 'route=foreground_service' in receiver['detail']
+    assert not any(e['stage'] == 'receiver' for e in events), 'No broadcast trampoline is permitted.'
     assert 'appVisible=false' in delivery['detail'], 'Must deliver without reopening the app.'
     assert receiver['pid'] == int(pid), 'Frozen cached process, not a cold restart, must wake.'
     assert 0 <= receiver['at'] - task['at'] < 2500, 'The normal deadline arrived late.'
@@ -180,7 +196,7 @@ def frozen_real_task():
                and line not in before_vibration for line in vibration.splitlines()), 'Missing new completed silent haptic.'
     (OUT / 'frozen-delivery.json').write_text(json.dumps({
         'taskId': task['id'], 'expectedAt': task['at'], 'frozenPid': int(pid),
-        'receiverDelayMs': receiver['at'] - task['at'], 'resumed': resumed, 'events': events
+        'entryDelayMs': receiver['at'] - task['at'], 'receiverDisabled': True, 'resumed': resumed, 'events': events
     }, indent=2), encoding='utf-8')
     capture('frozen')
     time.sleep(6)
@@ -202,7 +218,7 @@ original_volume = re.search(r'volume is\s+(\d+)',
                            adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
     prepare()
-    instrument('AlarmPriorityMigrationTest', 1)
+    instrument('AlarmPriorityMigrationTest', 4)
     capture('priority-migration')
     prepare()
     instrument('FrozenReminderFixture', 1)
@@ -283,12 +299,12 @@ try:
     events = []
     while time.monotonic() < until:
         events = [e for e in traces() if e['id'] == 11003]
-        if {'receiver', 'service', 'direct_vibration_requested', 'notification', 'wake_released'} <= {e['stage'] for e in events}:
+        if {'alarm_entry', 'service', 'direct_vibration_requested', 'notification', 'wake_released'} <= {e['stage'] for e in events}:
             break
         time.sleep(1)
     else:
         raise AssertionError(f'Cold/Doze event was not delivered: {events}')
-    receiver = next(e for e in events if e['stage'] == 'receiver')
+    receiver = next(e for e in events if e['stage'] == 'alarm_entry')
     assert receiver['pid'] != registered['pid'], 'System must restart the process to deliver this event.'
     cold_vibrations = adb('shell', 'dumpsys', 'vibrator_manager')
     assert any(f'| {PKG} (uid=' in line and 'finished' in line and 'usage: NOTIFICATION' in line
@@ -324,6 +340,7 @@ finally:
     except Exception as error:
         print('Capture failed:', error)
     adb('shell', 'am', 'unfreeze', PKG, check=False)
+    adb('shell', 'pm', 'enable', PKG + '/.AlarmReceiver', check=False)
     adb('shell', 'dumpsys', 'deviceidle', 'unforce', check=False)
     adb('shell', 'dumpsys', 'battery', 'reset', check=False)
     # Failure/crash fallback: instrumentation normally restores these in @After.
