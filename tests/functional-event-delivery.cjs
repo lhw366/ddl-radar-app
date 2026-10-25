@@ -30,6 +30,24 @@ test('backgrounding removes page intervals and resuming creates only one replace
   assert.equal(started,2);
 });
 
+test('native diagnostic bridge carries late entry evidence into the visible panel', async () => {
+  const native = { items: [{ id: 1 }], lastEntryAt: 1792914343310, lastEntryRoute: 'foreground_service',
+    lastEntrySinceForegroundMs: 12, lastEntrySinceBackgroundMs: 200795, lastDelayMs: 163327,
+    lastDeliveryAppVisible: true, lastForegroundAt: 1792914343298, scheduleVersion: 16,
+    deliveryRoute: 'foreground_service', sysNextOwner: 'com.ddlradar.app', displayState: { appVisible: true } };
+  const h = nativeHarness(async () => ({}), { notifyStatus: async () => ({ granted: true }),
+    listChannelIds: async () => ({ ids: [] }) }, { pending: async () => native });
+  const d = await h.context.NativeNotify.diag();
+  assert.equal(d.lastEntryRoute, native.lastEntryRoute);
+  assert.equal(d.lastEntrySinceForegroundMs, 12);
+  assert.equal(d.lastDeliveryAppVisible, true);
+  assert.equal(d.scheduleVersion, 16);
+  assert.equal(d.sysNextOwner, 'com.ddlradar.app');
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /后台投递尚未通过/);
+  assert.match(h.el('diagList').innerHTML, /系统直接启动服务/);
+});
+
 test('all four normal tiers, custom reminder and deadline have exact times and stable distinct ids', async () => {
   let alarms;
   const h = nativeHarness(async p => { alarms = p.alarms; });

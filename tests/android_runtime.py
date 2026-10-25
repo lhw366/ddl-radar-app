@@ -18,6 +18,11 @@ def adb(*args, check=True, binary=False, timeout=40):
     if os.environ.get('DDLR_TEST_RELEASE') == '1' and len(args) == 5 and args[1:4] == ('run-as', PKG, 'cat'):
         assert args[4].startswith(('files/', 'shared_prefs/')) and '..' not in args[4]
         args = (args[0], 'su', '0', 'cat', '/data/user/0/' + PKG + '/' + args[4])
+    elif os.environ.get('DDLR_TEST_RELEASE') == '1' and len(args) == 4 and args[:2] == ('shell', 'pm') \
+            and args[2] in ('enable', 'disable') and args[3] == PKG + '/.AlarmReceiver':
+        # Shell may not toggle a non-debuggable app component; root injects
+        # this specific test fault without changing the product manifest.
+        args = ('shell', 'su', '0', *args[1:])
     result = subprocess.run(['adb', *args], capture_output=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError(f'adb {args}: {result.stderr.decode(errors="replace")}')

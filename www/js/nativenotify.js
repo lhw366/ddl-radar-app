@@ -221,6 +221,14 @@
         out.lastNotificationAllowed = p.lastNotificationAllowed;
         out.lastReceiverId = p.lastReceiverId || 0;
         out.lastReceiverAt = p.lastReceiverAt || 0;
+        // Both the visible panel and copied report need the same native evidence.
+        ['lastExpectedAt', 'sysNextOwner', 'scheduleVersion', 'deliveryRoute',
+          'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs',
+          'lastEntryAt', 'lastEntryId', 'lastEntryRoute', 'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs',
+          'lastForegroundAt', 'lastBackgroundAt', 'lastDisplayChannel', 'lastDeliveryAppVisible',
+          'foregroundChannelId', 'displayState'].forEach(function (key) {
+            if (p[key] !== undefined) out[key] = p[key];
+          });
         out.guard = p.guard === true;
         out.wakeHeld = p.wakeHeld === true;
         out.sdk = p.sdk || null;
