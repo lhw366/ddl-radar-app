@@ -39,7 +39,7 @@ public class FrozenReminderFixture {
             Thread.sleep(100);
         }
         js(activity, "window.__saved='pending'; S.tasks=[{id:'frozen-real-task',name:'冻结后的正常截止提醒',"
-                + "dueAt:Date.now()+60000,tiers:{120:false,60:false,30:false,5:false},custom:[],"
+                + "dueAt:Date.now()+90000,tiers:{120:false,60:false,30:false,5:false},custom:[],"
                 + "daily:false,done:false,quadrant:'q1'}];"
                 + "S.settings.sound=true;S.settings.vibrate=true;S.settings.banner=true;S.settings.vibrationMode='native';"
                 + "S.settings.vibrateInSilent=true;S.settings.remindSilent=false;S.settings.bannerDuration='5s';"
@@ -51,6 +51,10 @@ public class FrozenReminderFixture {
         JSONArray items = AlarmScheduler.load(ctx);
         assertEquals(1, items.length());
         assertFalse(AlarmService.isRunning());
+        assertEquals("true", js(activity, "JSON.parse(localStorage.getItem('ddlr_v1')).tasks.some(t=>t.id==='frozen-real-task')"));
+        // AndroidJUnitRunner kills the target at finish. Let Chromium commit
+        // localStorage before that artificial kill; HOME alone does not kill it.
+        Thread.sleep(7000);
         try (FileOutputStream out = new FileOutputStream(new File(ctx.getFilesDir(), "frozen-task.json"))) {
             out.write(items.getJSONObject(0).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }

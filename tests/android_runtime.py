@@ -30,9 +30,13 @@ def capture(prefix):
         'vibrations': ['shell', 'dumpsys', 'vibrator_manager'],
         'notifications': ['shell', 'dumpsys', 'notification', '--noredact'],
         'windows': ['shell', 'dumpsys', 'window', 'windows'],
+        'lastanr': ['shell', 'dumpsys', 'activity', 'lastanr'],
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
     (OUT / f'{prefix}-screen.png').write_bytes(adb('exec-out', 'screencap', '-p', binary=True, check=False))
+    for prefs in ['ddlr_alarms', 'ddlr_lifecycle']:
+        raw = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/' + prefs + '.xml', check=False)
+        (OUT / f'{prefix}-{prefs}.xml').write_text(raw, encoding='utf-8')
     for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
                  'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
                  'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png']:
@@ -122,6 +126,18 @@ def frozen_real_task():
         time.sleep(0.5)
     assert stopped, 'HOME must complete onStop before freezing the app.'
     time.sleep(1)
+    # The fixture ends instrumentation (which kills its target); verify the web
+    # task survived that restart and reconciliation did not cancel the event.
+    def assert_still_scheduled():
+        saved = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/ddlr_alarms.xml')
+        items = json.loads(ET.fromstring(saved).find("./string[@name='alarms']").text)
+        assert any(item['id'] == task['id'] and item['at'] == task['at'] for item in items), \
+            f'Test task did not survive instrumentation restart: {items}'
+    assert_still_scheduled()
+    # Freeze close to the deadline, after startup/service callbacks have settled.
+    # Otherwise an unrelated callback may unfreeze the app long before the alarm.
+    time.sleep(max(0, (task['at'] - int(time.time() * 1000)) / 1000 - 6))
+    assert_still_scheduled()
     pid = adb('shell', 'pidof', PKG)
     assert pid.isdigit(), 'The cached test needs one live application process.'
     before_vibration = adb('shell', 'dumpsys', 'vibrator_manager')
@@ -138,7 +154,7 @@ def frozen_real_task():
         time.sleep(0.2)
     (OUT / 'frozen-before.txt').write_text(frozen or processes, encoding='utf-8')
     assert frozen, 'The emulator never confirmed an actually frozen process.'
-    assert task['at'] - int(time.time() * 1000) > 5000, 'Must freeze before the event is due.'
+    assert task['at'] - int(time.time() * 1000) > 1000, 'Must freeze before the event is due.'
     end = time.monotonic() + 70
     events = []
     while time.monotonic() < end:
@@ -181,6 +197,12 @@ original_volume = re.search(r'volume is\s+(\d+)',
                            adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
     prepare()
+    instrument('AlarmPriorityMigrationTest', 1)
+    capture('priority-migration')
+    prepare()
+    instrument('FrozenReminderFixture', 1)
+    frozen_real_task()
+    prepare()
     instrument('TimetableOcrTest', 1)
     ocr = adb('exec-out', 'run-as', PKG, 'cat', 'files/timetable-ocr.json')
     (OUT / 'timetable-ocr.json').write_text(ocr, encoding='utf-8')
@@ -188,12 +210,6 @@ try:
     prepare()
     instrument('VibrationPolicyTest', 2)
     capture('blocked-channel')
-    prepare()
-    instrument('AlarmPriorityMigrationTest', 1)
-    capture('priority-migration')
-    prepare()
-    instrument('FrozenReminderFixture', 1)
-    frozen_real_task()
     prepare()
     instrument('BackgroundFallbackTest', 1)
     capture('background-fallback')
