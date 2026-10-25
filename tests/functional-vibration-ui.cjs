@@ -32,6 +32,17 @@ function nativeFixture(options = {}) {
   return Object.assign(h, { calls, lifecycle, requests, plugin, setDiagnosis: value => { diagnosis = value; } });
 }
 
+test('late foreground delivery is not labelled healthy background delivery or ownership of another app clock', async () => {
+  const h = nativeFixture({ diag: { pending: 21, clockMode: true, sysNextAt: 1792886400000,
+    sysNextOwner: 'com.android.deskclock', lastDelayMs: 8288, lastDeliveryAppVisible: true,
+    lastReceiverSinceForegroundMs: 12, lastReceiverSinceBackgroundMs: 13277 } });
+  await h.run('renderDiag()');
+  const html = h.el('diagList').innerHTML;
+  assert.match(html, /后台投递尚未通过/);
+  assert.match(html, /可能来自其他应用，不能证明本 App 已排定/);
+  assert.doesNotMatch(html, /不参与省电推迟|不需要关闭电池优化/);
+});
+
 test('upgrading or importing settings preserves system notification vibration until explicitly selected', () => {
   const h = harness(['app.js']);
   for (const settings of [{}, { vibrate: true }, { vibrationMode: 'unknown' }]) {

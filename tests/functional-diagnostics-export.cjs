@@ -96,6 +96,24 @@ test('diagnostic export omits task titles, bodies and arbitrary exception messag
   assert.equal(JSON.parse(text).alarm.pending, 1, 'fresh native items determine the queue size');
 });
 
+test('diagnostics retain background-to-foreground delay evidence and device-wide alarm ownership', () => {
+  const h = harness(['app.js']);
+  const source = diagnostics();
+  Object.assign(source, { scheduleVersion: 15, sysNextOwner: 'com.android.deskclock',
+    lastReceiverUrgent: true, lastReceiverSinceForegroundMs: 12, lastReceiverSinceBackgroundMs: 13277,
+    lastForegroundAt: 1792809000000, lastBackgroundAt: 1792808986723 });
+  source.trace.at(-6).detail = 'urgent=true;appVisible=true;sinceForegroundMs=12;sinceBackgroundMs=13277';
+  h.context.exportFixture = source;
+  const text = h.run('compactReminderDiagnostics(exportFixture)');
+  const result = JSON.parse(text);
+  assert.ok(text.length <= 4500);
+  assert.equal(result.alarm.lastReceiverUrgent, true);
+  assert.equal(result.alarm.lastReceiverSinceForegroundMs, 12);
+  assert.equal(result.alarm.sysNextOwner, 'com.android.deskclock');
+  assert.equal(result.display.lastForegroundAt, 1792809000000);
+  assert.equal(result.trace.events[0].steps[0][2].urgent, 'true');
+});
+
 test('copy action refreshes native display evidence but preserves the full UI snapshot', async () => {
   let copied, query;
   const source = diagnostics();

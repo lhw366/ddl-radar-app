@@ -244,8 +244,9 @@ public class DdlAlarmPlugin extends Plugin {
                 if (at > now && (nextAt == 0 || at < nextAt)) nextAt = at;
             }
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            // 系统侧真实登记的闹钟时钟时刻（clock 模式下有值，降级模式下为 0）
-            long sysNextAt = AlarmScheduler.nextClockAt(ctx);
+            // Android returns the device-wide next clock, including other apps.
+            AlarmManager.AlarmClockInfo nextClock = am == null ? null : am.getNextAlarmClock();
+            long sysNextAt = nextClock == null ? 0 : nextClock.getTriggerTime();
             long[] lf = AlarmScheduler.lastFire(ctx);
             long[] lr = AlarmScheduler.lastReceiver(ctx);
             String schedMode = AlarmScheduler.lastSchedMode(ctx);
@@ -254,6 +255,9 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("nextAt", nextAt);
             ret.put("queued", queued);
             ret.put("sysNextAt", sysNextAt);
+            ret.put("sysNextOwner", nextClock == null || nextClock.getShowIntent() == null
+                    ? "" : nextClock.getShowIntent().getCreatorPackage());
+            ret.put("scheduleVersion", SCHED_VER);
             ret.put("schedMode", schedMode);
             ret.put("clockMode", "clock".equals(schedMode));
             // 原生已投递事件日志：JS 前台补弹前用它区分「原生已响」与「真的漏了」
@@ -273,6 +277,13 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("vibrateInSilent", call.getBoolean("vibrateInSilent", true));
             ret.put("lastReceiverId", lr[0]);
             ret.put("lastReceiverAt", lr[1]);
+            if (diagnostics.contains("lastReceiverUrgent"))
+                ret.put("lastReceiverUrgent", diagnostics.getBoolean("lastReceiverUrgent", false));
+            ret.put("lastReceiverSinceForegroundMs", diagnostics.getLong("lastReceiverSinceForegroundMs", -1));
+            ret.put("lastReceiverSinceBackgroundMs", diagnostics.getLong("lastReceiverSinceBackgroundMs", -1));
+            android.content.SharedPreferences lifecycle = ctx.getSharedPreferences("ddlr_lifecycle", Context.MODE_PRIVATE);
+            ret.put("lastForegroundAt", lifecycle.getLong("lastForegroundAt", 0));
+            ret.put("lastBackgroundAt", lifecycle.getLong("lastBackgroundAt", 0));
             ret.put("guard", AlarmService.isRunning());
             ret.put("wakeHeld", AlarmService.isWakeHeld());
             ret.put("sdk", Build.VERSION.SDK_INT);
