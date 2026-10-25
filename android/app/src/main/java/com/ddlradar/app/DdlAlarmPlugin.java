@@ -258,7 +258,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("sysNextOwner", nextClock == null || nextClock.getShowIntent() == null
                     ? "" : nextClock.getShowIntent().getCreatorPackage());
             ret.put("scheduleVersion", SCHED_VER);
-            ret.put("deliveryRoute", "foreground_service");
+            ret.put("deliveryRoute", "inexact_idle".equals(schedMode) ? "inexact_broadcast" : "foreground_service");
             ret.put("schedMode", schedMode);
             ret.put("clockMode", "clock".equals(schedMode));
             // 原生已投递事件日志：JS 前台补弹前用它区分「原生已响」与「真的漏了」

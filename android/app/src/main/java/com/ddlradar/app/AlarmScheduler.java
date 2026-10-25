@@ -343,15 +343,21 @@ public final class AlarmScheduler {
             } catch (SecurityException exactDenied) {
                 // 精确闹钟也被拒：最后一层必须自己兜住，否则异常会冒出 schedule()
                 // 打断 apply() 的整表对账，结果是一条闹钟都排不上。
-                if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
-                else am.set(AlarmManager.RTC_WAKEUP, at, op);
+                // Inexact alarms do NOT receive the exact-alarm FGS exemption.
+                // Keep notification-only legacy delivery if exact access was denied.
+                PendingIntent fallback = operation(ctx, id, at, title, body, channelId, vibrate, vibrateInSilent, 3);
+                if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, fallback);
+                else am.set(AlarmManager.RTC_WAKEUP, at, fallback);
+                am.cancel(op);
                 mode = "inexact_idle";
             }
         }
         // Register the service operation BEFORE retiring both broadcast identities.
         cancelBackgroundBroadcast(ctx, id);
+        if (!"inexact_idle".equals(mode)) am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
         recordSchedMode(ctx, mode);
-        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode + ";route=foreground_service");
+        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode + ";route="
+                + ("inexact_idle".equals(mode) ? "inexact_broadcast" : "foreground_service"));
     }
 
     /** 状态栏闹钟图标的点按目标（所有闹钟共用一个，避免逐条 PendingIntent 抖动）。 */
@@ -395,6 +401,7 @@ public final class AlarmScheduler {
         am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
         cancelBackgroundBroadcast(ctx, id);
         cancelLegacy(ctx, id);
     }
@@ -493,7 +500,8 @@ public final class AlarmScheduler {
      * @param slot 0=当前唯一在用的投递通道；1=已退役的同时刻备份；2=已退役的预唤醒。
      *             历史上有过多通道设计，两者必须用不同 requestCode，否则系统按
      *             「同一 PendingIntent」处理，后注册的会覆盖前一个闹钟。
-     *             现在只注册 slot 0，slot 1/2 仅用于注销残留身份。
+     *             slot 3 only replaces slot 0 when exact alarm access is denied.
+     *             slot 1/2 are only used to cancel retired identities.
      */
     static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId,
@@ -521,6 +529,7 @@ public final class AlarmScheduler {
         if (slot == 0) return Build.VERSION.SDK_INT >= 26
                 ? PendingIntent.getForegroundService(ctx, slot, i, flags)
                 : PendingIntent.getService(ctx, slot, i, flags);
+        i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         return PendingIntent.getBroadcast(ctx, slot, i, flags);
     }
 

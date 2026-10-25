@@ -90,7 +90,7 @@ final class AlarmDelivery {
             String mode = AlarmScheduler.lastSchedMode(context);
             AlarmScheduler.markFired(context, id,
                     AlarmService.ACTION_DUE.equals(intent.getAction()) ? "direct_service"
-                            : slot == 2 ? "service" : "clock".equals(mode) ? "clock" : "exact");
+                            : slot == 3 ? "inexact" : "clock".equals(mode) ? "clock" : "exact");
             if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;
         }
