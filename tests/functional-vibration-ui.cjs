@@ -43,6 +43,18 @@ test('late foreground delivery is not labelled healthy background delivery or ow
   assert.doesNotMatch(html, /不参与省电推迟|不需要关闭电池优化/);
 });
 
+test('direct service entry uses its own lifecycle evidence instead of stale broadcast diagnostics', async () => {
+  const h = nativeFixture({ diag: { pending: 22, lastDelayMs: 163327, lastDeliveryAppVisible: true,
+    lastFireVia: 'direct_service', lastFireAt: 1792914343329, lastEntryAt: 1792914343310,
+    lastEntryRoute: 'foreground_service', lastEntrySinceForegroundMs: 12, lastEntrySinceBackgroundMs: 200795,
+    lastReceiverSinceForegroundMs: -1, lastReceiverSinceBackgroundMs: -1 } });
+  await h.run('renderDiag()');
+  const html = h.el('diagList').innerHTML;
+  assert.match(html, /后台投递尚未通过/);
+  assert.match(html, /系统直接启动服务/);
+  assert.doesNotMatch(html, /守护服务兜底|系统已把闹钟送到 App/);
+});
+
 test('upgrading or importing settings preserves system notification vibration until explicitly selected', () => {
   const h = harness(['app.js']);
   for (const settings of [{}, { vibrate: true }, { vibrationMode: 'unknown' }]) {

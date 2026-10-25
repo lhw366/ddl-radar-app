@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.5';
+const APP_VERSION = '2.3.6';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1627,21 +1627,24 @@ async function renderDiag() {
   html += diagRow(d.lastFireAt > 0, d.lastFireAt > 0
     ? '上次闹钟触发 ' + fmtDT(d.lastFireAt) +
       (d.lastFireVia === 'exact' ? '（经降级精确闹钟）' :
-       d.lastFireVia === 'service' ? '（经守护服务兜底）' : '（经系统闹钟）')
+       d.lastFireVia === 'direct_service' ? '（系统闹钟直接启动提醒服务）' :
+       d.lastFireVia === 'service' ? '（经旧版服务）' : '（经系统闹钟）')
     : '还没有触发记录（闹钟触发一次后出现）');
   if (d.lastDelayMs >= 0) {
     html += diagRow(d.lastDelayMs < 1000, '上次提醒到点后延迟 ' + (d.lastDelayMs / 1000).toFixed(2) + ' 秒');
     if (d.lastNotificationAllowed === false) html += diagRow(false, '上次提醒的系统通知被权限或通道开关阻止', 'notify');
   }
-  if (d.lastReceiverAt > 0) {
-    html += diagRow(true, '系统已把闹钟送到 App：' + fmtDT(d.lastReceiverAt) +
+  const entryAt = d.lastEntryAt || d.lastReceiverAt;
+  if (entryAt > 0) {
+    html += diagRow(null, '上次到点入口：' + (d.lastEntryRoute === 'foreground_service' ? '系统直接启动服务 · ' : '广播 · ') + fmtDT(entryAt) +
       (d.lastFireAt > 0 ? '' : '，但提醒内容未完成展示'));
   }
   if (d.lastDelayMs >= 1000 && d.lastDeliveryAppVisible === true) {
-    const nearReturn = d.lastReceiverSinceForegroundMs >= 0 && d.lastReceiverSinceForegroundMs < 1500 &&
-      d.lastReceiverSinceBackgroundMs > d.lastReceiverSinceForegroundMs;
+    const foregroundAgo = d.lastEntryAt > 0 ? d.lastEntrySinceForegroundMs : d.lastReceiverSinceForegroundMs;
+    const backgroundAgo = d.lastEntryAt > 0 ? d.lastEntrySinceBackgroundMs : d.lastReceiverSinceBackgroundMs;
+    const nearReturn = foregroundAgo >= 0 && foregroundAgo < 1500 && backgroundAgo > foregroundAgo;
     html += diagRow(false, nearReturn
-      ? '延迟提醒在返回 App 后才收到：后台投递尚未通过；需要系统侧日志区分冻结与广播排队'
+      ? '延迟提醒在返回 App 后才收到：后台投递尚未通过；需要系统侧日志确认到点入口为什么被延后'
       : '这次延迟提醒到达时 App 在前台，不能据此判定后台提醒正常');
   }
 
@@ -1667,14 +1670,15 @@ async function renderDiag() {
   html += diagRow(true, d.guard ? '派发服务正在处理提醒或显示横幅' : '派发服务已休眠：未来事件由系统闹钟唤醒');
   html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不修改电池优化。后台是否准时以实际投递记录为准。');
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');
-  const stageNames = { scheduled: '系统闹钟已注册', receiver: '系统闹钟已送达', service: '派发服务已接管',
+  const stageNames = { scheduled: '系统闹钟已注册', alarm_entry: '到点入口已执行', receiver: '旧版广播已送达', service: '派发服务已接管',
+    delivery_error: '提醒执行失败', delivery_skipped: '忽略重复或失效的提醒',
     delivery: '开始执行提醒', vibration_requested: '震动派发路径（非硬件确认）', notification: '已提交系统通知',
     direct_vibration_requested: '已请求原生震动（非硬件确认）', vibration_pending: '等待原生震动派发', vibration_disabled: '此提醒未启用震动', vibration_blocked: '本次未请求震动（偏好或勿扰）', vibration_error: '震动调用失败', vibration_unavailable: '设备未提供震动器', effects_unavailable: '后台效果服务被阻止',
     overlay_blocked: '悬浮横幅被权限阻止', overlay_attached: '悬浮窗口已挂载', overlay_visible: '横幅布局可见',
     overlay_hidden: '横幅布局不可见', wake_released: '短时唤醒锁已释放', overlay_error: '悬浮横幅发生错误', service_start_failed: '后台服务启动失败' };
   const trace = (d.trace || []).filter(e => e.stage !== 'scheduled').slice(-8);
   trace.forEach(e => {
-    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed',
+    html += diagRow(!['overlay_blocked', 'overlay_hidden', 'overlay_error', 'service_start_failed', 'delivery_error',
       'vibration_blocked', 'vibration_error', 'vibration_unavailable', 'effects_unavailable'].includes(e.stage),
       escapeHtml(new Date(e.at).toLocaleTimeString() + ' · ' + (stageNames[e.stage] || e.stage) + ' · ' + e.detail));
   });
@@ -1760,7 +1764,9 @@ function compactReminderDiagnostics(d) {
     }
     const selfCheck = entry.id === 990000002 && /^(direct_vibration_requested|vibration_blocked|vibration_unavailable|vibration_error)$/.test(entry.stage);
     let group = active.get(entry.id);
-    if (!group || (entry.stage === 'receiver' && entry.detail !== 'already_delivered') || selfCheck) {
+    const legacyEntry = entry.stage === 'receiver' && entry.detail !== 'already_delivered' &&
+      !(group && group.steps[0]?.[1] === 'alarm_entry' && entry.at - group.at < 1000);
+    if (!group || entry.stage === 'alarm_entry' || legacyEntry || selfCheck) {
       group = { id: entry.id, at: entry.at, pid: Number.isFinite(entry.pid) ? entry.pid : null, steps: [] };
       if (expected.has(entry.id)) group.expectedAt = expected.get(entry.id);
       groups.push(group); active.set(entry.id, group);
@@ -1787,7 +1793,9 @@ function compactReminderDiagnostics(d) {
     alarm: { pending: Array.isArray(d.items) ? d.items.length : (typeof d.pending === 'number' ? d.pending : 0),
       ...pick(d, ['queued', 'nextAt', 'sysNextAt', 'schedMode', 'lastFireAt', 'lastFireId', 'lastFireVia',
         'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt', 'sysNextOwner', 'scheduleVersion',
-        'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs']) },
+        'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs',
+        'deliveryRoute', 'lastEntryAt', 'lastEntryId', 'lastEntryRoute',
+        'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs']) },
     vibration: pick(d, ['vibrationMode', 'lastVibrationStatus', 'lastVibrationChannel', 'lastVibrationUsage', 'vibrateInSilent']),
     trace: { retained: retained.length, availableEvents: groups.length, exportedEvents: recent.length,
       retainedStagesOnly: true, stepFormat: '[milliseconds after event.at, stage, optional detail, optional changed pid]', events: recent }

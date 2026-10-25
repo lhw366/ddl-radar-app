@@ -28,13 +28,11 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- 系统闹钟触发后直接在接收器投递通知，不依赖前台服务是否可启动。 -->
+        <!-- 兼容旧版在途广播与通知按钮；新闹钟直接启动短时 AlarmService。 -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
 
-        <!-- specialUse：本服务不播放媒体，只做提醒守护与到点投递。
-             早期声明为 mediaPlayback 会触发 Android 14+ 的前台服务类型校验，
-             且与 startForeground 传入的类型必须一致，否则 startForeground 抛异常、
-             服务被判「未进入前台」而被回收——这是切后台/锁屏不响的关键成因。 -->
+        <!-- Only runs at an actual due reminder or while its banner is retained.
+             Keep the manifest type and startForeground type identical. -->
         <service
             android:name=".AlarmService"
             android:exported="false"

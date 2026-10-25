@@ -28,22 +28,42 @@ final class RuntimeDevicePolicy implements AutoCloseable {
     }
 
     void silentWithAllInterruptions() throws Exception {
-        shell("cmd notification set_dnd off");
-        shell("cmd audio set-ringer-mode SILENT");
-        await(AudioManager.RINGER_MODE_SILENT, NotificationManager.INTERRUPTION_FILTER_ALL);
+        ringerAfterDndOff(AudioManager.RINGER_MODE_SILENT);
         assertEquals("Silent notifications must have zero effective volume", 0,
                 audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION));
     }
 
     void normalWithAudibleNotificationVolume() throws Exception {
-        shell("cmd notification set_dnd off");
-        shell("cmd audio set-ringer-mode NORMAL");
-        await(AudioManager.RINGER_MODE_NORMAL, NotificationManager.INTERRUPTION_FILTER_ALL);
+        ringerAfterDndOff(AudioManager.RINGER_MODE_NORMAL);
         if (audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) == 0) {
             shell("cmd audio set-volume 5 1");
             volumeChanged = true;
         }
         assertTrue(audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) > 0);
+    }
+
+    private void ringerAfterDndOff(int ringer) throws Exception {
+        // ZenModeHelper restores the prior ringer asynchronously. A NORMAL
+        // command issued immediately after "set_dnd off" can be overwritten
+        // by that restore (CI 99: streams unmuted, then muted again 3 ms later).
+        // Settle this TEST precondition before any reminder is scheduled. A
+        // stable readback is required; this never retries product delivery.
+        interruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+        for (int attempt = 0; attempt < 3; attempt++) {
+            shell("cmd audio set-ringer-mode " + ringerName(ringer));
+            long until = System.currentTimeMillis() + 1500;
+            long stableSince = 0;
+            while (System.currentTimeMillis() < until) {
+                if (audio.getRingerMode() == ringer && notifications.getCurrentInterruptionFilter()
+                        == NotificationManager.INTERRUPTION_FILTER_ALL) {
+                    if (stableSince == 0) stableSince = System.currentTimeMillis();
+                    if (System.currentTimeMillis() - stableSince >= 400) return;
+                } else stableSince = 0;
+                Thread.sleep(50);
+            }
+        }
+        await(ringer, NotificationManager.INTERRUPTION_FILTER_ALL);
+        fail("Ringer/DND setup did not remain stable before the reminder test");
     }
 
     void interruptionFilter(int filter) throws Exception {
@@ -87,7 +107,7 @@ final class RuntimeDevicePolicy implements AutoCloseable {
 
     @Override public void close() throws Exception {
         // Only the fixture changed these settings. Product code never writes them.
-        shell("cmd notification set_dnd off");
+        ringerAfterDndOff(originalRinger);
         if (volumeChanged) {
             shell("cmd audio set-ringer-mode NORMAL");
             shell("cmd audio set-volume 5 " + originalNotificationVolume);

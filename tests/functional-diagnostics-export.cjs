@@ -135,3 +135,24 @@ test('copy action refreshes native display evidence but preserves the full UI sn
   assert.equal(source.trace.length, 28);
   assert.ok(copied.length <= 4500);
 });
+
+test('direct service diagnostics retain repeated test occurrences and distinguish the old receiver', () => {
+  const h = harness(['app.js']);
+  const source = diagnostics();
+  Object.assign(source, { scheduleVersion: 16, deliveryRoute: 'foreground_service',
+    lastEntryAt: 1792914343310, lastEntryId: 990000001, lastEntryRoute: 'foreground_service',
+    lastEntrySinceForegroundMs: 12, lastEntrySinceBackgroundMs: 200795 });
+  source.trace = [0, 1].flatMap(n => [
+    { id: 990000001, at: 1792914300000 + n * 10000, pid: 5, stage: 'alarm_entry',
+      detail: 'route=foreground_service;appVisible=false;lateMs=14;sinceForegroundMs=90000;sinceBackgroundMs=60000' },
+    { id: 990000001, at: 1792914300010 + n * 10000, pid: 5, stage: 'notification', detail: 'allowed=true' }
+  ]);
+  h.context.exportFixture = source;
+  const text = h.run('compactReminderDiagnostics(exportFixture)');
+  const result = JSON.parse(text);
+  assert.ok(text.length <= 4500);
+  assert.equal(result.alarm.lastEntryRoute, 'foreground_service');
+  assert.equal(result.alarm.lastEntrySinceForegroundMs, 12);
+  assert.equal(result.trace.events.length, 2);
+  assert.equal(result.trace.events[0].steps[0][2].route, 'foreground_service');
+});

@@ -17,6 +17,7 @@ import android.util.Log;
 
 /** Runs only while delivering an event or showing a user-retained banner. No polling. */
 public class AlarmService extends Service {
+    static final String ACTION_DUE = "com.ddlradar.app.DUE_SERVICE";
     static final String GUARD_CHANNEL = "ddlr_guard";
     static final int FG_ID = 19900214;
     private static volatile AlarmService active;
@@ -38,19 +39,22 @@ public class AlarmService extends Service {
         if (handoffWake != null && handoffWake.isHeld()) handoffWake.release();
     }
 
+    private static synchronized void acquireWake(Context context) {
+        PowerManager power = (PowerManager) context.getSystemService(POWER_SERVICE);
+        if (power != null) {
+            if (handoffWake == null) {
+                handoffWake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:handoff");
+                handoffWake.setReferenceCounted(false);
+            }
+            handoffWake.acquire(12000L); // Crash/failure ceiling, actively released below.
+        }
+    }
+
     static boolean dispatch(Context context, Intent source) {
         try {
-            PowerManager power = (PowerManager) context.getSystemService(POWER_SERVICE);
-            if (power != null) {
-                synchronized (AlarmService.class) {
-                    if (handoffWake == null) {
-                        handoffWake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DDLRadar:handoff");
-                        handoffWake.setReferenceCounted(false);
-                    }
-                    handoffWake.acquire(12000L); // Crash/failure ceiling, actively released below.
-                }
-            }
-            Intent delivery = new Intent(source).setClass(context, AlarmService.class);
+            acquireWake(context);
+            Intent delivery = new Intent(source).setClass(context, AlarmService.class)
+                    .putExtra("postedByReceiver", true);
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(delivery);
             else context.startService(delivery);
             return true;
@@ -98,11 +102,27 @@ public class AlarmService extends Service {
         lastStartId = startId;
         if (intent != null && intent.hasExtra("id")) {
             lastId = intent.getIntExtra("id", -1);
-            ReminderTrace.mark(this, lastId, "service", "foreground=true;on_demand=true");
-            // 正常路径下接收器已经同步投递过，这里 deliver() 会因 wasDelivered 直接返回；
-            // 保留这次调用是为了覆盖「服务被系统/测试单独拉起」的场景。
-            try { AlarmDelivery.deliver(this, intent); }
-            catch (Exception error) { Log.e("DdlAlarm", "Reminder delivery failed", error); }
+            boolean directEntry = ACTION_DUE.equals(intent.getAction());
+            if (directEntry) AlarmArrival.record(this, intent, "foreground_service");
+            acquireWake(this);
+            ReminderTrace.mark(this, lastId, "service", "foreground=true;on_demand=true;route="
+                    + (directEntry ? "foreground_service" : "legacy_handoff"));
+            boolean delivered = false;
+            try {
+                // A legacy receiver already posted and resolved its extras.
+                // Direct alarm starts must claim delivery once before any effects.
+                delivered = !directEntry && intent.getBooleanExtra("postedByReceiver", false)
+                        && AlarmScheduler.wasDelivered(this, lastId, intent.getLongExtra("at", 0));
+                if (!delivered) delivered = AlarmDelivery.deliver(this, intent);
+            } catch (Exception error) {
+                Log.e("DdlAlarm", "Reminder delivery failed", error);
+                ReminderTrace.mark(this, lastId, "delivery_error", error.toString());
+            }
+            if (!delivered) {
+                ReminderTrace.mark(this, lastId, "delivery_skipped", "duplicate_or_invalid");
+                finishWhenIdle();
+                return START_NOT_STICKY;
+            }
             // Add the native window only after startForeground succeeded.
             // Background overlays must not depend on a paused WebView or on
             // the short-lived broadcast receiver keeping the process alive.
@@ -117,11 +137,17 @@ public class AlarmService extends Service {
             AlarmDelivery.vibrateFallback(this, lastId, intent.getBooleanExtra("directVibration", false),
                     intent.getBooleanExtra("vibrateInSilent", true));
             ReminderSound.play(this, lastId, intent.getStringExtra("channelId"));
-            effectsUntil = SystemClock.uptimeMillis() + (ReminderSound.canPlay(this, channel) ? 4000L : 2200L);
+            long hold = ReminderSound.canPlay(this, channel) ? 4000L
+                    : intent.getBooleanExtra("directVibration", false) ? 2200L : 0L;
+            effectsUntil = Math.max(effectsUntil, SystemClock.uptimeMillis() + hold);
         }
+        finishWhenIdle();
+        return START_NOT_STICKY; // No permanent guard or process-resurrection loop.
+    }
+
+    private void finishWhenIdle() {
         handler.removeCallbacks(finishEffects);
         handler.postDelayed(finishEffects, Math.max(1L, effectsUntil - SystemClock.uptimeMillis()));
-        return START_NOT_STICKY; // No permanent guard or process-resurrection loop.
     }
 
     @Override public void onDestroy() {

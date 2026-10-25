@@ -150,7 +150,7 @@ public class SilentReminderRuntimeTest {
         assertTrue(detail(disabledByPreference, "delivery").contains("appVisible=false"));
         assertTrue(detail(disabledByPreference, "vibration_blocked").contains("status=blocked_preference"));
         assertFalse(has(disabledByPreference, "direct_vibration_requested"));
-        assertFalse(has(disabledByPreference, "service"));
+        awaitStage(disabledByPreference, "wake_released", 3000);
         assertQuietNotification(disabledByPreference);
         assertNoNewMotor(before);
 
@@ -164,7 +164,7 @@ public class SilentReminderRuntimeTest {
         awaitStage(disabledVibration, "vibration_disabled", 1500);
         assertTrue(detail(disabledVibration, "vibration_disabled").contains("status=disabled"));
         assertFalse(has(disabledVibration, "direct_vibration_requested"));
-        assertFalse(has(disabledVibration, "service"));
+        awaitStage(disabledVibration, "wake_released", 3000);
         assertNoNewMotor(before);
 
         activity = openWebApp();

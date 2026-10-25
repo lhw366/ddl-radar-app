@@ -41,8 +41,8 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    // v15: urgent broadcast identity; migrate existing immutable PendingIntents.
-    public static final int SCHED_VER = 15;
+    // v16: the due alarm starts the finite foreground service directly.
+    public static final int SCHED_VER = 16;
 
     /** 最近一次注册实际使用的通道（诊断用）：clock / exact_idle / inexact_idle */
     private static final String KEY_SCHED_MODE = "schedMode";
@@ -343,16 +343,21 @@ public final class AlarmScheduler {
             } catch (SecurityException exactDenied) {
                 // 精确闹钟也被拒：最后一层必须自己兜住，否则异常会冒出 schedule()
                 // 打断 apply() 的整表对账，结果是一条闹钟都排不上。
-                if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op);
-                else am.set(AlarmManager.RTC_WAKEUP, at, op);
+                // Inexact alarms do NOT receive the exact-alarm FGS exemption.
+                // Keep notification-only legacy delivery if exact access was denied.
+                PendingIntent fallback = operation(ctx, id, at, title, body, channelId, vibrate, vibrateInSilent, 3);
+                if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, fallback);
+                else am.set(AlarmManager.RTC_WAKEUP, at, fallback);
+                am.cancel(op);
                 mode = "inexact_idle";
             }
         }
-        // Register the new identity BEFORE retiring v14. UPDATE_CURRENT only
-        // replaces extras, not Intent flags on an existing PendingIntent.
+        // Register the service operation BEFORE retiring both broadcast identities.
         cancelBackgroundBroadcast(ctx, id);
+        if (!"inexact_idle".equals(mode)) am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
         recordSchedMode(ctx, mode);
-        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode);
+        ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode + ";route="
+                + ("inexact_idle".equals(mode) ? "inexact_broadcast" : "foreground_service"));
     }
 
     /** 状态栏闹钟图标的点按目标（所有闹钟共用一个，避免逐条 PendingIntent 抖动）。 */
@@ -396,6 +401,7 @@ public final class AlarmScheduler {
         am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
         am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
+        am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
         cancelBackgroundBroadcast(ctx, id);
         cancelLegacy(ctx, id);
     }
@@ -494,7 +500,8 @@ public final class AlarmScheduler {
      * @param slot 0=当前唯一在用的投递通道；1=已退役的同时刻备份；2=已退役的预唤醒。
      *             历史上有过多通道设计，两者必须用不同 requestCode，否则系统按
      *             「同一 PendingIntent」处理，后注册的会覆盖前一个闹钟。
-     *             现在只注册 slot 0，slot 1/2 仅用于注销残留身份。
+     *             slot 3 only replaces slot 0 when exact alarm access is denied.
+     *             slot 1/2 are only used to cancel retired identities.
      */
     static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId,
@@ -505,14 +512,11 @@ public final class AlarmScheduler {
     static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId,
                                            boolean vibrate, boolean vibrateInSilent, int slot) {
-        Intent i = new Intent(ctx, AlarmReceiver.class);
-        i.setAction("com.ddlradar.app.DELIVER_REMINDER");
+        Intent i = new Intent(ctx, slot == 0 ? AlarmService.class : AlarmReceiver.class);
+        i.setAction(slot == 0 ? AlarmService.ACTION_DUE : "com.ddlradar.app.DELIVER_REMINDER");
         // Extras do not participate in PendingIntent identity. Preserve the full id,
         // with a separate URI for each route, instead of truncating it to 30 bits.
-        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot + (slot == 0 ? "/urgent" : "")));
-        // The AlarmManager clock wakeup and the broadcast's delivery priority
-        // are separate. Only due reminders get this short-lived priority.
-        i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot + (slot == 0 ? "/service" : "")));
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
         i.putExtra("slot", slot);
@@ -521,21 +525,27 @@ public final class AlarmScheduler {
         if (channelId != null) i.putExtra("channelId", channelId);
         i.putExtra("vibrate", vibrate);
         i.putExtra("vibrateInSilent", vibrateInSilent);
-        return PendingIntent.getBroadcast(ctx, slot, i,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        if (slot == 0) return Build.VERSION.SDK_INT >= 26
+                ? PendingIntent.getForegroundService(ctx, slot, i, flags)
+                : PendingIntent.getService(ctx, slot, i, flags);
+        i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        return PendingIntent.getBroadcast(ctx, slot, i, flags);
     }
 
-    /** Retire v14 and earlier background-priority broadcasts without creating one. */
+    /** Retire v15 urgent and v14 plain broadcasts without creating either. */
     private static void cancelBackgroundBroadcast(Context ctx, long id) {
-        Intent old = new Intent(ctx, AlarmReceiver.class)
-                .setAction("com.ddlradar.app.DELIVER_REMINDER")
-                .setData(Uri.parse("ddlr://alarm/" + id + "/0"));
-        PendingIntent pending = PendingIntent.getBroadcast(ctx, 0, old,
-                PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
-        if (pending != null) {
-            AlarmManager manager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            if (manager != null) manager.cancel(pending);
-            pending.cancel();
+        for (String suffix : new String[]{"", "/urgent"}) {
+            Intent old = new Intent(ctx, AlarmReceiver.class)
+                    .setAction("com.ddlradar.app.DELIVER_REMINDER")
+                    .setData(Uri.parse("ddlr://alarm/" + id + "/0" + suffix));
+            PendingIntent pending = PendingIntent.getBroadcast(ctx, 0, old,
+                    PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+            if (pending != null) {
+                AlarmManager manager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+                if (manager != null) manager.cancel(pending);
+                pending.cancel();
+            }
         }
     }
 

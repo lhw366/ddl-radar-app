@@ -258,6 +258,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("sysNextOwner", nextClock == null || nextClock.getShowIntent() == null
                     ? "" : nextClock.getShowIntent().getCreatorPackage());
             ret.put("scheduleVersion", SCHED_VER);
+            ret.put("deliveryRoute", "inexact_idle".equals(schedMode) ? "inexact_broadcast" : "foreground_service");
             ret.put("schedMode", schedMode);
             ret.put("clockMode", "clock".equals(schedMode));
             // 原生已投递事件日志：JS 前台补弹前用它区分「原生已响」与「真的漏了」
@@ -266,6 +267,11 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastFireAt", lf[1]);
             ret.put("lastFireVia", AlarmScheduler.lastFireVia(ctx));
             android.content.SharedPreferences diagnostics = ctx.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE);
+            ret.put("lastEntryAt", diagnostics.getLong("lastEntryAt", 0));
+            ret.put("lastEntryId", diagnostics.getLong("lastEntryId", 0));
+            ret.put("lastEntryRoute", diagnostics.getString("lastEntryRoute", ""));
+            ret.put("lastEntrySinceForegroundMs", diagnostics.getLong("lastEntrySinceForegroundMs", -1));
+            ret.put("lastEntrySinceBackgroundMs", diagnostics.getLong("lastEntrySinceBackgroundMs", -1));
             ret.put("lastExpectedAt", diagnostics.getLong("lastExpectedAt", 0));
             ret.put("lastDelayMs", diagnostics.getLong("lastDelayMs", -1));
             ret.put("lastNotificationAllowed", diagnostics.getBoolean("lastNotificationAllowed", false));
