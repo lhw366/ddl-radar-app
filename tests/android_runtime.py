@@ -44,6 +44,12 @@ def capture(prefix):
     }.items():
         (OUT / f'{prefix}-{label}.txt').write_text(adb(*args, check=False), encoding='utf-8')
     (OUT / f'{prefix}-screen.png').write_bytes(adb('exec-out', 'screencap', '-p', binary=True, check=False))
+    # ActivityManager's lastanr dump omits thread stacks. Preserve the actual
+    # bounded ANR files too so a HOME failure is investigated, not skipped.
+    anr_names = adb('shell', 'su', '0', 'ls', '-1', '/data/anr', check=False).splitlines()
+    for name in sorted(n for n in anr_names if re.fullmatch(r'anr_[\w.-]+', n))[-2:]:
+        (OUT / f'{prefix}-{name}.txt').write_text(
+            adb('exec-out', 'su', '0', 'cat', '/data/anr/' + name, check=False), encoding='utf-8')
     for prefs in ['ddlr_alarms', 'ddlr_lifecycle']:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/' + prefs + '.xml', check=False)
         (OUT / f'{prefix}-{prefs}.xml').write_text(raw, encoding='utf-8')
@@ -134,6 +140,7 @@ def frozen_real_task():
     # Never freeze a pending HOME/stop transaction: that manufactures an input
     # ANR instead of exercising the cached app state we intend to test.
     stopped = False
+    raw_lifecycle = ''
     for _ in range(40):
         raw_lifecycle = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/ddlr_lifecycle.xml', check=False)
         try:
@@ -144,6 +151,7 @@ def frozen_real_task():
         if stopped:
             break
         time.sleep(0.5)
+    (OUT / 'home-lifecycle.xml').write_text(raw_lifecycle, encoding='utf-8')
     assert stopped, 'HOME must complete onStop before freezing the app.'
     time.sleep(1)
     # The fixture ends instrumentation (which kills its target); verify the web
