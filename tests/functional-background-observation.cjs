@@ -2,15 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { harness } = require('./functional-dom.cjs');
 
-test('OPPO b101 late service arrival is shown before permission checks and startup access remains unknown', async () => {
-  const diag = { device: 'OPPO PME110', pending: 40, notify: true, exactOk: true,
-    lastDelayMs: 48550, lastDeliveryAppVisible: true, lastEntryAt: 1792993330527,
-    lastEntrySinceForegroundMs: 43, lastEntrySinceBackgroundMs: 51867,
+test('synthetic late service arrival is shown before permission checks and startup access remains unknown', async () => {
+  const diag = { device: 'OPPO test-device', pending: 40, notify: true, exactOk: true,
+    lastDelayMs: 48000, lastDeliveryAppVisible: true, lastEntryAt: 50000,
+    lastEntrySinceForegroundMs: 40, lastEntrySinceBackgroundMs: 51000,
     backgroundAccess: { colorOS: true, state: 'unknown', startupPageAvailable: true } };
   const h = harness(['app.js'], { globals: { NativeNotify: { available: () => true, diag: async () => diag } } });
   await h.run('renderDiag()');
   const html = h.el('diagList').innerHTML;
-  assert.match(html, /后台提醒失败.*48\.55/);
+  assert.match(html, /后台提醒失败.*48\.00/);
   assert.ok(html.indexOf('后台提醒失败') < html.indexOf('应用通知权限'));
   assert.match(html, /ColorOS 自启动权限：状态未知/);
   assert.equal(h.el('diagList').querySelectorAll('[data-fix="startup"]').length, 2);
