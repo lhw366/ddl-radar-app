@@ -41,5 +41,7 @@ public class MainActivity extends BridgeActivity {
             // Do not globally pause Chromium: pending bridge acknowledgements must drain.
         }
         super.onStop();
+        getSharedPreferences("ddlr_lifecycle", MODE_PRIVATE).edit()
+                .putLong("lastBackgroundCompletedAt", System.currentTimeMillis()).apply();
     }
 }

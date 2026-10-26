@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.6';
+const APP_VERSION = '2.3.7-rc.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1443,6 +1443,37 @@ async function openSystemNotificationSettings() {
   } catch (error) { toast('请打开系统通知设置', '系统设置 → 应用 → DDL雷达 → 通知，分别检查允许通知、横幅与震动。'); }
 }
 
+async function openStartupPermissionSettings() {
+  const native = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlNotify;
+  try {
+    const result = native && native.openStartupSettings ? await native.openStartupSettings()
+      : native && native.openAppDetails ? (await native.openAppDetails(), { page: 'app_details' }) : null;
+    if (!result) throw new Error('native settings unavailable');
+    toast('查看 DDL雷达自启动权限', result.page === 'startup'
+      ? '只确认“允许自启动 / 自动启动”。系统没有提供该开关的读取接口，返回后仍需桌面验收。'
+      : '请在系统设置搜索“自启动”，找到 DDL雷达。当前电池优化保持原样，先确认自启动状态。');
+  } catch (error) {
+    toast('请查看 ColorOS 自启动设置', '系统设置 → 应用 → 自启动，找到 DDL雷达；先确认状态，保留当前电池优化。');
+  }
+}
+
+function backgroundProbeSummary(d) {
+  const p = d.backgroundProbe || {};
+  if (!(p.expectedAt > 0)) return null;
+  if (!(p.workerAt > 0)) return '本次原生观测尚未执行，或测试期间进程已结束；不能判定后台正常';
+  const sleepMs = (p.workerElapsed - p.expectedElapsed) - (p.workerUptime - p.expectedUptime);
+  if (sleepMs > 1500) return '本次观测包含设备休眠；观测线程不唤醒手机，不能据此认定进程冻结';
+  const workerDelay = p.workerAt - p.expectedAt;
+  if (workerDelay < 1500 && (!(p.mainAt > 0) || p.mainQueueDelayMs >= 1500))
+    return '原生工作线程准时运行，但主队列尚未响应或明显延迟；需检查主线程阻塞';
+  if (workerDelay < 1500 && p.mainQueueDelayMs < 1500 && d.lastExpectedAt === p.expectedAt && d.lastDelayMs >= 1500)
+    return '原生工作线程与主队列准时运行，但提醒入口迟到；需检查系统到点投递';
+  if (workerDelay >= 1500) return '原生工作线程也延迟 ' + (workerDelay / 1000).toFixed(2)
+    + ' 秒；可能存在进程暂停，仍需结合系统记录判断';
+  return p.workerAppVisible === false ? '记录到原生线程在后台准时运行；不代表手机实际震动已确认'
+    : '观测执行时 App 在前台，不能据此判定后台正常';
+}
+
 let vibrationSelfTestBusy = false;
 async function runVibrationSelfTest() {
   if (vibrationSelfTestBusy) return;
@@ -1520,6 +1551,19 @@ async function renderDiag() {
   const d = await NativeNotify.diag();
   window.lastReminderDiagnostics = { version: APP_VERSION, capturedAt: new Date().toISOString(), ...d };
   let html = '';
+  const colorOS = d.backgroundAccess?.colorOS === true || /oppo|realme|oneplus/i.test(d.device || '');
+  const foregroundAgo = d.lastEntryAt > 0 ? d.lastEntrySinceForegroundMs : d.lastReceiverSinceForegroundMs;
+  const backgroundAgo = d.lastEntryAt > 0 ? d.lastEntrySinceBackgroundMs : d.lastReceiverSinceBackgroundMs;
+  const lateAfterReturn = d.lastDelayMs >= 1500 && d.lastDeliveryAppVisible === true &&
+    foregroundAgo >= 0 && foregroundAgo < 1500 && backgroundAgo > foregroundAgo;
+  if (lateAfterReturn) html += diagRow(false,
+    '后台提醒失败：上次返回 App 后才执行，迟到 ' + (d.lastDelayMs / 1000).toFixed(2) + ' 秒', colorOS ? 'startup' : 'appinfo');
+  if (colorOS) html += diagRow(null,
+    'ColorOS 自启动权限：状态未知，需在系统设置确认；通知和精确闹钟授权不能代替此检查', 'startup');
+  if (Number.isFinite(d.lastBackgroundCompletedAt) && d.lastBackgroundAt > d.lastBackgroundCompletedAt)
+    html += diagRow(false, '上次退后台流程未记录完成；需要检查界面停止过程是否阻塞');
+  const probeSummary = backgroundProbeSummary(d);
+  if (probeSummary) html += diagRow(null, probeSummary);
   html += diagRow(d.notify === true, '应用通知权限', d.notify ? '' : 'notify');
   html += diagRow(d.overlayAllowed === true,
     d.overlayAllowed ? '自定义悬浮横幅已授权' : '自定义悬浮横幅未授权；系统横幅需另行开启，是否弹出由手机控制',
@@ -1687,6 +1731,7 @@ async function renderDiag() {
   box.innerHTML = html;
   box.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', async () => {
     const f = b.dataset.fix;
+    if (f === 'startup') await openStartupPermissionSettings();
     if (f === 'notify') { await askNotify(); await refreshNotifyBtn(); }
     if (f === 'nativevibration') await enableNativeVibration();
     if (f === 'appinfo') {
@@ -1789,7 +1834,12 @@ function compactReminderDiagnostics(d) {
     environment: pick(d.environment, ['debuggable', 'backgroundRestricted', 'hasVibrator', 'interruptionFilter', 'ringerMode',
       'notificationVolume', 'notificationVibrationIntensity', 'powerSaveMode', 'batteryExempt', 'vibrateAppOp']),
     display: { ...pick(d.displayState, ['appVisible', 'interactive', 'serviceRunning', 'wakeHeld', 'overlayCards']),
-      ...pick(d, ['lastDisplayChannel', 'lastDeliveryAppVisible', 'guard', 'wakeHeld', 'lastForegroundAt', 'lastBackgroundAt']) },
+      ...pick(d, ['lastDisplayChannel', 'lastDeliveryAppVisible', 'guard', 'wakeHeld', 'lastForegroundAt', 'lastBackgroundAt', 'lastBackgroundCompletedAt']) },
+    backgroundAccess: pick(d.backgroundAccess, ['colorOS', 'state', 'startupPageAvailable', 'requiresUserCheck']),
+    backgroundProbe: { ...pick(d.backgroundProbe, ['expectedAt', 'armedAt', 'armedPid', 'expectedElapsed', 'expectedUptime',
+      'workerAt', 'workerElapsed', 'workerUptime', 'workerAppVisible', 'workerInteractive', 'mainThreadState',
+      'mainAt', 'mainAppVisible', 'mainQueueDelayMs', 'finished']),
+      mainStack: (Array.isArray(d.backgroundProbe?.mainStack) ? d.backgroundProbe.mainStack : []).slice(0, 6).map(frame => short(frame, 140)) },
     alarm: { pending: Array.isArray(d.items) ? d.items.length : (typeof d.pending === 'number' ? d.pending : 0),
       ...pick(d, ['queued', 'nextAt', 'sysNextAt', 'schedMode', 'lastFireAt', 'lastFireId', 'lastFireVia',
         'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt', 'sysNextOwner', 'scheduleVersion',

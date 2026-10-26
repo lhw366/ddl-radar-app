@@ -226,7 +226,7 @@
           'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs',
           'lastEntryAt', 'lastEntryId', 'lastEntryRoute', 'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs',
           'lastForegroundAt', 'lastBackgroundAt', 'lastDisplayChannel', 'lastDeliveryAppVisible',
-          'foregroundChannelId', 'displayState'].forEach(function (key) {
+          'foregroundChannelId', 'displayState', 'lastBackgroundCompletedAt', 'backgroundAccess', 'backgroundProbe'].forEach(function (key) {
             if (p[key] !== undefined) out[key] = p[key];
           });
         out.guard = p.guard === true;
@@ -296,6 +296,12 @@
           ok = (p.items || []).some(function (i) { return i.id === 990000001; });
         } catch (e) { throw new Error('无法确认系统闹钟，请重试'); }
         if (ok) {
+          // A single non-waking observation only for the user's explicit test.
+          // Probe failure must never cancel or reschedule the real reminder.
+          if (ddl.armBackgroundProbe) {
+            try { await ddl.armBackgroundProbe({ at: at }); }
+            catch (probeError) { console.warn('[DDL雷达] 原生观测未启动', probeError); }
+          }
           if (window.toast) {
             var head = '✅ 已排定，' + seconds + ' 秒后触发系统闹钟';
             var detail = '请退到桌面验收；闹钟送达与手机实际响铃、震动需分别确认。';

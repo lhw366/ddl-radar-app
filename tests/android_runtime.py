@@ -50,7 +50,7 @@ def capture(prefix):
     for name in sorted(n for n in anr_names if re.fullmatch(r'anr_[\w.-]+', n))[-2:]:
         (OUT / f'{prefix}-{name}.txt').write_text(
             adb('exec-out', 'su', '0', 'cat', '/data/anr/' + name, check=False), encoding='utf-8')
-    for prefs in ['ddlr_alarms', 'ddlr_lifecycle']:
+    for prefs in ['ddlr_alarms', 'ddlr_lifecycle', 'ddlr_background_probe']:
         raw = adb('exec-out', 'run-as', PKG, 'cat', 'shared_prefs/' + prefs + '.xml', check=False)
         (OUT / f'{prefix}-{prefs}.xml').write_text(raw, encoding='utf-8')
     for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
@@ -230,6 +230,9 @@ original_zen = adb('shell', 'settings', 'get', 'global', 'zen_mode')
 original_volume = re.search(r'volume is\s+(\d+)',
                            adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
+    prepare()
+    instrument('BackgroundExecutionProbeTest', 2)
+    capture('background-probe')
     prepare()
     instrument('AlarmPriorityMigrationTest', 4)
     capture('priority-migration')
