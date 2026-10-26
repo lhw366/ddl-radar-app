@@ -259,6 +259,12 @@ public class DdlNotifyPlugin extends Plugin {
         openAppDetails(call);
     }
 
+    @PluginMethod
+    public void openStartupSettings(PluginCall call) {
+        try { call.resolve(OemStartupSettings.open(getContext())); }
+        catch (Exception error) { call.reject("open startup settings failed: " + error.getMessage()); }
+    }
+
     /** Open app info; restricted settings, when offered, require user confirmation here. */
     @PluginMethod
     public void openAppDetails(PluginCall call) {

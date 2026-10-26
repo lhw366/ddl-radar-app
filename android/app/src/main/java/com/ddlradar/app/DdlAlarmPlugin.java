@@ -217,6 +217,16 @@ public class DdlAlarmPlugin extends Plugin {
         }
     }
 
+    /** Explicit tests only; no normal task schedules a diagnostic thread. */
+    @PluginMethod
+    public void armBackgroundProbe(PluginCall call) {
+        try {
+            Object at = call.getData().opt("at");
+            if (!(at instanceof Number)) { call.reject("at required"); return; }
+            call.resolve(new JSObject(BackgroundExecutionProbe.arm(getContext(), ((Number) at).longValue()).toString()));
+        } catch (Exception error) { call.reject("probe failed: " + error.getMessage()); }
+    }
+
     /** 诊断：已排定列表 + 最近触发时刻 + 系统已接受的最近闹钟 + 触发留痕 */
     @PluginMethod
     public void pending(PluginCall call) {
@@ -290,6 +300,9 @@ public class DdlAlarmPlugin extends Plugin {
             android.content.SharedPreferences lifecycle = ctx.getSharedPreferences("ddlr_lifecycle", Context.MODE_PRIVATE);
             ret.put("lastForegroundAt", lifecycle.getLong("lastForegroundAt", 0));
             ret.put("lastBackgroundAt", lifecycle.getLong("lastBackgroundAt", 0));
+            ret.put("lastBackgroundCompletedAt", lifecycle.getLong("lastBackgroundCompletedAt", 0));
+            ret.put("backgroundAccess", OemStartupSettings.status(ctx));
+            ret.put("backgroundProbe", BackgroundExecutionProbe.read(ctx));
             ret.put("guard", AlarmService.isRunning());
             ret.put("wakeHeld", AlarmService.isWakeHeld());
             ret.put("sdk", Build.VERSION.SDK_INT);
