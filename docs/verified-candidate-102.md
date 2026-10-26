@@ -12,4 +12,6 @@
 - 文件长度：12484320 字节。
 - 更新入口明确使用候选版本名，尚无设备后台问题已经修复的结论。
 
-`version.json` 与 `apk-latest/ddl-radar-102.apk` 描述相同的已核验产物。GitHub Release 标为预发布，App 更新检查以版本索引中的构建号比较候选包。
+`version.json` 与 `apk-latest/ddl-radar-102.apk` 描述相同的已核验产物。为兼容旧版 App 的 `/releases/latest` 备用查询，此候选也设置为当前 GitHub 发布版本；名称和说明始终标记 `2.3.7-rc.1 / 后台定位候选版`，不宣称后台问题已修复。
+
+更新核验：公开 GitHub 备用 API 返回构建 102；标准 CDN 版本索引返回 102。部分其他镜像仍缓存 101，旧版 App 会取成功响应中的最大构建号。从 App 首选 APK 下载地址获取的文件 SHA-256 与上述已核验产物一致。
