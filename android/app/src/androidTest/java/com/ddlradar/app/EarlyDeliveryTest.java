@@ -41,6 +41,11 @@ public class EarlyDeliveryTest {
         await(id, "early_rearm_rearmed", 2500);
         assertFalse(AlarmScheduler.wasDelivered(ctx, id, at));
         assertEquals(0, count(id, "notification"));
+        assertEquals("clock_shift_compensation",
+                ctx.getSharedPreferences("ddlr_alarms", 0).getString("lastEarlyMode", ""));
+        assertTrue("The replacement must stay on the wake-capable AlarmClock route",
+                ctx.getSharedPreferences("ddlr_alarms", 0).getLong("lastEarlyRearmAt", 0)
+                        > at + AlarmScheduler.EARLY_REARM_SAFETY_MS);
         awaitWaitingWithoutWake();
         assertTrue("The future occurrence must remain persisted", AlarmScheduler.findOccurrence(ctx, id, at) != null);
         assertTrue(AlarmScheduler.isRegistered(ctx, id, at));

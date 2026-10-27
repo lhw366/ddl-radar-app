@@ -50,6 +50,9 @@ public final class AlarmScheduler {
 
     /** Keep the number of active system alarms bounded while retaining overflow locally. */
     public static final int MAX_ACTIVE_ALARMS = 120;
+    /** Correct an observed OEM early callback without creating an unbounded retry chain. */
+    static final long MAX_EARLY_COMPENSATION_MS = 120000L;
+    static final long EARLY_REARM_SAFETY_MS = 1500L;
 
     private static final String PREFS = "ddlr_alarms";
     private static final String KEY = "alarms";
@@ -426,7 +429,11 @@ public final class AlarmScheduler {
     }
 
     /** Recover a consumed, premature callback with ONE replacement system alarm.
-     * No waiting foreground service, CPU lock, duplicate alarm or timer loop.
+     * ColorOS can deliver AlarmClock several tens of seconds early, then apply
+     * idle frequency limits to an exact elapsed-time replacement. That made a
+     * one-minute reminder appear several minutes late. The replacement below
+     * stays on the AlarmClock channel and compensates for the observed early
+     * offset. It is still one-shot: no retry loop or waiting CPU lock.
      * A second premature delivery is reported instead of creating a retry storm.
      */
     static synchronized void recoverEarly(Context ctx, long id, long at) {
@@ -436,6 +443,7 @@ public final class AlarmScheduler {
         int count = prefs.getInt("earlyCount_" + id, 0);
         String status = "exhausted";
         String mode = "";
+        long rearmAt = 0;
         try {
             if (count == 0) {
                 AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
@@ -443,12 +451,28 @@ public final class AlarmScheduler {
                 PendingIntent op = operation(ctx, id, at, item.optString("title"), item.optString("body"),
                         item.optString("channel"), item.optBoolean("vibrate", true),
                         item.optBoolean("vibrateInSilent", true), 0);
-                long trigger = SystemClock.elapsedRealtime() + Math.max(1L, at - System.currentTimeMillis());
-                // The clock route produced an early callback. Replace it with
-                // an elapsed-time exact alarm rather than repeating that route.
-                if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
-                else am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
-                mode = "exact_elapsed_recovery";
+                long now = System.currentTimeMillis();
+                long observedEarlyMs = Math.max(1000L,
+                        Math.min(MAX_EARLY_COMPENSATION_MS, at - now));
+                // OEMs that fire AlarmClock early tend to preserve roughly the
+                // same offset when it is re-armed. If the compensation is not
+                // needed, the small safety margin limits the visible delay.
+                rearmAt = at + observedEarlyMs + EARLY_REARM_SAFETY_MS;
+                try {
+                    am.setAlarmClock(new AlarmManager.AlarmClockInfo(rearmAt, showIntent(ctx)), op);
+                    mode = "clock_shift_compensation";
+                } catch (SecurityException clockDenied) {
+                    // Keep a functional fallback when exact-alarm access was
+                    // revoked between the original schedule and this callback.
+                    long trigger = SystemClock.elapsedRealtime()
+                            + Math.max(1L, rearmAt - System.currentTimeMillis());
+                    if (Build.VERSION.SDK_INT >= 23) {
+                        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
+                    } else {
+                        am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
+                    }
+                    mode = "exact_elapsed_recovery_fallback";
+                }
                 status = "rearmed";
                 prefs.edit().putInt("earlyCount_" + id, 1).commit();
             }
@@ -458,9 +482,10 @@ public final class AlarmScheduler {
         }
         prefs.edit().putLong("lastEarlyId", id).putLong("lastEarlyAt", System.currentTimeMillis())
                 .putLong("lastEarlyExpectedAt", at).putString("lastEarlyStatus", status)
-                .putString("lastEarlyMode", mode).commit();
+                .putLong("lastEarlyRearmAt", rearmAt).putString("lastEarlyMode", mode).commit();
         ReminderTrace.mark(ctx, id, "early_rearm_" + status,
-                "expectedAt=" + at + ";mode=" + mode + ";remainingMs=" + (at - System.currentTimeMillis()));
+                "expectedAt=" + at + ";rearmAt=" + rearmAt + ";mode=" + mode
+                        + ";remainingMs=" + (at - System.currentTimeMillis()));
     }
 
     /**
