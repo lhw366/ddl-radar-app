@@ -165,9 +165,14 @@ def frozen_real_task():
     # Independently test the system-alarm path when finite protection is lost.
     # This fault is injected only in the disposable emulator. Normal saves now
     # prepare a near deadline before HOME; a foreground process is not cached.
-    stopped_service = adb('shell', 'su', '0', 'am', 'stopservice', '-n', PKG + '/.AlarmService')
-    (OUT / 'injected-protection-stop.txt').write_text(stopped_service, encoding='utf-8')
+    # ActivityManager's CLI returns its positive "one service stopped" result
+    # as the exit code on this image. Check the actual service state instead.
+    stopped_service = adb('shell', 'su', '0', 'am', 'stopservice', '-n', PKG + '/.AlarmService', check=False)
     time.sleep(1)
+    services_after_stop = adb('shell', 'dumpsys', 'activity', 'services', PKG)
+    (OUT / 'injected-protection-stop.txt').write_text(stopped_service + '\n' + services_after_stop, encoding='utf-8')
+    assert not re.search(r'ServiceRecord\{[^\n]*com\.ddlradar\.app/(?:\.|com\.ddlradar\.app\.)AlarmService\b', services_after_stop), \
+        'Fault injection must actually stop finite protection before freezing the cached process.'
     assert_still_scheduled()
     # Freeze close to the deadline, after startup/service callbacks have settled.
     # Otherwise an unrelated callback may unfreeze the app long before the alarm.
