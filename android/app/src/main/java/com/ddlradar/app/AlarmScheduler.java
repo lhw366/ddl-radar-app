@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
+import android.os.SystemClock;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -41,8 +42,8 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    // v16: the due alarm starts the finite foreground service directly.
-    public static final int SCHED_VER = 16;
+    // v17: immutable occurrence identity, read-only cancellation and early-arrival recovery.
+    public static final int SCHED_VER = 17;
 
     /** 最近一次注册实际使用的通道（诊断用）：clock / exact_idle / inexact_idle */
     private static final String KEY_SCHED_MODE = "schedMode";
@@ -52,6 +53,7 @@ public final class AlarmScheduler {
 
     private static final String PREFS = "ddlr_alarms";
     private static final String KEY = "alarms";
+    private static final String REGISTERED = "registered_";
     private static final Comparator<JSONObject> BY_TRIGGER_TIME = new Comparator<JSONObject>() {
         @Override
         public int compare(JSONObject left, JSONObject right) {
@@ -323,11 +325,8 @@ public final class AlarmScheduler {
                                 String title, String body, String channelId, boolean vibrate, boolean vibrateInSilent) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) throw new IllegalStateException("Alarm manager unavailable");
-        cancelLegacy(ctx, id);
-        // 退役通道：v8 的同时刻备份（slot 1）与预唤醒（slot 2）。
-        // 只需注销身份，不必再注册——它们的存在本身就是耗电来源。
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        long previousAt = prefs.getLong(REGISTERED + id, 0);
         PendingIntent op = operation(ctx, id, at, title, body, channelId, vibrate, vibrateInSilent, 0);
         String mode;
         try {
@@ -352,9 +351,18 @@ public final class AlarmScheduler {
                 mode = "inexact_idle";
             }
         }
-        // Register the service operation BEFORE retiring both broadcast identities.
+        // Persist the live identity before retiring the previous occurrence. All
+        // scheduling/delivery reconciliation uses the same scheduler monitor.
+        if (!prefs.edit().putLong(REGISTERED + id, at).remove("earlyCount_" + id).commit()) {
+            cancelOccurrence(ctx, id, at);
+            throw new IllegalStateException("Cannot persist alarm registration");
+        }
+        if (previousAt > 0 && previousAt != at) cancelOccurrence(ctx, id, previousAt);
+        cancelLegacy(ctx, id);
+        cancelV16Service(ctx, id);
+        cancelRetiredSlots(ctx, id);
         cancelBackgroundBroadcast(ctx, id);
-        if (!"inexact_idle".equals(mode)) am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
+        cancelToken(am, findOperation(ctx, id, at, "inexact_idle".equals(mode) ? 0 : 3));
         recordSchedMode(ctx, mode);
         ReminderTrace.mark(ctx, id, "scheduled", "at=" + at + ";mode=" + mode + ";route="
                 + ("inexact_idle".equals(mode) ? "inexact_broadcast" : "foreground_service"));
@@ -394,16 +402,65 @@ public final class AlarmScheduler {
         } catch (Exception error) { return 0; }
     }
 
-    /** 取消一条闹钟：主备两条都要注销（独立 requestCode 后不再共享身份） */
+    /** Cancel by identity only: never replace the extras of an in-flight token. */
     public static synchronized void cancel(Context ctx, long id) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 0));
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 1));
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 2));
-        am.cancel(operation(ctx, id, 0, null, null, null, false, 3));
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        long at = prefs.getLong(REGISTERED + id, 0);
+        if (at > 0) cancelOccurrence(ctx, id, at);
+        JSONArray stored = load(ctx);
+        for (int i = 0; i < stored.length(); i++) {
+            JSONObject item = stored.optJSONObject(i);
+            if (item != null && item.optLong("id", -1) == id) cancelOccurrence(ctx, id, item.optLong("at"));
+        }
+        prefs.edit().remove(REGISTERED + id).remove("earlyCount_" + id).commit();
+        cancelV16Service(ctx, id);
+        cancelRetiredSlots(ctx, id);
         cancelBackgroundBroadcast(ctx, id);
         cancelLegacy(ctx, id);
+    }
+
+    static boolean isRegistered(Context ctx, long id, long at) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(REGISTERED + id, -1) == at;
+    }
+
+    /** Recover a consumed, premature callback with ONE replacement system alarm.
+     * No waiting foreground service, CPU lock, duplicate alarm or timer loop.
+     * A second premature delivery is reported instead of creating a retry storm.
+     */
+    static synchronized void recoverEarly(Context ctx, long id, long at) {
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        JSONObject item = findOccurrence(ctx, id, at);
+        if (item == null || !isRegistered(ctx, id, at) || wasDelivered(ctx, id, at)) return;
+        int count = prefs.getInt("earlyCount_" + id, 0);
+        String status = "exhausted";
+        String mode = "";
+        try {
+            if (count == 0) {
+                AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+                if (am == null) throw new IllegalStateException("Alarm manager unavailable");
+                PendingIntent op = operation(ctx, id, at, item.optString("title"), item.optString("body"),
+                        item.optString("channel"), item.optBoolean("vibrate", true),
+                        item.optBoolean("vibrateInSilent", true), 0);
+                long trigger = SystemClock.elapsedRealtime() + Math.max(1L, at - System.currentTimeMillis());
+                // The clock route produced an early callback. Replace it with
+                // an elapsed-time exact alarm rather than repeating that route.
+                if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
+                else am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, op);
+                mode = "exact_elapsed_recovery";
+                status = "rearmed";
+                prefs.edit().putInt("earlyCount_" + id, 1).commit();
+            }
+        } catch (Exception error) {
+            status = "failed";
+            ReminderTrace.mark(ctx, id, "early_rearm_error", error.getClass().getName());
+        }
+        prefs.edit().putLong("lastEarlyId", id).putLong("lastEarlyAt", System.currentTimeMillis())
+                .putLong("lastEarlyExpectedAt", at).putString("lastEarlyStatus", status)
+                .putString("lastEarlyMode", mode).commit();
+        ReminderTrace.mark(ctx, id, "early_rearm_" + status,
+                "expectedAt=" + at + ";mode=" + mode + ";remainingMs=" + (at - System.currentTimeMillis()));
     }
 
     /**
@@ -512,11 +569,7 @@ public final class AlarmScheduler {
     static PendingIntent operation(Context ctx, long id, long at,
                                            String title, String body, String channelId,
                                            boolean vibrate, boolean vibrateInSilent, int slot) {
-        Intent i = new Intent(ctx, slot == 0 ? AlarmService.class : AlarmReceiver.class);
-        i.setAction(slot == 0 ? AlarmService.ACTION_DUE : "com.ddlradar.app.DELIVER_REMINDER");
-        // Extras do not participate in PendingIntent identity. Preserve the full id,
-        // with a separate URI for each route, instead of truncating it to 30 bits.
-        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot + (slot == 0 ? "/service" : "")));
+        Intent i = occurrenceIntent(ctx, id, at, slot);
         i.putExtra("id", (int) id);
         i.putExtra("at", at);
         i.putExtra("slot", slot);
@@ -525,12 +578,61 @@ public final class AlarmScheduler {
         if (channelId != null) i.putExtra("channelId", channelId);
         i.putExtra("vibrate", vibrate);
         i.putExtra("vibrateInSilent", vibrateInSilent);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        return token(ctx, id, slot, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private static Intent occurrenceIntent(Context ctx, long id, long at, int slot) {
+        Intent i = new Intent(ctx, slot == 0 ? AlarmService.class : AlarmReceiver.class);
+        i.setAction(slot == 0 ? AlarmService.ACTION_DUE : "com.ddlradar.app.DELIVER_REMINDER");
+        // An already queued occurrence must keep its original deadline when an
+        // edit schedules a later one with the same task/tier id.
+        i.setData(Uri.parse("ddlr://alarm/" + id + "/" + slot + "/occurrence/" + at));
+        if (slot != 0) i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        return i;
+    }
+
+    private static PendingIntent token(Context ctx, long id, int slot, Intent i, int flags) {
         if (slot == 0) return Build.VERSION.SDK_INT >= 26
-                ? PendingIntent.getForegroundService(ctx, slot, i, flags)
-                : PendingIntent.getService(ctx, slot, i, flags);
-        i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
-        return PendingIntent.getBroadcast(ctx, slot, i, flags);
+                ? PendingIntent.getForegroundService(ctx, (int) id, i, flags)
+                : PendingIntent.getService(ctx, (int) id, i, flags);
+        return PendingIntent.getBroadcast(ctx, (int) id, i, flags);
+    }
+
+    private static PendingIntent findOperation(Context ctx, long id, long at, int slot) {
+        return token(ctx, id, slot, occurrenceIntent(ctx, id, at, slot),
+                PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private static void cancelToken(AlarmManager manager, PendingIntent pending) {
+        if (pending == null) return;
+        if (manager != null) manager.cancel(pending);
+        pending.cancel();
+    }
+
+    private static void cancelOccurrence(Context ctx, long id, long at) {
+        AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+        if (am == null || at <= 0) return;
+        cancelToken(am, findOperation(ctx, id, at, 0));
+        cancelToken(am, findOperation(ctx, id, at, 3));
+    }
+
+    private static void cancelV16Service(Context ctx, long id) {
+        Intent old = new Intent(ctx, AlarmService.class).setAction(AlarmService.ACTION_DUE)
+                .setData(Uri.parse("ddlr://alarm/" + id + "/0/service"));
+        int flags = PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent pending = Build.VERSION.SDK_INT >= 26 ? PendingIntent.getForegroundService(ctx, 0, old, flags)
+                : PendingIntent.getService(ctx, 0, old, flags);
+        cancelToken((AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE), pending);
+    }
+
+    private static void cancelRetiredSlots(Context ctx, long id) {
+        AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+        for (int slot = 1; slot <= 3; slot++) {
+            Intent old = new Intent(ctx, AlarmReceiver.class).setAction("com.ddlradar.app.DELIVER_REMINDER")
+                    .setData(Uri.parse("ddlr://alarm/" + id + "/" + slot)).addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+            cancelToken(am, PendingIntent.getBroadcast(ctx, slot, old,
+                    PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE));
+        }
     }
 
     /** Retire v15 urgent and v14 plain broadcasts without creating either. */
