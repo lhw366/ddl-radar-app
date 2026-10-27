@@ -64,6 +64,43 @@ public class NearReminderProtectionTest {
         return items.getJSONObject(0);
     }
 
+    @Test public void aDeliveredEventHandsOffToTheNextNearDeadlineWithoutUiPreparation() throws Exception {
+        instrument.runOnMainSync(() -> activity.finish());
+        long end = System.currentTimeMillis() + 3000;
+        while ((MainActivity.visible || !activity.isDestroyed()) && System.currentTimeMillis() < end) Thread.sleep(25);
+        assertFalse(MainActivity.visible);
+        cleanupSchedule();
+        long firstAt = System.currentTimeMillis() + 4000, secondAt = firstAt + 6000;
+        JSONArray items = new JSONArray();
+        for (int index = 0; index < 2; index++) {
+            items.put(new JSONObject().put("id", 11650 + index).put("at", index == 0 ? firstAt : secondAt)
+                    .put("v", AlarmScheduler.SCHED_VER).put("scheduled", true)
+                    .put("title", "正常事项交接").put("body", "已派发事项保护临近的下一条截止")
+                    .put("channel", "ddlr_gentle_v4_still_silent").put("vibrate", false));
+        }
+        AlarmScheduler.save(ctx, items);
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.getJSONObject(index);
+            AlarmScheduler.schedule(ctx, item.getLong("id"), item.getLong("at"), item.getString("title"),
+                    item.getString("body"), item.getString("channel"), false);
+        }
+        assertFalse("No UI preparation is available in this case", AlarmService.isRunning());
+        await(11650, "notification", 8000);
+        await(11651, "protection_started", 2500);
+        assertEquals(secondAt, AlarmService.protectionState().getLong("expectedAt"));
+        end = System.currentTimeMillis() + 2000;
+        while (AlarmService.isWakeHeld() && System.currentTimeMillis() < end) Thread.sleep(25);
+        assertFalse(AlarmService.isWakeHeld());
+        ((AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE)).cancel(AlarmScheduler.operation(
+                ctx, 11651, secondAt, "正常事项交接", "", "ddlr_gentle_v4_still_silent", false, 0));
+        await(11651, "notification", 10000);
+        awaitIdle(3000);
+        assertEquals(1, count(11650, "notification"));
+        assertEquals(1, count(11651, "notification"));
+        assertTrue(stage(11651, "delivery").optString("detail").contains("appVisible=false"));
+        assertEquals("protected_timer", ctx.getSharedPreferences("ddlr_alarms", 0).getString("lastFireVia", ""));
+    }
+
     @Test public void normalTaskDeliversAtHomeEvenWhenSystemCallbackIsWithheld() throws Exception {
         policy = new RuntimeDevicePolicy(ctx, instrument);
         policy.silentWithAllInterruptions();

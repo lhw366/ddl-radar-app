@@ -252,7 +252,7 @@ try:
     instrument('EarlyDeliveryTest', 4)
     capture('early-delivery')
     prepare()
-    instrument('NearReminderProtectionTest', 3)
+    instrument('NearReminderProtectionTest', 4)
     capture('near-protection')
     prepare()
     instrument('FrozenReminderFixture', 1)

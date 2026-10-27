@@ -278,7 +278,11 @@ public class AlarmService extends Service {
             long hold = ReminderSound.canPlay(this, channel) ? 4000L
                     : intent.getBooleanExtra("directVibration", false) ? 2200L : 0L;
             effectsUntil = Math.max(effectsUntil, SystemClock.uptimeMillis() + hold);
-            updateProtection(false);
+            // A real delivery can hand off to the next near occurrence. This
+            // matters when a late gradient leaves its deadline only minutes
+            // away. Duplicate/early callbacks never renew this window.
+            clearProtection();
+            updateProtection(true);
         }
         finishWhenIdle();
     }
