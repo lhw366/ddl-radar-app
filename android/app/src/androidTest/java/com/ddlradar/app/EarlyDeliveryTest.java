@@ -33,7 +33,7 @@ public class EarlyDeliveryTest {
         return AlarmScheduler.operation(ctx, id, at, "普通截止提醒", "提前回调不应吞掉真正的截止", CHANNEL, false, 0);
     }
 
-    @Test public void prematureNormalDeadlineIsRearmedAndDeliveredOnceWithoutWaitingService() throws Exception {
+    @Test public void prematureDeadlineWaitsWithoutCpuLockAndSurvivesADelayedSystemCallback() throws Exception {
         int id = 11640;
         long at = System.currentTimeMillis() + 6500;
         schedule(id, at);
@@ -41,15 +41,19 @@ public class EarlyDeliveryTest {
         await(id, "early_rearm_rearmed", 2500);
         assertFalse(AlarmScheduler.wasDelivered(ctx, id, at));
         assertEquals(0, count(id, "notification"));
-        awaitIdle();
+        awaitWaitingWithoutWake();
         assertTrue("The future occurrence must remain persisted", AlarmScheduler.findOccurrence(ctx, id, at) != null);
         assertTrue(AlarmScheduler.isRegistered(ctx, id, at));
+        // Model the ROM delaying the replacement callback. The already-running
+        // finite service must reach the deadline without reopening the UI.
+        ((android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE)).cancel(token(id, at));
         await(id, "notification", 9000);
         awaitIdle();
         assertTrue(AlarmScheduler.wasDelivered(ctx, id, at));
         assertEquals(1, count(id, "notification"));
         assertEquals(1, count(id, "early_rearm_rearmed"));
         assertEquals(2, count(id, "alarm_entry"));
+        assertEquals("protected_timer", ctx.getSharedPreferences("ddlr_alarms", 0).getString("lastFireVia", ""));
         JSONArray trace = ReminderTrace.read(ctx);
         for (int i = 0; i < trace.length(); i++) {
             JSONObject event = trace.getJSONObject(i);
@@ -59,16 +63,18 @@ public class EarlyDeliveryTest {
         awaitIdle();
     }
 
-    @Test public void aSecondPrematureCallbackCannotCreateARetryStormOrWaitInForeground() throws Exception {
+    @Test public void aSecondPrematureCallbackCannotCreateARetryStormOrExtendTheWaitingLimit() throws Exception {
         int id = 11641;
         long at = System.currentTimeMillis() + 30000;
         schedule(id, at);
         token(id, at).send();
         await(id, "early_rearm_rearmed", 2500);
-        awaitIdle();
+        awaitWaitingWithoutWake();
+        long expires = AlarmService.protectionState().getLong("expiresElapsed");
         token(id, at).send();
         await(id, "early_rearm_exhausted", 2500);
-        awaitIdle();
+        awaitWaitingWithoutWake();
+        assertEquals(expires, AlarmService.protectionState().getLong("expiresElapsed"));
         assertEquals(1, count(id, "early_rearm_rearmed"));
         assertEquals(1, count(id, "early_rearm_exhausted"));
         assertEquals(0, count(id, "notification"));
@@ -139,6 +145,14 @@ public class EarlyDeliveryTest {
         while (AlarmService.isRunning() && System.currentTimeMillis() < end) Thread.sleep(25);
         assertFalse("Premature callbacks must not leave a waiting service", AlarmService.isRunning());
         assertFalse("Premature callbacks must not retain a CPU lock", AlarmService.isWakeHeld());
+    }
+
+    private void awaitWaitingWithoutWake() throws Exception {
+        long end = System.currentTimeMillis() + 2000;
+        while (AlarmService.isWakeHeld() && System.currentTimeMillis() < end) Thread.sleep(25);
+        assertTrue(AlarmService.isRunning());
+        assertTrue(AlarmService.protectionState().getBoolean("waiting"));
+        assertFalse("No CPU lock while waiting for a future reminder", AlarmService.isWakeHeld());
     }
 
     @After public void cleanup() {

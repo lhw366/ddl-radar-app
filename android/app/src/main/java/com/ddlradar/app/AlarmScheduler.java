@@ -42,8 +42,8 @@ public final class AlarmScheduler {
      * 早前 reapplyAll 把条目原样写回、不更新 v，于是旧版存下的条目 v 永远是旧值，
      * sameSpec 比对永远失败 → 每次开机后第一次 apply() 都把全部闹钟 cancel+重排。
      */
-    // v17: immutable occurrence identity, read-only cancellation and early-arrival recovery.
-    public static final int SCHED_VER = 17;
+    // v18: finite near-deadline service protection, using the v17 occurrence identities.
+    public static final int SCHED_VER = 18;
 
     /** 最近一次注册实际使用的通道（诊断用）：clock / exact_idle / inexact_idle */
     private static final String KEY_SCHED_MODE = "schedMode";

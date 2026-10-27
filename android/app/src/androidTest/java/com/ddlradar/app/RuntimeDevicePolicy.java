@@ -16,6 +16,7 @@ final class RuntimeDevicePolicy implements AutoCloseable {
     private final int originalFilter;
     private final int originalNotificationVolume;
     private boolean volumeChanged;
+    private String originalScreenTimeout;
 
     RuntimeDevicePolicy(Context context, Instrumentation instrumentation) throws Exception {
         this.instrumentation = instrumentation;
@@ -40,6 +41,16 @@ final class RuntimeDevicePolicy implements AutoCloseable {
             volumeChanged = true;
         }
         assertTrue(audio.getStreamVolume(AudioManager.STREAM_NOTIFICATION) > 0);
+    }
+
+    /** The withheld-alarm case tests a cached app while the device is awake.
+     * Screen-off system wakeup is covered independently by the cold host case.
+     * Only the disposable emulator's display timeout changes, never the APK.
+     */
+    void keepScreenOnForTimingTest() throws Exception {
+        if (originalScreenTimeout == null) originalScreenTimeout = shell("settings get system screen_off_timeout").trim();
+        shell("settings put system screen_off_timeout 600000");
+        shell("input keyevent KEYCODE_WAKEUP");
     }
 
     private void ringerAfterDndOff(int ringer) throws Exception {
@@ -107,6 +118,10 @@ final class RuntimeDevicePolicy implements AutoCloseable {
 
     @Override public void close() throws Exception {
         // Only the fixture changed these settings. Product code never writes them.
+        if (originalScreenTimeout != null) {
+            if (originalScreenTimeout.matches("\\d+")) shell("settings put system screen_off_timeout " + originalScreenTimeout);
+            else shell("settings delete system screen_off_timeout");
+        }
         ringerAfterDndOff(originalRinger);
         if (volumeChanged) {
             shell("cmd audio set-ringer-mode NORMAL");

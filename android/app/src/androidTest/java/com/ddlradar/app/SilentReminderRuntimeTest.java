@@ -316,8 +316,11 @@ public class SilentReminderRuntimeTest {
     }
 
     private void awaitStopped(int id) throws Exception {
-        awaitStage(id, "wake_released", 5000);
-        long until = System.currentTimeMillis() + 1500;
+        // Preparation releases its nonexistent/early handoff lock before the
+        // deadline. Completion must be checked after the actual notification,
+        // not against that earlier waiting-phase trace.
+        awaitStage(id, "notification", 5000);
+        long until = System.currentTimeMillis() + 6500;
         while (AlarmService.isRunning() && System.currentTimeMillis() < until) Thread.sleep(50);
         assertFalse(AlarmService.isRunning());
         assertFalse(AlarmService.isWakeHeld());
