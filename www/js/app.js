@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.7-rc.1';
+const APP_VERSION = '2.3.7-rc.2';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1460,6 +1460,8 @@ async function openStartupPermissionSettings() {
 function backgroundProbeSummary(d) {
   const p = d.backgroundProbe || {};
   if (!(p.expectedAt > 0)) return null;
+  if (d.lastExpectedAt > 0 && p.expectedAt !== d.lastExpectedAt)
+    return '此观测属于之前的测试，不用于判断本次普通提醒是否准时；请以上次提醒延迟和事件记录为准';
   if (!(p.workerAt > 0)) return '本次原生观测尚未执行，或测试期间进程已结束；不能判定后台正常';
   const sleepMs = (p.workerElapsed - p.expectedElapsed) - (p.workerUptime - p.expectedUptime);
   if (sleepMs > 1500) return '本次观测包含设备休眠；观测线程不唤醒手机，不能据此认定进程冻结';
@@ -1558,6 +1560,14 @@ async function renderDiag() {
     foregroundAgo >= 0 && foregroundAgo < 1500 && backgroundAgo > foregroundAgo;
   if (lateAfterReturn) html += diagRow(false,
     '后台提醒失败：上次返回 App 后才执行，迟到 ' + (d.lastDelayMs / 1000).toFixed(2) + ' 秒', colorOS ? 'startup' : 'appinfo');
+  if (d.lastEarlyAt > 0) {
+    const recovered = d.lastEarlyStatus === 'rearmed';
+    const completed = recovered && d.lastFireId === d.lastEarlyId && d.lastExpectedAt === d.lastEarlyExpectedAt;
+    html += diagRow(completed ? true : recovered ? null : false, completed
+      ? '上次提前送达的提醒已重新排定，并已在到点后执行'
+      : recovered ? '检测到提醒提前送达：已重新排入系统，等待真正到点；尚不能判定送达成功'
+        : '提醒提前送达后的重新排定未成功；请复制诊断');
+  }
   if (colorOS) html += diagRow(null,
     'ColorOS 自启动权限：状态未知，需在系统设置确认；通知和精确闹钟授权不能代替此检查', 'startup');
   if (Number.isFinite(d.lastBackgroundCompletedAt) && d.lastBackgroundAt > d.lastBackgroundCompletedAt)
@@ -1784,7 +1794,7 @@ function compactReminderDiagnostics(d) {
   const detailKeys = new Set(['lateMs', 'appVisible', 'foregroundService', 'hardwareConfirmed', 'usage',
     'status', 'reason', 'route', 'channelVibration', 'vibrateInSilent', 'allowed', 'channel', 'vibration',
     'playing', 'durationMs', 'volume', 'foreground', 'on_demand', 'interactive', 'width', 'height',
-    'urgent', 'sinceForegroundMs', 'sinceBackgroundMs']);
+    'urgent', 'sinceForegroundMs', 'sinceBackgroundMs', 'expectedAt', 'remainingMs', 'mode']);
   const cleanDetail = value => {
     const text = typeof value === 'string' ? value : '';
     const fields = {};
@@ -1814,6 +1824,8 @@ function compactReminderDiagnostics(d) {
     if (!group || entry.stage === 'alarm_entry' || legacyEntry || selfCheck) {
       group = { id: entry.id, at: entry.at, pid: Number.isFinite(entry.pid) ? entry.pid : null, steps: [] };
       if (expected.has(entry.id)) group.expectedAt = expected.get(entry.id);
+      const entryExpected = String(entry.detail || '').match(/(?:^|;)expectedAt=(\d+)/);
+      if (entryExpected) group.expectedAt = Number(entryExpected[1]);
       groups.push(group); active.set(entry.id, group);
     }
     const step = [entry.at - group.at, short(entry.stage, 32)];
@@ -1845,6 +1857,7 @@ function compactReminderDiagnostics(d) {
         'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt', 'sysNextOwner', 'scheduleVersion',
         'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs',
         'deliveryRoute', 'lastEntryAt', 'lastEntryId', 'lastEntryRoute',
+        'lastEntryExpectedAt', 'lastEntryDelayMs', 'lastEarlyId', 'lastEarlyAt', 'lastEarlyExpectedAt', 'lastEarlyStatus', 'lastEarlyMode',
         'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs']) },
     vibration: pick(d, ['vibrationMode', 'lastVibrationStatus', 'lastVibrationChannel', 'lastVibrationUsage', 'vibrateInSilent']),
     trace: { retained: retained.length, availableEvents: groups.length, exportedEvents: recent.length,

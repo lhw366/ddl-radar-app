@@ -30,9 +30,18 @@ final class AlarmDelivery {
         synchronized (AlarmScheduler.class) {
             JSONObject item = AlarmScheduler.findOccurrence(context, id, at);
             if (AlarmScheduler.wasDelivered(context, id, at)) return false;
+            // A cancelled or superseded occurrence may already be in Android's
+            // service queue. Its extras must not resurrect an edited/deleted task.
+            if (!AlarmScheduler.isRegistered(context, id, at)) {
+                ReminderTrace.mark(context, id, "delivery_stale", "expectedAt=" + at);
+                return false;
+            }
             // 少数 ROM 会提前几毫秒派发。早前用严格 now 比较，正好卡在窗口里时
             // 会直接 return false —— 一次真实的提醒就这么被静默丢弃且无人重试。
-            if (at > System.currentTimeMillis() + 2000L) return false;
+            if (at > System.currentTimeMillis() + 2000L) {
+                AlarmScheduler.recoverEarly(context, id, at);
+                return false;
+            }
             // Persisted state can be reconciled a few milliseconds before the
             // alarm fires. The PendingIntent extras are the last known good
             // copy, so deliver them instead of silently dropping a real alarm.

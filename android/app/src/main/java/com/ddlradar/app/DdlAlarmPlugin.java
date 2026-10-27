@@ -279,11 +279,18 @@ public class DdlAlarmPlugin extends Plugin {
             android.content.SharedPreferences diagnostics = ctx.getSharedPreferences("ddlr_alarms", Context.MODE_PRIVATE);
             ret.put("lastEntryAt", diagnostics.getLong("lastEntryAt", 0));
             ret.put("lastEntryId", diagnostics.getLong("lastEntryId", 0));
+            ret.put("lastEntryExpectedAt", diagnostics.getLong("lastEntryExpectedAt", 0));
+            ret.put("lastEntryDelayMs", diagnostics.getLong("lastEntryDelayMs", 0));
             ret.put("lastEntryRoute", diagnostics.getString("lastEntryRoute", ""));
             ret.put("lastEntrySinceForegroundMs", diagnostics.getLong("lastEntrySinceForegroundMs", -1));
             ret.put("lastEntrySinceBackgroundMs", diagnostics.getLong("lastEntrySinceBackgroundMs", -1));
             ret.put("lastExpectedAt", diagnostics.getLong("lastExpectedAt", 0));
             ret.put("lastDelayMs", diagnostics.getLong("lastDelayMs", -1));
+            ret.put("lastEarlyId", diagnostics.getLong("lastEarlyId", 0));
+            ret.put("lastEarlyAt", diagnostics.getLong("lastEarlyAt", 0));
+            ret.put("lastEarlyExpectedAt", diagnostics.getLong("lastEarlyExpectedAt", 0));
+            ret.put("lastEarlyStatus", diagnostics.getString("lastEarlyStatus", ""));
+            ret.put("lastEarlyMode", diagnostics.getString("lastEarlyMode", ""));
             ret.put("lastNotificationAllowed", diagnostics.getBoolean("lastNotificationAllowed", false));
             String vibrationStatus = diagnostics.getString("lastVibrationStatus", "");
             ret.put("vibrationStatus", vibrationStatus);

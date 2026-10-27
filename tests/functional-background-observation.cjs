@@ -81,3 +81,49 @@ test('the actual native diagnostics bridge carries probe evidence and the comple
   assert.equal(d.backgroundAccess.state, 'unknown');
   assert.equal(d.backgroundProbe.workerAt, 58000);
 });
+
+test('a previous explicit-test probe is not used to explain a different normal occurrence', () => {
+  const h = harness(['app.js']);
+  const result = h.run(`backgroundProbeSummary({lastExpectedAt: 500000, lastDelayMs: 150000,
+    backgroundProbe: {expectedAt: 10000, workerAt: 130000, workerElapsed: 130000,
+    expectedElapsed: 10000, expectedUptime: 10000, workerUptime: 130000}})`);
+  assert.match(result, /之前的测试.*不用于判断本次普通提醒/);
+  assert.doesNotMatch(result, /可能存在进程暂停/);
+});
+
+test('early recovery is not labelled successful until that same occurrence actually delivers', async () => {
+  const diag = {lastEarlyAt: 1000, lastEarlyId: 44, lastEarlyExpectedAt: 100000,
+    lastEarlyStatus: 'rearmed', lastEarlyMode: 'exact_elapsed_recovery',
+    lastEntryId: 44, lastEntryExpectedAt: 100000, lastEntryDelayMs: -140000};
+  const h = harness(['app.js'], { globals: { NativeNotify: { available: () => true, diag: async () => diag } } });
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /等待真正到点；尚不能判定送达成功/);
+  Object.assign(diag, {lastFireId: 45, lastExpectedAt: 100000});
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /尚不能判定送达成功/);
+  diag.lastFireId = 44;
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /已在到点后执行/);
+});
+
+test('copied diagnostics retain the future entry and its recovery independently of the last delivered tier', async () => {
+  const native = {items: [], lastFireId: 45, lastExpectedAt: 100000, lastDelayMs: 150000,
+    lastEntryId: 44, lastEntryExpectedAt: 400000, lastEntryDelayMs: -150000,
+    lastEarlyId: 44, lastEarlyAt: 250000, lastEarlyExpectedAt: 400000, lastEarlyStatus: 'rearmed',
+    lastEarlyMode: 'exact_elapsed_recovery', trace: [{id: 44, at: 250000, pid: 5,
+      stage: 'alarm_entry', detail: 'expectedAt=400000;lateMs=-150000;appVisible=false'},
+      {id: 44, at: 250010, pid: 5, stage: 'early_rearm_rearmed',
+        detail: 'expectedAt=400000;remainingMs=149990;mode=exact_elapsed_recovery'}]};
+  const h = harness(['nativenotify.js', 'app.js'], { globals: { Capacitor: { isNativePlatform: () => true, Plugins: {
+    DdlAlarm: { pending: async () => native }
+  } } } });
+  const bridged = await h.context.NativeNotify.diag();
+  h.context.recoveryFixture = bridged;
+  const out = JSON.parse(h.run('compactReminderDiagnostics(recoveryFixture)'));
+  assert.equal(out.alarm.lastFireId, 45);
+  assert.equal(out.alarm.lastEntryId, 44);
+  assert.equal(out.alarm.lastEntryDelayMs, -150000);
+  assert.equal(out.alarm.lastEarlyStatus, 'rearmed');
+  assert.equal(out.trace.events[0].expectedAt, 400000, 'arrival itself supplies expectedAt even after scheduled trace rolls out');
+  assert.equal(out.trace.events[0].steps[1][2].remainingMs, '149990');
+});

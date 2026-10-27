@@ -20,6 +20,29 @@ public class AlarmPriorityMigrationTest {
     @Test public void migratePlainBroadcast() throws Exception { migrate(14, ""); }
     @Test public void migrateUrgentBroadcastFromBuild96() throws Exception { migrate(15, "/urgent"); }
 
+    @Test public void migrateBuild102ServiceTokenWithoutReusingItsMutableOccurrence() throws Exception {
+        int id = 11416;
+        long at = System.currentTimeMillis() + 4000;
+        Intent intent = new Intent(ctx, AlarmService.class).setAction(AlarmService.ACTION_DUE)
+                .setData(Uri.parse("ddlr://alarm/" + id + "/0/service"))
+                .putExtra("id", id).putExtra("at", at);
+        PendingIntent old = PendingIntent.getForegroundService(ctx, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        ((AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE)).setAlarmClock(
+                new AlarmManager.AlarmClockInfo(at, null), old);
+        AlarmScheduler.save(ctx, new JSONArray().put(new JSONObject().put("id", id).put("at", at)
+                .put("v", 16).put("channel", "ddlr_gentle_v4_still_silent").put("vibrate", false)));
+        try {
+            AlarmScheduler.reapplyAll(ctx);
+            try { old.send(); fail("Build 102 token must be retired"); }
+            catch (PendingIntent.CanceledException expected) { }
+            awaitDelivery(id, at);
+            awaitIdle();
+            assertEquals(1, count(id, "notification"));
+            assertTrue(AlarmScheduler.load(ctx).length() == 0);
+        } finally { AlarmScheduler.cancel(ctx, id); }
+    }
+
     private void migrate(int version, String suffix) throws Exception {
         int id = 11400 + version;
         long at = System.currentTimeMillis() + 4000;
@@ -38,7 +61,7 @@ public class AlarmPriorityMigrationTest {
         AlarmScheduler.save(ctx, new JSONArray().put(event));
         try {
             AlarmScheduler.reapplyAll(ctx);
-            assertEquals(16, AlarmScheduler.load(ctx).getJSONObject(0).getInt("v"));
+            assertEquals(AlarmScheduler.SCHED_VER, AlarmScheduler.load(ctx).getJSONObject(0).getInt("v"));
             PendingIntent replacement = AlarmScheduler.operation(ctx, id, at, "升级迁移", "只投递一次",
                     "ddlr_gentle_v4_still_silent", false, 0);
             assertTrue("The system token must target a foreground service", replacement.isForegroundService());

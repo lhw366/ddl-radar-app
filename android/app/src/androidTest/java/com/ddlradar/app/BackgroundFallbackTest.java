@@ -35,6 +35,8 @@ public class BackgroundFallbackTest {
                 .put("channel", channel).put("vibrate", false).put("scheduled", true)
                 .put("v", AlarmScheduler.SCHED_VER);
         AlarmScheduler.save(ctx, new JSONArray().put(event));
+        // This injected receiver callback represents an already registered alarm.
+        ctx.getSharedPreferences("ddlr_alarms", 0).edit().putLong("registered_" + id, at).commit();
         // Context is the platform boundary. No production flag or test-only
         // path is needed to reproduce ForegroundServiceStartNotAllowed.
         Context unavailableService = new ContextWrapper(ctx) {
@@ -73,6 +75,7 @@ public class BackgroundFallbackTest {
             assertFalse(AlarmService.isRunning());
             assertFalse(AlarmService.isWakeHeld());
         } finally {
+            AlarmScheduler.cancel(ctx, id);
             AlarmDelivery.cancelNotification(ctx, AlarmDelivery.notificationId(id));
             AlarmScheduler.save(ctx, new JSONArray());
         }
