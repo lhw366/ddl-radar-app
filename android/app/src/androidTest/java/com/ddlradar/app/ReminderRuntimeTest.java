@@ -129,6 +129,7 @@ public class ReminderRuntimeTest {
         assertTrue(ReminderBanner.allowed(ctx));
         devicePolicy = new RuntimeDevicePolicy(ctx, instrumentation);
         devicePolicy.silentWithAllInterruptions();
+        devicePolicy.keepScreenOnForTimingTest();
         MainActivity activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         long ready = System.currentTimeMillis() + 30000;
@@ -172,6 +173,8 @@ public class ReminderRuntimeTest {
         assertFalse(AlarmService.isWakeHeld());
         // Withhold the real deadline's system callback for the entire five-
         // minute production interval. Protection must deliver it at HOME.
+        assertTrue("Withheld-callback timing case requires an awake device",
+                ((android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE)).isInteractive());
         ((android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE)).cancel(
                 AlarmScheduler.operation(ctx, due.getLong("id"), due.getLong("at"), due.optString("title"),
                         due.optString("body"), due.optString("channel"), true, 0));
