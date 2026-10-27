@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit;
 public class AlarmService extends Service {
     static final String ACTION_DUE = "com.ddlradar.app.DUE_SERVICE";
     static final String ACTION_PREPARE = "com.ddlradar.app.PREPARE_NEAR_REMINDER";
-    static final long MAX_PROTECTION_MS = 180000L;
+    // Cover the complete built-in five-minute gradient -> deadline handoff.
+    static final long MAX_PROTECTION_MS = 300000L;
     static final String GUARD_CHANNEL = "ddlr_guard";
     static final int FG_ID = 19900214;
     private static volatile AlarmService active;

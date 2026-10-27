@@ -1729,7 +1729,7 @@ async function renderDiag() {
   }
 
   html += diagRow(d.protection?.waiting ? null : true, d.protection?.waiting
-    ? '临近提醒保护已准备，等待 ' + fmtDT(d.protection.expectedAt) + '；等待时不保持 CPU 唤醒，最长约 3 分钟'
+    ? '临近提醒保护已准备，等待 ' + fmtDT(d.protection.expectedAt) + '；等待时不保持 CPU 唤醒，最长约 5 分钟'
     : d.guard ? '派发服务正在处理提醒或显示横幅' : '派发服务已休眠：未来事件由系统闹钟唤醒');
   html += diagRow(null, '无后台轮询，无长期 CPU 唤醒锁；不修改电池优化。后台是否准时以实际投递记录为准。');
   html += diagRow(null, '系统闹钟负责到点唤醒；重启和更新后自动恢复，实际延迟见上方记录');

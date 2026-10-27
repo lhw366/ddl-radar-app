@@ -35,7 +35,7 @@
         <!-- 兼容旧版在途广播与通知按钮；新闹钟直接启动短时 AlarmService。 -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
 
-        <!-- Runs for at most three minutes of near-deadline waiting, actual
+        <!-- Runs for at most five minutes of near-deadline waiting, actual
              due effects, or a user-retained banner. Waiting holds no CPU lock.
              Keep the manifest type and startForeground type identical. -->
         <service

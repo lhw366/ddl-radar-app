@@ -135,7 +135,7 @@ test('copied diagnostics retain the future entry and its recovery independently 
 test('finite protection crosses the actual bridge and is shown as waiting rather than proven background delivery', async () => {
   const h = harness(['nativenotify.js', 'app.js'], { globals: { Capacitor: { isNativePlatform: () => true, Plugins: {
     DdlAlarm: { pending: async () => ({items: [{id: 44, at: 400000}], guard: true, wakeHeld: false,
-      protection: {waiting: true, expectedAt: 400000, expiresElapsed: 500000, maxWaitMs: 180000}}) }
+      protection: {waiting: true, expectedAt: 400000, expiresElapsed: 500000, maxWaitMs: 300000}}) }
   } } } });
   await h.run('renderDiag()');
   assert.match(h.el('diagList').innerHTML, /临近提醒保护已准备.*等待时不保持 CPU 唤醒/);
@@ -144,7 +144,7 @@ test('finite protection crosses the actual bridge and is shown as waiting rather
   const out = JSON.parse(h.run('compactReminderDiagnostics(protectionFixture)'));
   assert.equal(out.protection.waiting, true);
   assert.equal(out.protection.expectedAt, 400000);
-  assert.equal(out.protection.maxWaitMs, 180000);
+  assert.equal(out.protection.maxWaitMs, 300000);
   assert.equal(out.display.wakeHeld, false);
 });
 

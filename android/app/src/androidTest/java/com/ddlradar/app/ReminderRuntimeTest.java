@@ -166,13 +166,21 @@ public class ReminderRuntimeTest {
         assertTrue(hasStage(tier.getInt("id"), "direct_vibration_requested"));
         Thread.sleep(6000);
         assertEquals("Automatic gradient card must finish after five seconds", 0, visibleCards());
-        assertFalse("Idle between tiers must not retain service", AlarmService.isRunning());
+        assertTrue("The actual five-minute deadline must stay protected after its gradient", AlarmService.isRunning());
+        assertTrue(AlarmService.protectionState().getBoolean("waiting"));
+        assertEquals(due.getLong("at"), AlarmService.protectionState().getLong("expectedAt"));
         assertFalse(AlarmService.isWakeHeld());
+        // Withhold the real deadline's system callback for the entire five-
+        // minute production interval. Protection must deliver it at HOME.
+        ((android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE)).cancel(
+                AlarmScheduler.operation(ctx, due.getLong("id"), due.getLong("at"), due.optString("title"),
+                        due.optString("body"), due.optString("channel"), true, 0));
         shell("appops set " + ctx.getPackageName() + " SYSTEM_ALERT_WINDOW deny");
         assertFalse(ReminderBanner.allowed(ctx));
         String beforeDeadline = shellText("dumpsys vibrator_manager");
         awaitStage(due.getInt("id"), "direct_vibration_requested", 315000);
         awaitStage(due.getInt("id"), "sound_suppressed", 4000);
+        assertEquals("protected_timer", ctx.getSharedPreferences("ddlr_alarms", 0).getString("lastFireVia", ""));
         assertQuietNotification(due.getInt("id"));
         assertTrue("Deadline must record the denied overlay and keep its notification", hasStage(due.getInt("id"), "overlay_blocked"));
         assertEquals("Notification/vibration fallback does not need an overlay", 0, visibleCards());
