@@ -50,7 +50,8 @@ public class FrozenReminderFixture {
         }
         JSONArray items = AlarmScheduler.load(ctx);
         assertEquals(1, items.length());
-        assertFalse(AlarmService.isRunning());
+        assertTrue("Near task save must acknowledge finite preparation", AlarmService.isRunning());
+        assertFalse("Preparation must not hold the CPU awake", AlarmService.isWakeHeld());
         assertEquals("true", js(activity, "JSON.parse(localStorage.getItem('ddlr_v1')).tasks.some(t=>t.id==='frozen-real-task')"));
         // AndroidJUnitRunner kills the target at finish. Let Chromium commit
         // localStorage before that artificial kill; HOME alone does not kill it.

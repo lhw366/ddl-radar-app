@@ -53,6 +53,7 @@ public class DdlAlarmPlugin extends Plugin {
                 call.reject("alarms is required (use [] to clear)");
                 return;
             }
+            JSObject ret = new JSObject();
             synchronized (AlarmScheduler.class) {
             JSONArray wanted = new JSONArray();
             HashMap<Long, JSONObject> wantedMap = new HashMap<>();
@@ -145,16 +146,17 @@ public class DdlAlarmPlugin extends Plugin {
                 }
                 AlarmScheduler.save(ctx, persist);
             }
-            // Scheduling does not start or keep a foreground service alive.
-
-            JSObject ret = new JSObject();
             ret.put("added", added);
             ret.put("cancelled", cancelled);
             ret.put("kept", wanted.length() - added);
             ret.put("queued", queued);
             ret.put("nextAt", nextAt);
-            call.resolve(ret);
             }
+            // Do not hold the scheduler monitor while acknowledging the main-
+            // thread preparation: the service reads the same persisted plan.
+            AlarmService.planChanged(ctx);
+            ret.put("protection", AlarmService.protectionState());
+            call.resolve(ret);
         } catch (Exception e) {
             call.reject("apply failed: " + e.getMessage());
         }
@@ -175,6 +177,7 @@ public class DdlAlarmPlugin extends Plugin {
                 o.put("scheduled", true);
                 upsert(ctx, o);
             }
+            AlarmService.planChanged(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("scheduleOne failed: " + e.getMessage());
@@ -193,6 +196,7 @@ public class DdlAlarmPlugin extends Plugin {
                 AlarmScheduler.remove(ctx, id);
                 AlarmScheduler.promoteQueued(ctx);
             }
+            AlarmService.planChanged(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancel failed: " + e.getMessage());
@@ -211,6 +215,7 @@ public class DdlAlarmPlugin extends Plugin {
                 }
                 AlarmScheduler.save(ctx, new JSONArray());
             }
+            AlarmService.planChanged(ctx);
             call.resolve(new JSObject().put("ok", true));
         } catch (Exception e) {
             call.reject("cancelAll failed: " + e.getMessage());
@@ -311,6 +316,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("backgroundAccess", OemStartupSettings.status(ctx));
             ret.put("backgroundProbe", BackgroundExecutionProbe.read(ctx));
             ret.put("guard", AlarmService.isRunning());
+            ret.put("protection", AlarmService.protectionState());
             ret.put("wakeHeld", AlarmService.isWakeHeld());
             ret.put("sdk", Build.VERSION.SDK_INT);
             ret.put("device", Build.MANUFACTURER + " " + Build.MODEL);

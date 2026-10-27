@@ -1,5 +1,7 @@
 # 架构与验证边界
 
+当前调度规格为 v18。远期事项由系统闹钟唤醒；前台保存/离开页面时，对三分钟内事项确认短时原生保护。有效提前回调也可建立同样保护。等待只安排一次到点回调和期限回调，不持 CPU 锁，完成、取消、改远期或到期后结束。详见[临近提醒保护](near-reminder-protection.md)。保护并不保证绕过所有厂商限制，真机时效需独立验收。
+
 ## 一次真实提醒
 
 ```mermaid
@@ -8,20 +10,21 @@ sequenceDiagram
   participant JS as NativeNotify
   participant DB as 原生持久化
   participant AM as AlarmManager
-  participant RX as Receiver
   participant FX as 通知与短时服务
   UI->>JS: 保存完整任务状态
   JS->>JS: 计算梯度/自定义/截止点并串行化
   JS->>DB: apply 期望清单
   DB->>AM: 新增或修改；保留未变条目
-  DB-->>UI: 成功后确认排定
-  AM->>RX: 到点广播（无需打开页面）
-  RX->>DB: 核对 id 和 at，去重
-  RX->>FX: 同步提交系统通知（后台保持 HIGH）
-  RX->>FX: 启动有限效果服务
+  opt 三分钟内事项
+    DB->>FX: 原生准备，并确认等待状态
+  end
+  DB-->>UI: 成功后确认排定和准备结果
+  AM->>FX: 系统闹钟直接启动服务
+  FX->>DB: 核对 id 和 at，去重
+  FX->>FX: 提前则有限等待；到点则提交通知
   FX->>FX: startForeground 成功后创建悬浮窗、执行触觉与声音
   FX->>FX: 纯触觉约 2.2 秒；有声效果约 4 秒释放 CPU 锁
-  FX->>FX: 横幅关闭后退出服务
+  FX->>FX: 无临近事项及横幅时退出服务
 ```
 
 正常任务的 120 / 60 / 30 / 5 分钟梯度、自定义点与截止提醒均走这条链路。5 秒和 60 秒测试只向相同清单加入一个事件，不另建特殊派发路径。已经过去的梯度不作为新闹钟排入；前台补弹使用 15 分钟窗口和原生投递日志避免重复。

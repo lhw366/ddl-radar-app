@@ -227,7 +227,7 @@
           'lastEntryAt', 'lastEntryId', 'lastEntryRoute', 'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs',
           'lastEntryExpectedAt', 'lastEntryDelayMs', 'lastEarlyId', 'lastEarlyAt', 'lastEarlyExpectedAt', 'lastEarlyStatus', 'lastEarlyMode',
           'lastForegroundAt', 'lastBackgroundAt', 'lastDisplayChannel', 'lastDeliveryAppVisible',
-          'foregroundChannelId', 'displayState', 'lastBackgroundCompletedAt', 'backgroundAccess', 'backgroundProbe'].forEach(function (key) {
+          'foregroundChannelId', 'displayState', 'lastBackgroundCompletedAt', 'backgroundAccess', 'backgroundProbe', 'protection'].forEach(function (key) {
             if (p[key] !== undefined) out[key] = p[key];
           });
         out.guard = p.guard === true;

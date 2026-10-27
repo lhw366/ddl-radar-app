@@ -35,7 +35,8 @@
         <!-- 兼容旧版在途广播与通知按钮；新闹钟直接启动短时 AlarmService。 -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
 
-        <!-- Only runs at an actual due reminder or while its banner is retained.
+        <!-- Runs for at most three minutes of near-deadline waiting, actual
+             due effects, or a user-retained banner. Waiting holds no CPU lock.
              Keep the manifest type and startForeground type identical. -->
         <service
             android:name=".AlarmService"
@@ -44,7 +45,7 @@
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="show_due_reminders_and_user_retained_banners" />
+                android:value="finite_near_deadline_reminder_protection_and_user_retained_banners" />
         </service>
 
         <!-- 闹钟式全屏提醒页（锁屏/灭屏由全屏 Intent 亮屏拉起） -->

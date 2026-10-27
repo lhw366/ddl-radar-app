@@ -31,6 +31,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override public void onStop() {
+        AlarmService.planChanged(this);
         visible = false;
         lastBackgroundElapsed = android.os.SystemClock.elapsedRealtime();
         getSharedPreferences("ddlr_lifecycle", MODE_PRIVATE).edit()

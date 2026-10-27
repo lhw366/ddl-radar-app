@@ -98,7 +98,8 @@ final class AlarmDelivery {
             int slot = intent.getIntExtra("slot", 0);
             String mode = AlarmScheduler.lastSchedMode(context);
             AlarmScheduler.markFired(context, id,
-                    AlarmService.ACTION_DUE.equals(intent.getAction()) ? "direct_service"
+                    intent.getBooleanExtra("protectedTimer", false) ? "protected_timer"
+                            : AlarmService.ACTION_DUE.equals(intent.getAction()) ? "direct_service"
                             : slot == 3 ? "inexact" : "clock".equals(mode) ? "clock" : "exact");
             if (item != null) AlarmScheduler.completeOccurrence(context, item);
             return true;

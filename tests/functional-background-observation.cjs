@@ -101,9 +101,13 @@ test('early recovery is not labelled successful until that same occurrence actua
   Object.assign(diag, {lastFireId: 45, lastExpectedAt: 100000});
   await h.run('renderDiag()');
   assert.match(h.el('diagList').innerHTML, /尚不能判定送达成功/);
-  diag.lastFireId = 44;
+  Object.assign(diag, {lastFireId: 44, lastDelayMs: 15, lastDeliveryAppVisible: false});
   await h.run('renderDiag()');
   assert.match(h.el('diagList').innerHTML, /已在到点后执行/);
+  Object.assign(diag, {lastDelayMs: 35000, lastDeliveryAppVisible: true});
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /迟到 35\.00 秒；后台准时性未通过/);
+  assert.doesNotMatch(h.el('diagList').innerHTML, /已在到点后执行/);
 });
 
 test('copied diagnostics retain the future entry and its recovery independently of the last delivered tier', async () => {
@@ -126,4 +130,30 @@ test('copied diagnostics retain the future entry and its recovery independently 
   assert.equal(out.alarm.lastEarlyStatus, 'rearmed');
   assert.equal(out.trace.events[0].expectedAt, 400000, 'arrival itself supplies expectedAt even after scheduled trace rolls out');
   assert.equal(out.trace.events[0].steps[1][2].remainingMs, '149990');
+});
+
+test('finite protection crosses the actual bridge and is shown as waiting rather than proven background delivery', async () => {
+  const h = harness(['nativenotify.js', 'app.js'], { globals: { Capacitor: { isNativePlatform: () => true, Plugins: {
+    DdlAlarm: { pending: async () => ({items: [{id: 44, at: 400000}], guard: true, wakeHeld: false,
+      protection: {waiting: true, expectedAt: 400000, expiresElapsed: 500000, maxWaitMs: 180000}}) }
+  } } } });
+  await h.run('renderDiag()');
+  assert.match(h.el('diagList').innerHTML, /临近提醒保护已准备.*等待时不保持 CPU 唤醒/);
+  assert.doesNotMatch(h.el('diagList').innerHTML, /后台准时性已通过/);
+  h.context.protectionFixture = await h.context.NativeNotify.diag();
+  const out = JSON.parse(h.run('compactReminderDiagnostics(protectionFixture)'));
+  assert.equal(out.protection.waiting, true);
+  assert.equal(out.protection.expectedAt, 400000);
+  assert.equal(out.protection.maxWaitMs, 180000);
+  assert.equal(out.display.wakeHeld, false);
+});
+
+test('a different early entry cannot supply lifecycle ages for the last successfully delivered event', async () => {
+  const h = harness(['app.js'], { globals: { NativeNotify: { available: () => true, diag: async () => ({
+    lastDelayMs: 35000, lastDeliveryAppVisible: true, lastFireId: 45,
+    lastEntryAt: 200000, lastEntryId: 44, lastEntrySinceForegroundMs: 10, lastEntrySinceBackgroundMs: 60000
+  }) } } });
+  await h.run('renderDiag()');
+  assert.doesNotMatch(h.el('diagList').innerHTML, /返回 App 后才执行|返回 App 后才收到/);
+  assert.match(h.el('diagList').innerHTML, /不能据此判定后台提醒正常/);
 });
