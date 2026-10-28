@@ -1,7 +1,8 @@
-# 2.3.8-rc.1 本地验收记录
+# 2.3.8-rc.1 / build 110 验收记录
 
-候选版本使用 Android 36 Google APIs x86_64 一次性模拟器，Release APK 为非调试、
-同签名构建。以下结果来自当前提交，真实 OPPO 设备仍须复测。
+正式版本使用 GitHub Actions 的 Android 36 Google APIs x86_64 一次性模拟器，
+Release APK 为非调试、arm64-v8a、同签名构建。以下结果来自发布 workflow，
+真实 OPPO 设备仍须复测。
 
 - 功能检查：113/113 通过。
 - Release、Android 测试 APK 与 JVM 单元测试编译通过。
@@ -17,5 +18,8 @@
 - `ReminderBannerThemeTest`：2/2 通过；四季月份映射和当前季节横幅在桌面真实绘制
   均通过，截图见 `output/seasonal-banner.png`。
 
-当前环境无法解析 GitHub 域名，因此该文件不宣称 GitHub Actions 或公开 CDN 已更新。
-接入手机构建和更新入口前，仍须把当前提交推送并观察对应 Actions。
+[Android 36 Release workflow](https://github.com/lhw366/ddl-radar-app/actions/runs/40626435239)
+的 check 与 publish job 全部成功。git commit
+`ad8bc64fc34e432fe171b69c8874fc691127a0fc` 已生成
+[v110](https://github.com/lhw366/ddl-radar-app/releases/tag/v110)，公开
+`version.json` 返回 code 110，CDN 地址指向 `apk-latest/ddl-radar-110.apk`。
