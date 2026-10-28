@@ -105,6 +105,7 @@ public class DdlOcrPlugin extends Plugin {
         out.put("text", result.getText());
         out.put("imageWidth", source.getWidth());
         out.put("imageHeight", source.getHeight());
+        RasterCells cells = new RasterCells(source);
 
         JSArray blocks = new JSArray();
         for (Text.TextBlock blk : result.getTextBlocks()) {
@@ -118,6 +119,7 @@ public class DdlOcrPlugin extends Plugin {
                 b.put("bottom", bb.bottom);
                 b.put("cx", (bb.left + bb.right) / 2);
                 b.put("cy", (bb.top + bb.bottom) / 2);
+                cells.attach(b, bb);
             }
             JSArray lines = new JSArray();
             for (Text.Line ln : blk.getLines()) {
@@ -131,7 +133,22 @@ public class DdlOcrPlugin extends Plugin {
                     l.put("bottom", lb.bottom);
                     l.put("cx", (lb.left + lb.right) / 2);
                     l.put("cy", (lb.top + lb.bottom) / 2);
+                    cells.attach(l, lb);
                 }
+                JSArray elements = new JSArray();
+                for (Text.Element element : ln.getElements()) {
+                    android.graphics.Rect eb = element.getBoundingBox();
+                    JSObject e = new JSObject();
+                    e.put("text", element.getText());
+                    if (eb != null) {
+                        e.put("left", eb.left); e.put("top", eb.top);
+                        e.put("right", eb.right); e.put("bottom", eb.bottom);
+                        e.put("cx", (eb.left + eb.right) / 2); e.put("cy", (eb.top + eb.bottom) / 2);
+                        cells.attach(e, eb);
+                    }
+                    elements.put(e);
+                }
+                l.put("elements", elements);
                 lines.put(l);
             }
             b.put("lines", lines);
@@ -139,6 +156,81 @@ public class DdlOcrPlugin extends Plugin {
         }
         out.put("blocks", blocks);
         return out;
+    }
+
+    /** Read colored card boundaries from the actual pixels, never from a course template. */
+    private static final class RasterCells {
+        final int width, height, scale, paper;
+        final int[] pixels, labels, queue;
+        final List<android.graphics.Rect> regions = new ArrayList<>();
+        RasterCells(Bitmap bitmap) {
+            scale = Math.max(1, (bitmap.getWidth() + 899) / 900);
+            width = Math.max(1, bitmap.getWidth() / scale);
+            height = Math.max(1, bitmap.getHeight() / scale);
+            Bitmap small = Bitmap.createScaledBitmap(bitmap, width, height, false);
+            pixels = new int[width * height]; small.getPixels(pixels, 0, width, 0, 0, width, height);
+            if (small != bitmap) small.recycle();
+            labels = new int[pixels.length]; queue = new int[pixels.length];
+            int[] histogram = new int[4096];
+            for (int i = 0; i < pixels.length; i += 7) {
+                int color = pixels[i], r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255;
+                if (Math.max(r, Math.max(g, b)) > 220) histogram[(r >> 4) * 256 + (g >> 4) * 16 + (b >> 4)]++;
+            }
+            int best = 0;
+            for (int i = 1; i < histogram.length; i++) if (histogram[i] > histogram[best]) best = i;
+            long red = 0, green = 0, blue = 0; int count = 0;
+            for (int i = 0; i < pixels.length; i += 7) {
+                int color = pixels[i], r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255;
+                if (((r >> 4) * 256 + (g >> 4) * 16 + (b >> 4)) == best) { red += r; green += g; blue += b; count++; }
+            }
+            paper = count > 0 ? ((int)(red / count) << 16) | ((int)(green / count) << 8) | (int)(blue / count) : 0xffffff;
+            regions.add(null);
+        }
+        int distance(int a, int b) {
+            return Math.max(Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)),
+                Math.max(Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)), Math.abs((a & 255) - (b & 255))));
+        }
+        android.graphics.Rect region(int x, int y) {
+            if (x < 0 || x >= width || y < 0 || y >= height) return null;
+            int seed = y * width + x, color = pixels[seed];
+            if (distance(color, paper) < 13) return null;
+            if (labels[seed] > 0) return regions.get(labels[seed]);
+            if (labels[seed] < 0) return null;
+            int number = regions.size(), start = 0, end = 0, minX = x, maxX = x, minY = y, maxY = y;
+            queue[end++] = seed; labels[seed] = number;
+            while (start < end) {
+                int at = queue[start++], px = at % width, py = at / width;
+                minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+                minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+                int[] neighbors = {px > 0 ? at - 1 : -1, px + 1 < width ? at + 1 : -1,
+                    py > 0 ? at - width : -1, py + 1 < height ? at + width : -1};
+                for (int next : neighbors) if (next >= 0 && labels[next] == 0 && distance(pixels[next], color) <= 10) {
+                    labels[next] = number; queue[end++] = next;
+                }
+            }
+            int rw = maxX - minX + 1, rh = maxY - minY + 1;
+            android.graphics.Rect bounds = rw >= 22 && rh >= 20 && end >= rw * rh * .55
+                && rw < width * .8 && rh < height * .8
+                ? new android.graphics.Rect(minX * scale, minY * scale, (maxX + 1) * scale, (maxY + 1) * scale) : null;
+            regions.add(bounds);
+            return bounds;
+        }
+        void attach(JSObject object, android.graphics.Rect text) {
+            int[] xs = {text.left - 5, (text.left + text.right) / 2, text.right + 5};
+            int[] ys = {text.top - 5, text.top + 2, (text.top + text.bottom) / 2};
+            android.graphics.Rect best = null;
+            for (int x : xs) for (int y : ys) {
+                android.graphics.Rect candidate = region(x / scale, y / scale);
+                if (candidate == null || !candidate.contains((text.left + text.right) / 2, (text.top + text.bottom) / 2)) continue;
+                if (best == null || candidate.width() * candidate.height() < best.width() * best.height()) best = candidate;
+            }
+            if (best != null) {
+                JSObject bounds = new JSObject();
+                bounds.put("left", best.left); bounds.put("top", best.top);
+                bounds.put("right", best.right); bounds.put("bottom", best.bottom);
+                object.put("cell", bounds);
+            }
+        }
     }
 
 

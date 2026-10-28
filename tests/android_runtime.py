@@ -56,7 +56,8 @@ def capture(prefix):
     for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
                  'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
                  'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png',
-                 'seasonal-banner.png']:
+                 'seasonal-banner.png', 'ux-normal-settings.png', 'ux-task-editor.png',
+                 'ux-themed-picker.png', 'ux-task-scrolled.png']:
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
@@ -244,6 +245,15 @@ original_volume = re.search(r'volume is\s+(\d+)',
                            adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
     prepare()
+    instrument('FormUxRuntimeTest', 1)
+    capture('form-ux')
+    prepare()
+    instrument('BackupRuntimeTest', 4)
+    capture('local-backup')
+    prepare()
+    instrument('ReminderBannerInteractionTest', 5)
+    capture('banner-interactions')
+    prepare()
     instrument('BackgroundExecutionProbeTest', 2)
     capture('background-probe')
     prepare()
@@ -261,10 +271,15 @@ try:
     instrument('FrozenReminderFixture', 1)
     frozen_real_task()
     prepare()
-    instrument('TimetableOcrTest', 1)
+    instrument('TimetableOcrTest', 3)
     ocr = adb('exec-out', 'run-as', PKG, 'cat', 'files/timetable-ocr.json')
     (OUT / 'timetable-ocr.json').write_text(ocr, encoding='utf-8')
     subprocess.run(['node', 'tests/verify-timetable-ocr.cjs', str(OUT / 'timetable-ocr.json')], check=True)
+    for profile in ['mobile', 'table']:
+        filename = f'timetable-user-{profile}-ocr.json'
+        ocr = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + filename)
+        (OUT / filename).write_text(ocr, encoding='utf-8')
+        subprocess.run(['node', 'tests/verify-user-timetable-ocr.cjs', profile, str(OUT / filename)], check=True)
     prepare()
     instrument('VibrationPolicyTest', 2)
     capture('blocked-channel')

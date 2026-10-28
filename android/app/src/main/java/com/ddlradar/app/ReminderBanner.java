@@ -32,6 +32,7 @@ final class ReminderBanner {
     private static WindowManager windows;
     private static ScrollView window;
     private static LinearLayout stack;
+    private static boolean windowAdded;
 
     private static final class BannerScroll extends ScrollView {
         BannerScroll(Context context) { super(context); }
@@ -73,8 +74,21 @@ final class ReminderBanner {
                 }
                 remove(id);
                 SeasonTheme season = SeasonTheme.forMonth(Calendar.getInstance().get(Calendar.MONTH));
-                FrameLayout card = new FrameLayout(app);
+                ReminderCardView card = new ReminderCardView(app);
                 card.setTag("ddlr-reminder-" + id);
+                card.setContentDescription("点击查看提醒，上滑收起");
+                card.setClickable(true);
+                card.setFocusable(true);
+                card.setOnClickListener(view -> {
+                    if (ReminderNavigation.open(app, id)) {
+                        AlarmDelivery.cancelNotification(app, id);
+                        dismiss(id, "open");
+                    }
+                });
+                card.onSwipeUp(() -> {
+                    AlarmDelivery.cancelNotification(app, id);
+                    dismiss(id, "swipe");
+                });
                 GradientDrawable background = new GradientDrawable();
                 background.setOrientation(GradientDrawable.Orientation.TL_BR);
                 background.setColors(new int[]{season.topColor, season.bottomColor});
@@ -152,8 +166,12 @@ final class ReminderBanner {
                 cardLayout.bottomMargin = dp(app, 8);
                 stack.addView(card, cardLayout);
                 CARDS.put(id, card);
-                if (!window.isAttachedToWindow()) {
+                // addView registers synchronously, attachment waits for traversal.
+                // Two reminders can arrive before the first traversal, so testing
+                // isAttachedToWindow here would add the same window twice.
+                if (!windowAdded) {
                     windows.addView(window, window.getLayoutParams());
+                    windowAdded = true;
                 }
                 ReminderTrace.mark(app, id & Integer.MAX_VALUE, "overlay_attached", "appVisible=" + MainActivity.visible
                         + ";attached=" + window.isAttachedToWindow() + ";windowType=" + ((WindowManager.LayoutParams) window.getLayoutParams()).type);
@@ -218,6 +236,7 @@ final class ReminderBanner {
         catch (Exception ignored) { }
         window = null;
         stack = null;
+        windowAdded = false;
     }
 
     private static int dp(Context context, int value) {

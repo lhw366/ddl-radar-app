@@ -17,11 +17,54 @@
     return [...document.querySelectorAll('.sheet-wrap')].some(el => !el.classList.contains('hidden')) ||
       !!(document.getElementById('onboard') && !document.getElementById('onboard').classList.contains('hidden'));
   }
+  function dismissSheet(wrap) {
+    if (!wrap) return;
+    if (wrap.id === 'ttEditor') {
+      const close = document.getElementById('ttEdClose');
+      if (close) close.click();
+      return;
+    }
+    const mask = wrap.querySelector('.mask');
+    if (mask && mask.dataset.close) mask.click();
+  }
+  function bindSheetGestures(wrap) {
+    const sheet = wrap.querySelector('.sheet');
+    if (!sheet || sheet.dataset.gestureBound === '1') return;
+    sheet.dataset.gestureBound = '1';
+    let start = null;
+    sheet.addEventListener('touchstart', event => {
+      if (event.touches.length !== 1) { start = null; return; }
+      const t = event.touches[0];
+      start = { x: t.clientX, y: t.clientY, at: Date.now(), scrollTop: sheet.scrollTop, mode: '' };
+    }, { passive: true });
+    sheet.addEventListener('touchmove', event => {
+      if (!start || event.touches.length !== 1) return;
+      const t = event.touches[0];
+      const dx = t.clientX - start.x, dy = t.clientY - start.y;
+      if (!start.mode) {
+        if (start.scrollTop <= 0 && dy > 12 && dy > Math.abs(dx) * 1.25) start.mode = 'down';
+        else if (start.x <= 28 && dx > 12 && dx > Math.abs(dy) * 1.25) start.mode = 'back';
+      }
+      if (start.mode && event.cancelable) event.preventDefault();
+    }, { passive: false });
+    sheet.addEventListener('touchend', event => {
+      const gesture = start; start = null;
+      if (!gesture || Date.now() - gesture.at > 1100) return;
+      const t = [...event.changedTouches][0];
+      if (!t) return;
+      const dx = t.clientX - gesture.x, dy = t.clientY - gesture.y;
+      const closes = (gesture.mode === 'down' && dy >= 88 && dy > Math.abs(dx) * 1.15) ||
+        (gesture.mode === 'back' && dx >= 72 && dx > Math.abs(dy) * 1.25);
+      if (closes) dismissSheet(wrap);
+    }, { passive: true });
+    sheet.addEventListener('touchcancel', () => { start = null; }, { passive: true });
+  }
   function init() {
     if (initialized) return;
     const views = document.getElementById('views');
     if (!views) return;
     initialized = true;
+    document.querySelectorAll('.sheet-wrap').forEach(bindSheetGestures);
     let gesture = null, suppressClickUntil = 0;
     views.addEventListener('touchstart', event => {
       gesture = null;

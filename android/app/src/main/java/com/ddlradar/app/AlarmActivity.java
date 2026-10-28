@@ -61,7 +61,6 @@ public class AlarmActivity extends Activity {
         boolean automatic = intent.getBooleanExtra("autoDismiss", false);
 
         LinearLayout card = new LinearLayout(this);
-        card.setTag("ddlr-alarm-card");
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18), dp(14), dp(18), dp(12));
         GradientDrawable surface = new GradientDrawable();
@@ -105,7 +104,19 @@ public class AlarmActivity extends Activity {
         buttonLayout.gravity = Gravity.END;
         buttonLayout.topMargin = dp(10);
         card.addView(acknowledge, buttonLayout);
-        setContentView(card);
+        ReminderCardView interactiveCard = new ReminderCardView(this);
+        interactiveCard.setTag("ddlr-alarm-card");
+        interactiveCard.setContentDescription("点击查看提醒，上滑收起");
+        interactiveCard.addView(card, new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT));
+        interactiveCard.setClickable(true);
+        interactiveCard.setFocusable(true);
+        interactiveCard.setOnClickListener(view -> {
+            if (notifId != -1 && ReminderNavigation.open(this, notifId)) closeReminder("open", true);
+        });
+        interactiveCard.onSwipeUp(() -> closeReminder("swipe", true));
+        setContentView(interactiveCard);
 
         Window window = getWindow();
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
