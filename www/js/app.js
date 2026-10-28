@@ -398,6 +398,16 @@ function toast(title, body, kind) {
   if (uiKey) el.dataset.uiKey = uiKey;
   $('toastWrap').appendChild(el);
   const kill = () => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); };
+  if (!kind) {
+    el.classList.add('has-close');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', '关闭提示');
+    close.textContent = '×';
+    close.addEventListener('click', (event) => { event.stopPropagation(); kill(); });
+    el.appendChild(close);
+  }
   el.addEventListener('click', kill);
   if (!kind || S.settings.bannerDuration === '5s') setTimeout(kill, kind ? 5000 : 9000);
   if (document.hidden) {

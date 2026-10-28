@@ -626,6 +626,11 @@ textarea.f-input{ resize:none; line-height:1.6; }
   border:1px solid var(--card-border); border-radius:9px; background:rgba(128,128,128,.10);
   color:inherit; font:600 11px/1.2 var(--font); box-shadow:none; cursor:pointer; }
 .toast.tt-urgent{ border-left-color:var(--danger); }
+.toast.has-close{ position:relative; padding-right:42px; }
+.toast .toast-close{
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  min-width:28px; min-height:28px; border:0; background:transparent; font-size:20px;
+}
 .toast.tt-daily{ border-left-color:var(--readable-accent-2,var(--accent-2)); }
 .toast.gone{ animation:toastOut .3s forwards; }
 @keyframes toastIn{ from{ transform:translateY(-90px); opacity:0 } to{ transform:none; opacity:1 } }

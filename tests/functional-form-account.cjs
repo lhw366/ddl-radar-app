@@ -126,6 +126,11 @@ test('feedback excludes task content and UI toasts deduplicate without merging r
 
   h.run(`toast('🗑️ 已删除课程',''); toast('🗑️ 已删除课程','')`);
   assert.equal(h.el('toastWrap').children.length, 1);
+  const summary = h.el('toastWrap').children[0];
+  const close = summary.querySelector('.toast-close');
+  assert.ok(close, 'The single operation summary has an explicit close button');
+  close.click();
+  assert.equal(summary.classList.contains('gone'), true);
   h.run(`toast('事项 A 到点','', 'urgent'); toast('事项 B 到点','', 'urgent')`);
   assert.equal(h.el('toastWrap').children.length, 3, 'Actual reminders remain separate');
 });
