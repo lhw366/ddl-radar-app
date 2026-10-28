@@ -294,6 +294,7 @@ public class DdlAlarmPlugin extends Plugin {
             ret.put("lastEarlyId", diagnostics.getLong("lastEarlyId", 0));
             ret.put("lastEarlyAt", diagnostics.getLong("lastEarlyAt", 0));
             ret.put("lastEarlyExpectedAt", diagnostics.getLong("lastEarlyExpectedAt", 0));
+            ret.put("lastEarlyRearmAt", diagnostics.getLong("lastEarlyRearmAt", 0));
             ret.put("lastEarlyStatus", diagnostics.getString("lastEarlyStatus", ""));
             ret.put("lastEarlyMode", diagnostics.getString("lastEarlyMode", ""));
             ret.put("lastNotificationAllowed", diagnostics.getBoolean("lastNotificationAllowed", false));

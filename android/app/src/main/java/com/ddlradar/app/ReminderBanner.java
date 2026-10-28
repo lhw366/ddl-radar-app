@@ -18,13 +18,14 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.FrameLayout;
 import android.util.Log;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
 
 /** User-authorized top banner; each reminder has its own close button/timer. */
 final class ReminderBanner {
-    static final int SURFACE_COLOR = Color.argb(240, 30, 35, 52);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<Integer, View> CARDS = new HashMap<>();
     private static final Map<Integer, Runnable> TIMERS = new HashMap<>();
@@ -71,69 +72,84 @@ final class ReminderBanner {
                     window.setLayoutParams(params);
                 }
                 remove(id);
-                LinearLayout card = new LinearLayout(app);
+                SeasonTheme season = SeasonTheme.forMonth(Calendar.getInstance().get(Calendar.MONTH));
+                FrameLayout card = new FrameLayout(app);
                 card.setTag("ddlr-reminder-" + id);
-                card.setOrientation(LinearLayout.HORIZONTAL);
-                card.setGravity(Gravity.CENTER_VERTICAL);
-                card.setPadding(dp(app, 12), dp(app, 8), dp(app, 6), dp(app, 8));
-                card.setMinimumHeight(dp(app, 60));
                 GradientDrawable background = new GradientDrawable();
-                background.setColor(SURFACE_COLOR);
-                background.setCornerRadius(dp(app, 16));
-                background.setStroke(dp(app, 1), Color.argb(42, 224, 235, 255));
+                background.setOrientation(GradientDrawable.Orientation.TL_BR);
+                background.setColors(new int[]{season.topColor, season.bottomColor});
+                background.setCornerRadius(dp(app, 24));
+                background.setStroke(dp(app, 1), Color.argb(58, 255, 255, 255));
                 card.setBackground(background);
-                View accent = new View(app);
-                GradientDrawable accentColor = new GradientDrawable();
-                accentColor.setColor(Color.rgb(151, 222, 204));
-                accentColor.setCornerRadius(dp(app, 2));
-                accent.setBackground(accentColor);
-                LinearLayout.LayoutParams accentLayout = new LinearLayout.LayoutParams(dp(app, 3), dp(app, 26));
-                accentLayout.rightMargin = dp(app, 11);
-                card.addView(accent, accentLayout);
-                LinearLayout copy = new LinearLayout(app);
-                copy.setOrientation(LinearLayout.VERTICAL);
-                card.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-                TextView heading = new TextView(app);
-                heading.setText(title);
-                heading.setTextSize(15);
-                heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                heading.setTextColor(Color.rgb(242, 246, 255));
-                heading.setIncludeFontPadding(false);
-                heading.setSingleLine(true);
-                heading.setEllipsize(TextUtils.TruncateAt.END);
-                copy.addView(heading);
-                TextView detail = new TextView(app);
-                detail.setText(body);
-                detail.setTextSize(12);
-                detail.setIncludeFontPadding(false);
-                detail.setSingleLine(true);
-                detail.setEllipsize(TextUtils.TruncateAt.END);
-                detail.setTextColor(Color.rgb(185, 197, 218));
-                LinearLayout.LayoutParams detailLayout = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                detailLayout.topMargin = dp(app, 4);
-                copy.addView(detail, detailLayout);
+                card.setClipToOutline(true);
+                card.setElevation(dp(app, 10));
+                card.setMinimumHeight(dp(app, 96));
+                SeasonSceneryView scenery = new SeasonSceneryView(app);
+                scenery.setTheme(season);
+                card.addView(scenery, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                LinearLayout content = new LinearLayout(app);
+                content.setOrientation(LinearLayout.VERTICAL);
+                content.setPadding(dp(app, 15), dp(app, 10), dp(app, 9), dp(app, 12));
+                card.addView(content, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+                LinearLayout meta = new LinearLayout(app);
+                meta.setOrientation(LinearLayout.HORIZONTAL);
+                meta.setGravity(Gravity.CENTER_VERTICAL);
+                content.addView(meta, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(app, 32)));
+                TextView seasonLabel = new TextView(app);
+                seasonLabel.setText(season.mark + "  " + season.kicker);
+                seasonLabel.setTextSize(9.5f);
+                seasonLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                seasonLabel.setLetterSpacing(.08f);
+                seasonLabel.setTextColor(season.accentColor);
+                seasonLabel.setGravity(Gravity.CENTER_VERTICAL);
+                seasonLabel.setIncludeFontPadding(false);
+                meta.addView(seasonLabel, new LinearLayout.LayoutParams(0,
+                        LinearLayout.LayoutParams.MATCH_PARENT, 1));
                 TextView close = new TextView(app);
                 close.setText("×");
-                close.setTextSize(22);
-                close.setTextColor(Color.rgb(202, 213, 230));
+                close.setTextSize(19);
+                close.setTextColor(Color.argb(225, 255, 255, 255));
                 close.setGravity(Gravity.CENTER);
                 close.setIncludeFontPadding(false);
                 close.setContentDescription("关闭提醒");
                 GradientDrawable closeMask = new GradientDrawable();
                 closeMask.setColor(Color.WHITE);
-                closeMask.setCornerRadius(dp(app, 22));
-                close.setBackground(new RippleDrawable(ColorStateList.valueOf(Color.argb(35, 255, 255, 255)), null, closeMask));
+                closeMask.setCornerRadius(dp(app, 20));
+                close.setBackground(new RippleDrawable(
+                        ColorStateList.valueOf(Color.argb(42, 255, 255, 255)), null, closeMask));
                 close.setClickable(true);
                 close.setFocusable(true);
                 close.setOnClickListener(view -> {
                     AlarmDelivery.cancelNotification(app, id);
                     dismiss(id, "user");
                 });
-                card.addView(close, new LinearLayout.LayoutParams(dp(app, 44), dp(app, 44)));
+                meta.addView(close, new LinearLayout.LayoutParams(dp(app, 36), dp(app, 36)));
+                TextView heading = new TextView(app);
+                heading.setText(title);
+                heading.setTextSize(16);
+                heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                heading.setTextColor(Color.rgb(250, 250, 247));
+                heading.setIncludeFontPadding(false);
+                heading.setMaxLines(2);
+                heading.setEllipsize(TextUtils.TruncateAt.END);
+                content.addView(heading);
+                TextView detail = new TextView(app);
+                detail.setText(body);
+                detail.setTextSize(12);
+                detail.setIncludeFontPadding(false);
+                detail.setSingleLine(true);
+                detail.setEllipsize(TextUtils.TruncateAt.END);
+                detail.setTextColor(season.detailColor);
+                LinearLayout.LayoutParams detailLayout = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                detailLayout.topMargin = dp(app, 5);
+                content.addView(detail, detailLayout);
                 LinearLayout.LayoutParams cardLayout = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                cardLayout.bottomMargin = dp(app, 6);
+                cardLayout.bottomMargin = dp(app, 8);
                 stack.addView(card, cardLayout);
                 CARDS.put(id, card);
                 if (!window.isAttachedToWindow()) {

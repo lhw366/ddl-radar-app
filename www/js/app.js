@@ -1156,7 +1156,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.7-rc.3';
+const APP_VERSION = '2.3.8-rc.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -1869,7 +1869,8 @@ function compactReminderDiagnostics(d) {
         'lastExpectedAt', 'lastDelayMs', 'lastReceiverId', 'lastReceiverAt', 'sysNextOwner', 'scheduleVersion',
         'lastReceiverUrgent', 'lastReceiverSinceForegroundMs', 'lastReceiverSinceBackgroundMs',
         'deliveryRoute', 'lastEntryAt', 'lastEntryId', 'lastEntryRoute',
-        'lastEntryExpectedAt', 'lastEntryDelayMs', 'lastEarlyId', 'lastEarlyAt', 'lastEarlyExpectedAt', 'lastEarlyStatus', 'lastEarlyMode',
+        'lastEntryExpectedAt', 'lastEntryDelayMs', 'lastEarlyId', 'lastEarlyAt', 'lastEarlyExpectedAt',
+        'lastEarlyRearmAt', 'lastEarlyStatus', 'lastEarlyMode',
         'lastEntrySinceForegroundMs', 'lastEntrySinceBackgroundMs']) },
     vibration: pick(d, ['vibrationMode', 'lastVibrationStatus', 'lastVibrationChannel', 'lastVibrationUsage', 'vibrateInSilent']),
     trace: { retained: retained.length, availableEvents: groups.length, exportedEvents: recent.length,

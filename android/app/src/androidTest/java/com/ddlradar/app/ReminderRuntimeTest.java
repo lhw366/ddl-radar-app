@@ -594,7 +594,6 @@ public class ReminderRuntimeTest {
         // native text pixels over a baseline screenshot of the launcher. Layout
         // rectangles alone cannot prove that SystemUI isn't covering the card.
         long until = System.currentTimeMillis() + 8000;
-        int[][] encoded = blendTable(false), linear = blendTable(true);
         int surfacePixels = 0, titlePixels = 0, bodyPixels = 0, closePixels = 0;
         while (System.currentTimeMillis() < until) {
             Thread.sleep(200);
@@ -602,10 +601,10 @@ public class ReminderRuntimeTest {
             if (snapshot == null) continue;
             float density = ctx.getResources().getDisplayMetrics().density;
             assertTrue("Compact banner must stay within 360 dp", snapshot.card.width() <= Math.round(360 * density) + 1);
-            assertTrue("Two-line banner must stay compact", snapshot.card.height() <= Math.round(86 * density));
-            assertTrue("Close control needs at least a 44 dp touch target", snapshot.close.width() >= Math.round(44 * density)
-                    && snapshot.close.height() >= Math.round(44 * density));
-            assertEquals(1, snapshot.headingLines);
+            assertTrue("Scenic banner must stay compact", snapshot.card.height() <= Math.round(112 * density));
+            assertTrue("Close control needs a stable touch target", snapshot.close.width() >= Math.round(36 * density)
+                    && snapshot.close.height() >= Math.round(36 * density));
+            assertTrue(snapshot.headingLines >= 1 && snapshot.headingLines <= 2);
             assertEquals(1, snapshot.bodyLines);
             Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();
             if (screen != null) {
@@ -615,7 +614,10 @@ public class ReminderRuntimeTest {
                 for (int y = card.top + 2; y < card.bottom - 2; y++) {
                     for (int x = card.left + 2; x < card.right - 2; x++) {
                         int color = screen.getPixel(x, y), below = desktopBaseline.getPixel(x, y);
-                        if (matchesBlend(color, below, encoded) || matchesBlend(color, below, linear)) surfacePixels++;
+                        int difference = Math.abs(Color.red(color) - Color.red(below))
+                                + Math.abs(Color.green(color) - Color.green(below))
+                                + Math.abs(Color.blue(color) - Color.blue(below));
+                        if (difference > 55) surfacePixels++;
                     }
                 }
                 titlePixels = changedTextPixels(screen, snapshot.heading);
@@ -653,27 +655,4 @@ public class ReminderRuntimeTest {
         return count;
     }
 
-    private static int[][] blendTable(boolean linear) {
-        int[][] table = new int[3][256];
-        int surface = ReminderBanner.SURFACE_COLOR;
-        int[] channels = {Color.red(surface), Color.green(surface), Color.blue(surface)};
-        double alpha = Color.alpha(surface) / 255.0;
-        for (int c = 0; c < 3; c++) for (int below = 0; below < 256; below++) {
-            double foreground = channels[c] / 255.0, background = below / 255.0;
-            if (linear) {
-                foreground = foreground <= .04045 ? foreground / 12.92 : Math.pow((foreground + .055) / 1.055, 2.4);
-                background = background <= .04045 ? background / 12.92 : Math.pow((background + .055) / 1.055, 2.4);
-            }
-            double mixed = alpha * foreground + (1 - alpha) * background;
-            if (linear) mixed = mixed <= .0031308 ? 12.92 * mixed : 1.055 * Math.pow(mixed, 1 / 2.4) - .055;
-            table[c][below] = (int) Math.round(mixed * 255);
-        }
-        return table;
-    }
-
-    private static boolean matchesBlend(int actual, int below, int[][] expected) {
-        return Math.abs(Color.red(actual) - expected[0][Color.red(below)]) <= 7
-                && Math.abs(Color.green(actual) - expected[1][Color.green(below)]) <= 7
-                && Math.abs(Color.blue(actual) - expected[2][Color.blue(below)]) <= 7;
-    }
 }

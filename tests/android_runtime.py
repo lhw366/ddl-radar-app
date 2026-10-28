@@ -55,7 +55,8 @@ def capture(prefix):
         (OUT / f'{prefix}-{prefs}.xml').write_text(raw, encoding='utf-8')
     for name in ['runtime-manual.png', 'missing-banner.png', 'runtime-banner-baseline.png',
                  'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
-                 'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png']:
+                 'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png',
+                 'seasonal-banner.png']:
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
@@ -254,6 +255,8 @@ try:
     prepare()
     instrument('NearReminderProtectionTest', 4)
     capture('near-protection')
+    prepare()
+    instrument('ReminderBannerThemeTest', 2)
     prepare()
     instrument('FrozenReminderFixture', 1)
     frozen_real_task()
