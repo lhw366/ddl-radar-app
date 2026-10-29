@@ -40,11 +40,18 @@ Node 使用 22 或更新版本。官方客户端随 APK 打包，启动不依赖
 
 数据库新增变更放进新的 `supabase/migrations/时间戳_名称.sql`，先运行权限回归后部署；不要修改已部署迁移，避免重跑破坏现有数据。当前协议 schema=1，版本不兼容时 App 拒绝覆盖本机数据。
 
-本次迁移由你在 SQL Editor 手工执行，尚未登记为 CLI migration history。
-将来首次启用 GitHub 自动数据库部署前，需要使用已授权并链接此项目的 Supabase CLI 执行
-`supabase migration repair 202610290001 --status applied --linked`，然后用 `supabase migration list --linked` 核对。
-此步骤只登记已经执行的迁移，不能在尚未建好表时使用，也不要再次直接创建已有表。
-App 的公开 key 不能执行迁移或修改 Auth 后台配置；当前没有获得这类管理授权。
+初始迁移由你在 SQL Editor 手工执行。随后 Supabase 授权接入，已核对实际结构并将
+`202610290001 accounts` 登记到 migration history，另部署 `20261029105429 harden_internal_rls_hook`。
+远端记录与本目录一致，不需要你重跑建表或再执行 migration repair。
+后续用已授权并链接此项目的 CLI 执行 `supabase migration list --linked` 核对，再部署新的迁移。
+App 的公开 key 不能执行迁移或修改 Auth 后台配置；管理操作通过单独授权的开发工具完成。
+
+实际项目的事务回滚测试已验证：认证用户保存/读取自己的快照成功、读取其他用户为零、
+直接写表被拒绝、过期 revision 被拒绝。临时 Auth 用户及快照全部回滚，没有发送测试邮件。
+内部自动 RLS 的 event-trigger 函数已撤销客户端 EXECUTE，自动启用 RLS 的能力继续保留。
+安全检查中剩余的「authenticated 可执行 SECURITY DEFINER」指向本应用刻意开放的保存接口；
+该接口固定 search_path、从 JWT 取 UID 并做版本检查，不能开放给 anon。
+参考 [Supabase 对此权限的审查说明](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable)。
 
 ## 数据库权限
 

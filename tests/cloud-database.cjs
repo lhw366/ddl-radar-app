@@ -25,8 +25,17 @@ before(async () => {
       select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     insert into auth.users values ('${alice}'),('${bob}');`);
   await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/202610290001_accounts.sql'), 'utf8'));
+  await db.exec("create function public.rls_auto_enable() returns event_trigger language plpgsql as $$ begin return; end; $$");
+  await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261029105429_harden_internal_rls_hook.sql'), 'utf8'));
 });
 after(async () => { await db.close(); });
+
+test('internal automatic-RLS hook is not a client RPC while authenticated state saves remain available', async () => {
+  const result = (await db.query(`select has_function_privilege('anon','public.rls_auto_enable()','execute') as anon,
+    has_function_privilege('authenticated','public.rls_auto_enable()','execute') as signed_in,
+    has_function_privilege('authenticated','public.ddlr_save_state(bigint,jsonb)','execute') as state_save`)).rows[0];
+  assert.equal(result.anon, false); assert.equal(result.signed_in, false); assert.equal(result.state_save, true);
+});
 
 test('unverified/anonymous requests cannot read or write user data', async () => {
   await as(null, 'anon');
