@@ -29,5 +29,6 @@ v2.3.9-rc.1 · 课表安全导入与表单体验候选版
 
 本版沿用 build 110 的原生提醒排期与静音触觉策略，并扩展四季横幅的操作方式。
 原生界面、OCR 与备份有改动，调度器及手机电池设置保持原样；OPPO 后台到点时效
-仍须实机验收。检查与设备测试
-结果记录在 [本版验收记录](local-verification-v239.md)，构建号以发布 workflow 为准。
+仍须实机验收。140 项功能检查与 Android 36 完整回归通过，已发布为 build 116。
+详情见 [本版验收记录](https://github.com/lhw366/ddl-radar-app/blob/main/docs/local-verification-v239.md)
+及 [检查与发布 workflow](https://github.com/lhw366/ddl-radar-app/actions/runs/40796182160)。

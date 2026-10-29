@@ -2,21 +2,21 @@
 
 本记录跟踪 2026-10-28 至 2026-10-29 的课表、表单与本机账号修复。候选分支为
 `fix/ux-timetable-accounts-v238`，基线为 `3a2750d`（build 110）。正式构建号由
-GitHub Actions 生成；运行结果与发布链接在本轮检查完成后补齐。
+GitHub Actions 生成。本版已发布为 `2.3.9-rc.1 / build 116`；修复分支保留，正式包可同签名覆盖安装。
 
 ## 当前检查状态
 
 | 检查 | 当前状态与证据 |
 | --- | --- |
 | 功能回归 | 本地完整运行 140/140 通过，包含缺失作息不产生默认时间提醒、反馈外部链接和所有梯度派发用例。 |
-| 表单真实 WebView | Android 36 非调试 Release 的 `FormUxRuntimeTest` 1/1 通过，真实触屏滚动及下拉关闭、日期选择和普通模式均通过。 |
+| 表单真实 WebView | Android 36 非调试 Release 的 `FormUxRuntimeTest` 1/1 通过，真实触屏滚动、下拉关闭、键盘焦点释放、小屏滚动到确定按钮、日期选择和普通模式均通过。 |
 | 提醒卡片交互 | Android 36 Release 的 `ReminderBannerInteractionTest` 5/5 通过：上滑、冷/热启动、误横滑及打开对应事项；每次均保留另一张独立卡片。 |
 | 原生恢复包保存 | Android 36 Release 的 `BackupRuntimeTest` 4/4 通过，含完整 UTF-8 JSON 与大壁纸读回、取消、写入失败及本地文件意图。 |
 | 原生离线 OCR | `TimetableOcrTest` 3/3 通过；实际 ML Kit 输出还原原参考图 13 个、DOCX 手机图 12 个、底部表格图 14 个课程位置，无教室伪课程。 |
-| Release 与测试 APK | 本地 Release、测试 APK 与 JVM 单元测试编译通过；正式签名及不可调试校验由发布 workflow 执行。 |
-| Android 36 提醒回归 | PR workflow 113 全部通过，含真实五分钟梯度与截止、静音/勿扰、冷进程及冻结进程；日期焦点视觉补丁的最终发布结果待补。 |
+| Release 与测试 APK | 正式 workflow 的编译、签名及不可调试校验全部通过；交付为 arm64-v8a，实际证书与 build 110 一致。 |
+| Android 36 提醒回归 | 最终 workflow 116 全部通过，含真实五分钟梯度与截止、静音/勿扰、冷进程、冻结进程及全部新增操作检查。 |
 | OPPO 实机 | 未执行本轮实机验收，不能由模拟器结果推定到点时效。 |
-| 发布与更新入口 | 待检查全部通过并发布后，核对公开元数据、APK 和应用检查更新。 |
+| 发布与更新入口 | check 与 publish 均成功；公开元数据 code 116，一个更新镜像已返回新版本。gcore/testingcf APK 镜像均返回 200，实际 CDN 下载与 CI 检查产物哈希一致。 |
 
 ## 课表必须覆盖的行为
 
@@ -111,3 +111,19 @@ python tests/android_runtime.py
 
 历史 build 110 的验证留在 [原验收记录](local-verification-110.md)，其通过结果
 只证明该历史构建，不计入本版结果。
+
+## 最终交付证据
+
+- [完整检查与发布 workflow](https://github.com/lhw366/ddl-radar-app/actions/runs/40796182160)
+  的 check、publish 均为 success。
+- [v116 发布页](https://github.com/lhw366/ddl-radar-app/releases/tag/v116)，应用内选择
+  「我的 → 检查更新」可取得新版本，系统仍需用户确认安装。
+- APK 大小 12,509,825 字节，SHA-256 为
+  `f3aa4c8497f0cdb730b7a7110604dce2f9105f711e7034c3e06bca31d89aa8b0`。
+- APK 签名证书 SHA-256 为
+  `14c9718396b61071edc14e0268f18184457d2c9a0ae07630205cbe824574bf10`，
+  与旧版实际签名块一致。仓库、Release 附件及实际 CDN 下载均与已检查产物对应。
+- CDN 边缘存在短暂旧缓存，更新器取多路元数据与 GitHub Release 中最大的构建号；
+  验收时 `cdn.jsdelivr.net` 已返回 code 116，两个 APK 下载镜像均可用。
+
+这份记录不包含 OPPO 实机时效承诺；本轮没有连接或调整用户手机的电池、音量或勿扰设置。
