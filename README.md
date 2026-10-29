@@ -6,6 +6,7 @@
 
 - 使用者：应用内“设置 → 检查更新”；顶部提示发现新版后，可选择立即更新或稍后提醒。覆盖安装保留数据。
 - 开发者：[架构](docs/ARCHITECTURE.md)、[贡献流程](CONTRIBUTING.md)、[发布说明](docs/RELEASE.md)。
+- 云端账户：[Supabase 接入、同步与验收](docs/supabase-setup.md)。
 - 教师与学生：[Git / GitHub 实战教学](docs/git-github-course.md)。
 
 ## 目录
@@ -15,21 +16,27 @@ www/                         APK 的 Web 源码，以此仓库为准
   js/app.js                  任务、梯度计划、前台补弹、更新入口
   js/nativenotify.js         串行同步到原生；成功之后才确认保存
   js/timetable.js            二维课表解析、核对、去重导入
+  js/cloud.js                邮箱账户、独立工作区、前台同步与冲突处理
+  js/cloud-model.js          云端字段边界与校验
   data/                      可离线导入的参考课表
 android/app/src/main/        原生调度、通知、声音、悬浮横幅、OCR
 android/app/src/androidTest/ 真实 Android 运行测试与用户课表样本
 tests/                       Web 行为回归、模拟器宿主检查
+supabase/migrations/         版本化数据库结构、RLS 与原子保存接口
+config/cloud.public.json     App 的公开 Supabase 连接配置
 .github/workflows/android.yml 检查 → 构建 → 主分支发布
 docs/                        架构、教学与发布文档
 ```
 
 ## 本地检查
 
-需要 Node.js 20、JDK 17、Android SDK；仅运行 Web 检查不需要 Android SDK。
+需要 Node.js 22 或更新版本、JDK 17、Android SDK；仅运行 Web 检查不需要 Android SDK。
 
 ```sh
 npm ci
+npm run cloud:build
 node --test tests/functional-*.cjs
+npm run test:cloud-db
 npx cap sync android
 ```
 
