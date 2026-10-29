@@ -50,7 +50,8 @@ public class BackupRuntimeTest {
         activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         long until = System.currentTimeMillis() + 30000;
-        while (!"true".equals(js("!!(window.S && typeof exportBackup==='function' && Capacitor.Plugins.DdlBackup)"))) {
+        while (!"true".equals(js("!!(window.S && typeof exportBackup==='function' && Capacitor.Plugins.DdlBackup"
+                + " && document.getElementById('editor').dataset.gestureBound==='1')"))) {
             assertTrue("Application did not initialize the backup bridge", System.currentTimeMillis() < until);
             Thread.sleep(100);
         }
@@ -58,7 +59,7 @@ public class BackupRuntimeTest {
                 + "document.getElementById('onboard').classList.add('hidden');"
                 + "document.getElementById('toastWrap').innerHTML='';"
                 + "if(document.getElementById('updateNotice'))document.getElementById('updateNotice').remove();"
-                + "S.tasks=[];S.timetable={courses:[]};switchView('settings')");
+                + "S.tasks=[];S.timetable={courses:[]};Timetable.ensureState();switchView('settings')");
     }
 
     @After public void cleanUp() throws Exception {

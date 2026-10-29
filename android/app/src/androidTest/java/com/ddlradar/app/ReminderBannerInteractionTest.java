@@ -122,7 +122,8 @@ public class ReminderBannerInteractionTest {
         instrumentation.runOnMainSync(() -> ctx.startActivity(new Intent(ctx, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)));
         main = awaitMain();
-        awaitJs("!!(window.S && window.AppBridge && window.NativeNotify)", "true");
+        awaitJs("!!(window.S && window.AppBridge && window.NativeNotify"
+                + " && document.getElementById('editor').dataset.gestureBound==='1')", "true");
         js("S.onboarded=true;document.getElementById('onboard').classList.add('hidden');"
                 + "S.tasks=[{id:'banner-real-task',name:'横幅对应事项',quadrant:'q1',dueAt:Date.now()+3600000,"
                 + "custom:[],tiers:{},daily:false}];window.__taskBefore=JSON.stringify(S.tasks)");

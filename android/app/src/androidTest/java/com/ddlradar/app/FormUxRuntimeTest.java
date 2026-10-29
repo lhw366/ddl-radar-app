@@ -78,7 +78,8 @@ public class FormUxRuntimeTest {
         activity = (MainActivity) instrumentation.startActivitySync(
                 new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         long until = System.currentTimeMillis() + 30000;
-        while (!"true".equals(js("!!(window.S && window.AppGestures && document.getElementById('fDuePicker'))"))) {
+        while (!"true".equals(js("!!(window.S && window.AppGestures && document.getElementById('fDuePicker')"
+                + " && document.getElementById('editor').dataset.gestureBound==='1')"))) {
             assertTrue("Application did not initialize", System.currentTimeMillis() < until);
             Thread.sleep(100);
         }
