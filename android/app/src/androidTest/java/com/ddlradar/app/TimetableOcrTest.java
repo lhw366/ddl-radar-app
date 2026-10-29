@@ -23,10 +23,22 @@ import static org.junit.Assert.*;
 @RunWith(AndroidJUnit4.class)
 public class TimetableOcrTest {
     @Test public void recognizeReferenceImage() throws Exception {
+        recognize("timetable-reference.jpg", "timetable-ocr.json");
+    }
+
+    @Test public void recognizeUserMobileImage() throws Exception {
+        recognize("timetable-user-mobile.jpg", "timetable-user-mobile-ocr.json");
+    }
+
+    @Test public void recognizeUserTableImage() throws Exception {
+        recognize("timetable-user-table.jpg", "timetable-user-table-ocr.json");
+    }
+
+    private void recognize(String asset, String destination) throws Exception {
         Context test = InstrumentationRegistry.getInstrumentation().getContext();
         Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Bitmap source;
-        try (java.io.InputStream input = test.getAssets().open("timetable-reference.jpg")) {
+        try (java.io.InputStream input = test.getAssets().open(asset)) {
             source = BitmapFactory.decodeStream(input);
         }
         assertNotNull(source);
@@ -34,7 +46,7 @@ public class TimetableOcrTest {
         try {
             Text result = Tasks.await(recognizer.process(InputImage.fromBitmap(source, 0)), 120, TimeUnit.SECONDS);
             String json = DdlOcrPlugin.toJs(result, source).toString();
-            try (FileOutputStream output = new FileOutputStream(new File(app.getFilesDir(), "timetable-ocr.json"))) {
+            try (FileOutputStream output = new FileOutputStream(new File(app.getFilesDir(), destination))) {
                 output.write(json.getBytes(StandardCharsets.UTF_8));
             }
             assertTrue(result.getTextBlocks().size() > 10);

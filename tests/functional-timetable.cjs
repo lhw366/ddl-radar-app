@@ -5,6 +5,7 @@ const reference = require('../www/data/timetable-reference.json');
 
 test('one-click reference import adds all 13 verified placements once and preserves lesson times', async()=>{
   const h=setup([], {fetch:async()=>({ok:true,json:async()=>JSON.parse(JSON.stringify(reference))})});
+  h.context.S.profile={role:'admin',name:'管理员',id:'usr-admin'};
   h.context.S.timetable.slots[0]='08:10-09:00';
   await h.bind();
   await h.el('ttReferenceBtn').click();
@@ -14,6 +15,57 @@ test('one-click reference import adds all 13 verified placements once and preser
   assert.equal(h.context.S.timetable.courses.find(c=>c.day===5 && c.start===5).room,'计算中心二层7-10号机房');
   await h.el('ttReferenceBtn').click();
   assert.equal(h.context.S.timetable.courses.length,13);
+});
+
+test('reference timetable is unavailable to normal users and cannot overlap an existing timetable', async()=>{
+  let fetches=0;
+  const h=setup([course()], {fetch:async()=>{fetches++;return {ok:true,json:async()=>reference};}});
+  h.context.S.profile={role:'user',name:'用户',id:'usr-user'};
+  await h.bind();
+  await h.el('ttReferenceBtn').click();
+  assert.equal(fetches,0);
+  assert.equal(h.context.S.timetable.courses.length,1);
+
+  h.context.S.profile.role='admin';
+  await h.el('ttReferenceBtn').click();
+  assert.equal(fetches,0,'Administrator reference test also refuses to overwrite existing courses');
+  assert.equal(h.context.S.timetable.courses.length,1);
+});
+
+test('fresh timetable remains empty after startup and applying either school preset', async () => {
+  const h = setup([]);
+  await h.bind();
+  assert.equal(h.context.S.timetable.courses.length, 0);
+  assert.equal(h.context.S.timetable.schoolPreset, 'generic');
+  for (const preset of ['pku', 'generic']) {
+    h.el('ttSchoolPreset').value = preset;
+    await h.el('ttApplyPreset').click();
+    assert.equal(h.context.S.timetable.courses.length, 0);
+  }
+});
+
+test('overlap detection respects weekday, period range and odd/even weeks',()=>{
+  const h=setup([]), overlap=h.context.Timetable._coursesOverlap;
+  assert.equal(overlap({day:1,start:1,end:2,week:'all'},{day:1,start:2,end:3,week:'odd'}),true);
+  assert.equal(overlap({day:1,start:1,end:2,week:'odd'},{day:1,start:1,end:2,week:'even'}),false);
+  assert.equal(overlap({day:1,start:1,end:2,week:'odd'},{day:1,start:1,end:2,week:'odd'}),true);
+  assert.equal(overlap({day:1,start:1,end:2,week:'all'},{day:2,start:1,end:2,week:'all'}),false);
+});
+
+test('school presets change lesson times only and custom schedules support four to twenty periods',async()=>{
+  const h=setup([course()]);
+  await h.bind();
+  h.el('ttSchoolPreset').value='pku';
+  await h.el('ttApplyPreset').click();
+  assert.equal(h.context.S.timetable.slots[0],'08:00-08:50');
+  assert.equal(h.context.S.timetable.courses.length,1);
+  assert.equal(h.context.S.timetable.courses[0].name,'数学');
+
+  h.el('ttSlotsText').value='08:10-08:55\n09:05-09:50\n10:00-10:45\n10:55-11:40';
+  await h.el('ttSlotsSave').click();
+  assert.equal(h.context.S.timetable.slots.length,4);
+  assert.equal(h.context.S.timetable.schoolPreset,'custom');
+  assert.equal(h.context.S.timetable.courses.length,1);
 });
 
 function course(overrides = {}) {
@@ -166,6 +218,98 @@ test('OCR recognizes plain blocks without line arrays and importing the same res
     await h.el('ttConfirmBtn').click();
   }
   assert.equal(h.context.S.timetable.courses.length, 1);
+  assert.match(h.toasts.at(-1)[1], /重复 1 条/);
+});
+
+test('import into an occupied timetable skips overlapping courses and preserves its lesson times', async () => {
+  const h = ocrSetup(async () => ocrBlocks());
+  h.context.S.timetable.courses = [course({ day: 1 })];
+  h.context.S.timetable.slots[0] = '08:10-09:00';
+  await h.bind();
+  await h.el('ttPasteBtn').click();
+  await h.el('ttConfirmBtn').click();
+  assert.equal(h.context.S.timetable.courses.length, 1);
+  assert.equal(h.context.S.timetable.courses[0].id, 'math');
+  assert.equal(h.context.S.timetable.slots[0], '08:10-09:00');
+  assert.match(h.toasts.at(-1)[1], /冲突 2 条已跳过/);
+});
+
+test('import accepts alternating-week courses once and rejects an every-week collision in the same batch', async () => {
+  const h = ocrSetup(async () => ({ blocks: [
+    { text: '高等数学 单周', lines: [{ text: '高等数学' }, { text: '单周' }] },
+    { text: '大学英语 双周', lines: [{ text: '大学英语' }, { text: '双周' }] },
+    { text: '线性代数 每周', lines: [{ text: '线性代数' }, { text: '每周' }] }
+  ] }));
+  await h.bind();
+  for (let i = 0; i < 2; i++) {
+    await h.el('ttPasteBtn').click();
+    await h.el('ttConfirmBtn').click();
+  }
+  assert.equal(h.context.S.timetable.courses.length, 2);
+  assert.deepEqual(Array.from(h.context.S.timetable.courses, c => c.week), ['odd', 'even']);
+  assert.match(h.toasts.at(-1)[1], /重复 2 条/);
+  assert.match(h.toasts.at(-1)[1], /冲突 1 条已跳过/);
+});
+
+test('replacement requires its explicit import option and replaces existing courses and lesson times', async () => {
+  const h = ocrSetup(async () => ocrBlocks());
+  h.context.S.timetable.courses = [course()];
+  await h.bind();
+  await h.el('ttPasteBtn').click();
+  for (const input of h.el('ttImportMode').querySelectorAll('input')) input.checked = input.value === 'replace';
+  await h.el('ttConfirmBtn').click();
+  assert.equal(h.context.S.timetable.courses.length, 1);
+  assert.equal(h.context.S.timetable.courses[0].name, '高等数学');
+  assert.equal(h.context.S.timetable.slots[0], '09:30-10:20');
+  assert.match(h.toasts.at(-1)[1], /已替换当前课表/);
+});
+
+test('manual course entry cannot create an overlapping class but permits alternate weeks', async () => {
+  const h = setup([course({ day: 1, week: 'odd' })]);
+  await h.bind();
+  await h.el('ttAddBtn').click();
+  h.el('ttEdName').value = '大学英语';
+  h.el('ttEdDay').value = '1';
+  h.el('ttEdWeek').value = 'all';
+  await h.el('ttEdSave').click();
+  assert.equal(h.context.S.timetable.courses.length, 1);
+  assert.equal(h.saved.length, 0);
+  assert.equal(h.el('ttEditor').classList.contains('hidden'), false);
+  h.el('ttEdWeek').value = 'even';
+  await h.el('ttEdSave').click();
+  assert.equal(h.context.S.timetable.courses.length, 2);
+});
+
+test('alternating-week courses with different start rows render in distinct lanes', () => {
+  const h = setup([
+    course({ id: 'odd', day: 1, start: 1, end: 2, week: 'odd' }),
+    course({ id: 'even', day: 1, start: 2, end: 3, week: 'even' })
+  ]);
+  h.context.Timetable.render();
+  const cells = h.el('ttGrid').querySelectorAll('.has-course');
+  assert.equal(cells.length, 1, 'One grid container owns the complete shared range');
+  assert.match(cells[0].getAttribute('style'), /grid-row:2 \/ span 3/);
+  assert.match(cells[0].getAttribute('style'), /grid-template-columns:repeat\(2,/);
+  const items = cells[0].querySelectorAll('.tt-course-item');
+  assert.match(items[0].getAttribute('style'), /grid-column:1;grid-row:1 \/ span 2/);
+  assert.match(items[1].getAttribute('style'), /grid-column:2;grid-row:2 \/ span 2/);
+});
+
+test('OCR review uses the imported twenty-period schedule before committing it', async () => {
+  const h = ocrSetup(async () => ({ blocks: [
+    { text: '高等数学' },
+    ...Array.from({ length: 20 }, (_, i) => ({ text: `${i + 1} ${String(i).padStart(2, '0')}:00-${String(i).padStart(2, '0')}:30` }))
+  ] }));
+  await h.bind();
+  await h.el('ttPasteBtn').click();
+  const row = h.el('ttReviewList').querySelector('.tt-rv-row');
+  assert.equal(row.querySelector('.tt-rv-start').max, '20');
+  row.querySelector('.tt-rv-start').value = '18';
+  row.querySelector('.tt-rv-end').value = '20';
+  await h.el('ttConfirmBtn').click();
+  assert.equal(h.context.S.timetable.slots.length, 20);
+  assert.equal(h.context.S.timetable.courses[0].start, 18);
+  assert.equal(h.context.S.timetable.courses[0].end, 20);
 });
 
 test('render refreshes the term control when imported state replaces the timetable', async () => {
@@ -181,6 +325,21 @@ function pkuBlock(text, cx, top, bottom) {
   const line = { text, cx, cy: (top + bottom) / 2, top, bottom };
   return { text, cx, cy: line.cy, top, bottom, lines: [line] };
 }
+
+test('missing screenshot lesson times stay unknown and cannot schedule a template-time reminder', () => {
+  const h = setup([course()]);
+  h.context.S.timetable.slots[0] = null;
+  const at = new Date(2026, 9, 22, 7, 45).getTime();
+  h.now(at);
+  assert.equal(h.context.Timetable.ensureState().slots[0], null);
+  assert.equal(h.context.Timetable.planFor(at).length, 0, 'No invented 08:00 alarm for an unknown start time');
+  const parsed = h.context.Timetable._parseBlocks([
+    { text: '高等数学' }, { text: '1 08:00-08:45' }, { text: '2 09:00-09:45' },
+    { text: '4 11:00-11:45' }, { text: '5 14:00-14:45' }
+  ]);
+  assert.equal(parsed.slots.length, 5);
+  assert.equal(parsed.slots[2], null, 'A missing middle period keeps its index and does not inherit another school time');
+});
 
 test('PKU screenshot layout infers periods, keeps second periods, and prefers the listed classroom', () => {
   const h = setup([]);

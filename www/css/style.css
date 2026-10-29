@@ -445,15 +445,109 @@ body.theme-cat .cal-cell.rest .d-num{ color:#e05a6d; }
 @keyframes fadeIn{ from{opacity:0} to{opacity:1} }
 .sheet{
   position:absolute; left:0; right:0; bottom:0; max-width:480px; margin:0 auto;
-  max-height:88dvh; overflow-y:auto;
+  max-height:calc(100vh - 42px); max-height:calc(100dvh - 42px); overflow-y:auto; overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch; touch-action:pan-y;
   background:var(--surface-strong,var(--card-strong)); border-radius:24px 24px 0 0;
   padding:10px 20px calc(24px + var(--sab));
   animation:slideUp .32s cubic-bezier(.32,.72,.32,1);
   border-top:1px solid var(--card-border);
 }
+.sheet.sheet-dragging{ animation:none; transition:none; }
+.sheet-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.sheet-head h2{ margin:0; }
+.sheet-close{
+  width:36px; height:36px; border-radius:12px; border:1px solid var(--card-border);
+  background:rgba(128,128,128,.10); color:var(--readable-text,var(--text));
+  font:700 17px/1 var(--font); cursor:pointer;
+}
 @keyframes slideUp{ from{transform:translateY(60%)} to{transform:translateY(0)} }
 .sheet-handle{ width:38px; height:4px; border-radius:3px; background:rgba(128,128,128,.35); margin:4px auto 14px; }
 .sheet h2{ font-size:17px; margin-bottom:14px; }
+.date-time-trigger{
+  width:100%; text-align:left; border:1.5px solid var(--card-border);
+  background:var(--surface-card,var(--card)); color:var(--readable-text,var(--text));
+  border-radius:12px; padding:12px 14px; font:700 14px/1.35 var(--font); cursor:pointer;
+}
+.date-time-trigger::after{ content:'⌄'; float:right; color:var(--readable-dim,var(--text-dim)); }
+
+/* 应用内日期时间面板，避免浏览器原生白色选择器与主题割裂 */
+.dt-summary{
+  margin:4px 0 12px; padding:13px 14px; border-radius:14px;
+  background:var(--accent-soft); color:var(--readable-accent,var(--accent));
+  font-size:15px; font-weight:800; text-align:center;
+}
+.dt-monthbar{ display:grid; grid-template-columns:40px 1fr 40px; align-items:center; gap:8px; }
+.dt-monthbar b{ text-align:center; font-size:15px; }
+.dt-monthbar button,.dt-time button,.dt-quick button{
+  border:1px solid var(--card-border); background:var(--surface-card,var(--card));
+  color:var(--readable-text,var(--text)); border-radius:10px; min-height:34px;
+  font:700 12px var(--font); cursor:pointer;
+}
+.dt-week,.dt-days{ display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; }
+.dt-week{ margin-top:10px; color:var(--readable-dim,var(--text-dim)); font-size:11px; text-align:center; }
+.dt-week span{ padding:4px 0; }
+.dt-days{ margin-top:4px; }
+.dt-day{
+  min-height:36px; border:none; border-radius:10px; background:transparent;
+  color:var(--readable-text,var(--text)); font:700 13px var(--font); cursor:pointer;
+}
+.dt-day.muted{ opacity:.32; }
+.dt-day.today{ box-shadow:inset 0 0 0 1px var(--readable-accent,var(--accent)); }
+.dt-day.sel{ background:var(--action-bg,var(--chip-on)); color:var(--on-accent,#152020); box-shadow:none; }
+.dt-time{
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+  align-items:center; gap:12px; margin-top:13px;
+  padding:10px; border-radius:14px; background:rgba(128,128,128,.07);
+}
+.dt-clock-part{ min-width:0; }
+.dt-clock-part label{ display:block; font-size:11px; text-align:center; margin-bottom:5px; color:var(--readable-dim,var(--text-dim)); }
+.dt-clock-part>div{ display:grid; grid-template-columns:32px minmax(0,1fr) 32px; align-items:center; gap:4px; }
+.dt-clock-part input{
+  width:100%; min-width:0; border:1px solid var(--card-border); border-radius:10px;
+  background:var(--surface-card,var(--card)); color:var(--readable-text,var(--text));
+  font:700 20px var(--font); text-align:center; font-variant-numeric:tabular-nums;
+  padding:7px 0; appearance:textfield; -moz-appearance:textfield;
+}
+.dt-clock-part input::-webkit-inner-spin-button,.dt-clock-part input::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+.dt-quick{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:10px; }
+.dt-quick button{ padding:7px 4px; min-height:36px; }
+
+.account-card{padding:14px}
+.account-head{display:flex;align-items:center;gap:12px}
+.account-head>div:last-child{min-width:0;flex:1}
+.account-avatar{
+  width:48px;height:48px;border-radius:17px;display:grid;place-items:center;
+  background:var(--accent-soft);font-size:25px;flex:0 0 auto;
+}
+.profile-name{
+  width:100%;border:none;background:transparent;color:var(--readable-text,var(--text));
+  font:800 17px var(--display,var(--font));padding:2px 0;outline:none;
+}
+.account-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:10.5px;color:var(--readable-dim,var(--text-dim))}
+.account-meta span{padding:3px 7px;border-radius:7px;background:rgba(128,128,128,.09)}
+body[data-wallpaper=true] .profile-name{color:var(--photo-ink,var(--readable-text))}
+
+.tt-schoolrow select{
+  flex:1;min-width:140px;padding:6px 9px;border-radius:9px;
+  border:1px solid var(--card-border);background:var(--surface-strong,var(--card-strong));
+  color:var(--readable-text,var(--text));font:12px var(--font);
+}
+.admin-only[hidden]{display:none!important}
+.settings-more{ margin-top:12px; border-top:1px solid var(--card-border); padding-top:10px; }
+.settings-more summary{ color:var(--readable-dim,var(--text-dim)); font-size:12px; cursor:pointer; padding:6px 0; }
+.update-notice{
+  position:fixed; top:calc(var(--sat) + 9px); left:16px; right:16px; z-index:40;
+  max-width:420px; margin:0 auto; display:flex; align-items:center; gap:12px;
+  padding:11px 13px; border:1px solid var(--card-border); border-radius:17px;
+  background:var(--surface-strong,var(--card-strong)); color:var(--readable-text,var(--text));
+  backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); box-shadow:var(--shadow);
+}
+.update-notice-copy{ flex:1; min-width:0; }
+.update-notice-label{ display:block; margin-bottom:3px; font-size:10px; color:var(--readable-accent,var(--accent)); }
+.update-notice strong{ display:block; font-size:12px; overflow-wrap:anywhere; }
+.update-notice p{ margin:3px 0 0; font-size:10px; color:var(--readable-dim,var(--text-dim)); }
+.update-notice-actions{ display:flex; gap:5px; flex:0 0 auto; }
+.update-notice-actions .btn{ min-width:0; min-height:34px; padding:7px 10px; font-size:11px; border-radius:10px; }
 
 .f-label{ display:block; font-size:12.5px; font-weight:800; margin:13px 0 6px; }
 .f-label small{ font-weight:500; color:var(--readable-dim,var(--text-dim)); }
@@ -532,6 +626,11 @@ textarea.f-input{ resize:none; line-height:1.6; }
   border:1px solid var(--card-border); border-radius:9px; background:rgba(128,128,128,.10);
   color:inherit; font:600 11px/1.2 var(--font); box-shadow:none; cursor:pointer; }
 .toast.tt-urgent{ border-left-color:var(--danger); }
+.toast.has-close{ position:relative; padding-right:42px; }
+.toast .toast-close{
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  min-width:28px; min-height:28px; border:0; background:transparent; font-size:20px;
+}
 .toast.tt-daily{ border-left-color:var(--readable-accent-2,var(--accent-2)); }
 .toast.gone{ animation:toastOut .3s forwards; }
 @keyframes toastIn{ from{ transform:translateY(-90px); opacity:0 } to{ transform:none; opacity:1 } }
@@ -681,6 +780,14 @@ body.theme-cat .cal-cell{ border-radius:14px; }
   border:1px solid var(--card-border);
 }
 .tt-rv-start, .tt-rv-end{ width:52px; text-align:center; }
+.tt-import-mode{
+  display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;padding:8px;
+  border-radius:10px;background:rgba(128,128,128,.07);font-size:12px;
+}
+.tt-import-mode label{
+  display:flex;align-items:center;gap:5px;padding:6px 8px;
+  border-radius:8px;border:1px solid var(--card-border);cursor:pointer;
+}
 
 /* 课表：开学日期行 */
 .tt-termrow{

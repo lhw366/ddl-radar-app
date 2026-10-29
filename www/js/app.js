@@ -38,6 +38,123 @@ function dtLocalValue(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+function fmtPickerValue(value, fallback) {
+  if (!value) return fallback;
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return fallback;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${WD[d.getDay()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function syncDateTimeTriggers() {
+  const due = $('fDue'), start = $('fStart');
+  if ($('fDuePicker')) $('fDuePicker').textContent = fmtPickerValue(due && due.value, '选择截止时间');
+  if ($('fStartPicker')) $('fStartPicker').textContent = fmtPickerValue(start && start.value, '选择开始时间');
+}
+
+let dtEditTarget = null;
+let dtDraft = null;
+let dtViewYear = 0, dtViewMonth = 0;
+function openDateTimePicker(targetId) {
+  dtEditTarget = targetId;
+  const input = $(targetId);
+  const parsed = input && input.value ? new Date(input.value) : new Date(Date.now() + 2 * 3600000);
+  dtDraft = Number.isFinite(parsed.getTime()) ? parsed : new Date(Date.now() + 2 * 3600000);
+  dtDraft.setSeconds(0, 0);
+  dtViewYear = dtDraft.getFullYear();
+  dtViewMonth = dtDraft.getMonth();
+  $('dateTimeTitle').textContent = targetId === 'fStart' ? '选择开始时间' : '选择截止时间';
+  renderDateTimePicker();
+  $('dateTimeWrap').classList.remove('hidden');
+}
+function moveDateTimeMonth(delta) {
+  const d = new Date(dtViewYear, dtViewMonth + delta, 1);
+  dtViewYear = d.getFullYear();
+  dtViewMonth = d.getMonth();
+  renderDateTimePicker();
+}
+function setDateTimeDay(year, month, day) {
+  if (!dtDraft || ![year, month, day].every(Number.isInteger)) return;
+  dtDraft.setFullYear(year, month, day);
+  dtViewYear = dtDraft.getFullYear();
+  dtViewMonth = dtDraft.getMonth();
+  renderDateTimePicker();
+}
+function setDateTimeClock() {
+  if (!dtDraft) return;
+  const hourText = $('dtHour').value.trim(), minuteText = $('dtMinute').value.trim();
+  const hour = Number(hourText), minute = Number(minuteText);
+  if (/^\d{1,2}$/.test(hourText) && /^\d{1,2}$/.test(minuteText) &&
+      Number.isInteger(hour) && hour >= 0 && hour <= 23 &&
+      Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+    dtDraft.setHours(hour, minute, 0, 0);
+  }
+  renderDateTimePicker();
+}
+function shiftDateTimeMinutes(delta) {
+  dtDraft = new Date(dtDraft.getTime() + delta * 60000);
+  dtDraft.setSeconds(0, 0);
+  dtViewYear = dtDraft.getFullYear();
+  dtViewMonth = dtDraft.getMonth();
+  renderDateTimePicker();
+}
+function renderDateTimePicker() {
+  if (!dtDraft || !$('dtDays')) return;
+  $('dtSummary').textContent = fmtPickerValue(dtLocalValue(dtDraft.getTime()), '—');
+  $('dtMonthTitle').textContent = `${dtViewYear} 年 ${dtViewMonth + 1} 月`;
+  $('dtHour').value = pad(dtDraft.getHours());
+  $('dtMinute').value = pad(dtDraft.getMinutes());
+  const first = new Date(dtViewYear, dtViewMonth, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(dtViewYear, dtViewMonth, 1 - offset);
+  const today = new Date();
+  const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  let html = '';
+  for (let i = 0; i < 42; i++) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const classes = ['dt-day'];
+    if (day.getMonth() !== dtViewMonth) classes.push('muted');
+    if (sameDay(day, today)) classes.push('today');
+    if (sameDay(day, dtDraft)) classes.push('sel');
+    html += `<button type="button" class="${classes.join(' ')}" data-dt-day="${day.getFullYear()},${day.getMonth()},${day.getDate()}">${day.getDate()}</button>`;
+  }
+  $('dtDays').innerHTML = html;
+}
+function applyDateTimeQuick(kind) {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  if (kind === 'now') dtDraft = now;
+  else if (kind === 'today18') dtDraft = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0, 0);
+  else if (kind === 'tomorrow9') dtDraft = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 9, 0, 0, 0);
+  else if (kind === 'week') dtDraft = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7, now.getHours(), now.getMinutes(), 0, 0);
+  dtViewYear = dtDraft.getFullYear();
+  dtViewMonth = dtDraft.getMonth();
+  renderDateTimePicker();
+}
+function confirmDateTimePicker() {
+  if (!dtEditTarget || !dtDraft) return;
+  setDateTimeClock();
+  $(dtEditTarget).value = dtLocalValue(dtDraft.getTime());
+  syncDateTimeTriggers();
+  $('dateTimeWrap').classList.add('hidden');
+}
+function bindDateTimePicker() {
+  $('fDuePicker').addEventListener('click', () => openDateTimePicker('fDue'));
+  $('fStartPicker').addEventListener('click', () => openDateTimePicker('fStart'));
+  $('dtPrevMonth').addEventListener('click', () => moveDateTimeMonth(-1));
+  $('dtNextMonth').addEventListener('click', () => moveDateTimeMonth(1));
+  $('dtDays').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-dt-day]');
+    if (!button) return;
+    const parts = button.dataset.dtDay.split(',').map(Number);
+    setDateTimeDay(parts[0], parts[1], parts[2]);
+  });
+  document.querySelectorAll('[data-dt-time]').forEach((button) =>
+    button.addEventListener('click', () => shiftDateTimeMinutes(Number(button.dataset.dtTime))));
+  document.querySelectorAll('[data-dt-quick]').forEach((button) =>
+    button.addEventListener('click', () => applyDateTimeQuick(button.dataset.dtQuick)));
+  $('dtHour').addEventListener('change', setDateTimeClock);
+  $('dtMinute').addEventListener('change', setDateTimeClock);
+  $('dtConfirm').addEventListener('click', confirmDateTimePicker);
+}
 
 /* ---------------- 状态 ---------------- */
 const LS_KEY = 'ddlr_v1';
@@ -51,6 +168,8 @@ function defaultState() { return {
   onboarded: false,
   tasks: [],
   fired: [],
+  profile: { id: 'usr' + uid(), name: '本机用户', role: 'user', createdAt: Date.now() },
+  feedbackDrafts: [],
   settings: {
     theme: 'cat', bgImage: null, bgDim: 35,
     dailyTime: '12:00',
@@ -100,12 +219,28 @@ function normalizeState(data) {
     return task;
   });
   next.fired = Array.isArray(data.fired) ? data.fired.filter(k => typeof k === 'string') : [];
+  const profile = data.profile && typeof data.profile === 'object' && !Array.isArray(data.profile)
+    ? data.profile : null;
+  next.profile = {
+    id: profile && typeof profile.id === 'string' && profile.id ? profile.id.slice(0, 80) : 'usr' + uid(),
+    name: profile && typeof profile.name === 'string' && profile.name.trim()
+      ? profile.name.trim().slice(0, 24) : '本机用户',
+    // b110 及更早版本没有账号字段。已有安装升级后保留管理员能力；
+    // 全新安装从普通用户开始，管理员工具默认不显示。
+    role: profile ? (profile.role === 'admin' ? 'admin' : 'user') : (data.onboarded === true ? 'admin' : 'user'),
+    createdAt: profile && Number.isFinite(profile.createdAt) && profile.createdAt > 0 ? profile.createdAt : Date.now()
+  };
+  next.feedbackDrafts = Array.isArray(data.feedbackDrafts)
+    ? data.feedbackDrafts.filter(item => item && typeof item.text === 'string' && item.text.trim())
+      .slice(-20).map(item => ({ text: item.text.trim().slice(0, 1200), at: Number(item.at) || Date.now() }))
+    : [];
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(next.settings.dailyTime)) next.settings.dailyTime = '12:00';
   if (data.timetable != null) {
     const tt = data.timetable;
     if (!Array.isArray(tt.courses) || tt.courses.some(c => !c || typeof c.id !== 'string' ||
         typeof c.name !== 'string' || !Number.isInteger(c.day) || c.day < 1 || c.day > 7 ||
-        !Number.isInteger(c.start) || !Number.isInteger(c.end) || c.start < 1 || c.end > 12 || c.end < c.start)) throw new Error('无效课表');
+        !Number.isInteger(c.start) || !Number.isInteger(c.end) || c.start < 1 ||
+        c.start > 20 || c.end > 20 || c.end < c.start)) throw new Error('无效课表');
   }
   return next;
 }
@@ -225,6 +360,16 @@ function vibe() {
 
 /* ---------------- Toast 横幅 ---------------- */
 function toast(title, body, kind) {
+  const cleanTitle = stripTags(title), cleanBody = stripTags(body);
+  const uiKey = !kind ? cleanTitle + '|' + cleanBody : '';
+  if (uiKey) {
+    // 普通界面操作提示只保留最新一条。到点提醒始终带 kind，必须逐条保留，
+    // 不能因为多个事项同时到点而互相覆盖。
+    [...$('toastWrap').children].forEach((item) => {
+      if (item.dataset.uiKey === uiKey ||
+          (cleanTitle.startsWith('🗑️') && (item.dataset.uiKey || '').startsWith('🗑️'))) item.remove();
+    });
+  }
   const el = document.createElement('div');
   // kind 有两种调用风格：'urgent' 和 'tt-urgent'（nativenotify.js 里混用了）。
   // 早前无条件拼 'tt-' + kind，传入 'tt-urgent' 就变成 'tt-tt-urgent'，
@@ -242,16 +387,27 @@ function toast(title, body, kind) {
   // 避免二次转义成 &amp;lt; 之类。
   const tEl = document.createElement('div');
   tEl.className = 'tt-title';
-  tEl.textContent = stripTags(title);
+  tEl.textContent = cleanTitle;
   el.appendChild(tEl);
-  if (body) {
+  if (cleanBody) {
     const bEl = document.createElement('div');
     bEl.className = 'tt-body';
-    bEl.textContent = stripTags(body);
+    bEl.textContent = cleanBody;
     el.appendChild(bEl);
   }
+  if (uiKey) el.dataset.uiKey = uiKey;
   $('toastWrap').appendChild(el);
   const kill = () => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); };
+  if (!kind) {
+    el.classList.add('has-close');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', '关闭提示');
+    close.textContent = '×';
+    close.addEventListener('click', (event) => { event.stopPropagation(); kill(); });
+    el.appendChild(close);
+  }
   el.addEventListener('click', kill);
   if (!kind || S.settings.bannerDuration === '5s') setTimeout(kill, kind ? 5000 : 9000);
   if (document.hidden) {
@@ -734,8 +890,12 @@ function openEditor(id) {
   $('fDailyDef').textContent = S.settings.dailyTime;
   $('fDelete').classList.toggle('hidden', !t);
   syncEditorUI();
+  syncDateTimeTriggers();
   $('editorWrap').classList.remove('hidden');
-  if (!t) setTimeout(() => $('fName').focus(), 350);
+  $('editor').scrollTop = 0;
+  if (!t) setTimeout(() => {
+    if (!$('editorWrap').classList.contains('hidden')) $('fName').focus();
+  }, 350);
 }
 function syncEditorUI() {
   document.querySelectorAll('#fQuadrant button').forEach((b) => b.classList.toggle('on', b.dataset.q === curQuad));
@@ -845,10 +1005,89 @@ function openDay(ymdStr) {
     $('dayWrap').classList.add('hidden');
     openEditor(null);
     $('fDue').value = `${ymdStr}T12:00`;
+    syncDateTimeTriggers();
   };
   $('dayWrap').classList.remove('hidden');
 }
-window.AppBridge = { openDay };
+function closeSheet(name) {
+  const id = name === 'editor' ? 'editorWrap' : name === 'day' ? 'dayWrap' :
+    name === 'datetime' ? 'dateTimeWrap' : name === 'ttslots' ? 'ttSlotsEditor' : '';
+  if (id) $(id).classList.add('hidden');
+}
+function closeTopSheet() {
+  for (const id of ['dateTimeWrap', 'ttSlotsEditor', 'ttEditor', 'editorWrap', 'dayWrap']) {
+    const wrap = $(id);
+    if (!wrap || wrap.classList.contains('hidden')) continue;
+    if (id === 'ttEditor') $('ttEdClose').click();
+    wrap.classList.add('hidden');
+    return true;
+  }
+  return false;
+}
+function openReminderUrl(url) {
+  const match = typeof url === 'string' && url.match(/^ddlr:\/\/reminder\/([1-9]\d{0,9})$/);
+  if (!match) return false;
+  const id = Number(match[1]);
+  if (!Number.isSafeInteger(id) || id > 2147483647) return false;
+  const notify = window.NativeNotify;
+  const matches = new Map();
+  if (notify && typeof notify.idOf === 'function') {
+    for (const task of S.tasks) {
+      if (!task || typeof task.id !== 'string') continue;
+      const keys = ['due', 'daily', 't120', 't60', 't30', 't5'];
+      for (const custom of task.custom || []) keys.push('c' + custom.v + custom.u);
+      if (keys.some(key => notify.idOf(task.id + '|' + key) === id)) {
+        matches.set('task:' + task.id, { type: 'task', id: task.id });
+      }
+    }
+    for (const course of (S.timetable && S.timetable.courses) || []) {
+      if (course && typeof course.id === 'string' && notify.idOf('tt:' + course.id + ':recurring') === id) {
+        matches.set('course:' + course.id, { type: 'course', id: course.id });
+      }
+    }
+  }
+  // A notification can outlive its task. Never create or change data to make a
+  // stale/test hash match, and never interpret URL text as task names or code.
+  while (closeTopSheet()) { /* Only visible form layers are dismissed. */ }
+  if (matches.size !== 1) {
+    switchView('home');
+    return true;
+  }
+  const target = [...matches.values()][0];
+  if (target.type === 'task') {
+    switchView('home');
+    openEditor(target.id);
+  } else {
+    switchView('timetable');
+    if (window.Timetable) {
+      Timetable.render();
+      if (typeof Timetable.openCourse === 'function') Timetable.openCourse(target.id);
+      else {
+        const card = [...$('ttGrid').querySelectorAll('[data-cid]')].find(item => item.dataset.cid === target.id);
+        if (card) card.click();
+      }
+    }
+  }
+  return true;
+}
+let nativeReminderNavigationBound = false;
+async function bindNativeReminderNavigation() {
+  const app = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.App;
+  if (nativeReminderNavigationBound || !app || typeof app.addListener !== 'function') return;
+  nativeReminderNavigationBound = true;
+  let liveEvents = 0;
+  try {
+    await app.addListener('appUrlOpen', event => {
+      liveEvents++;
+      openReminderUrl(event && event.url);
+    });
+    if (typeof app.getLaunchUrl === 'function') {
+      const launch = await app.getLaunchUrl();
+      if (!liveEvents && launch) openReminderUrl(launch.url);
+    }
+  } catch (error) { /* An unavailable bridge leaves normal tab navigation intact. */ }
+}
+window.AppBridge = { openDay, closeSheet, openReminderUrl };
 
 /* ---------------- 提醒引擎 ---------------- */
 const TIER_MIN = [120, 60, 30, 5];
@@ -1156,17 +1395,19 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.8-rc.1';
+const APP_VERSION = '2.3.9-rc.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
   try { return AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined; } catch (e) { return undefined; }
 }
 function openExternal(url) {
-  try {
-    if (window.Capacitor && Capacitor.Plugins.App) { Capacitor.Plugins.App.openUrl({ url }); return; }
-  } catch (e) { /* 网页端走 window.open */ }
-  window.open(url, '_blank');
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return;
+  if (window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()) {
+    // Capacitor's Android navigation client opens external HTTPS hosts with
+    // ACTION_VIEW. App v6 has no openUrl method and WebView popups are disabled.
+    window.location.href = url;
+  } else window.open(url, '_blank', 'noopener,noreferrer');
 }
 async function fetchRemoteVersion() {
   /* 5 路并发查版本、取最大 code：jsdelivr 各边缘的 @main 缓存可能滞后几小时
@@ -1240,11 +1481,13 @@ function bindUpdater() {
       notice = document.createElement('div');
       notice.id = 'updateNotice';
       notice.setAttribute('role', 'status');
-      notice.style.cssText = 'position:fixed;top:env(safe-area-inset-top,12px);left:12px;right:12px;z-index:3000;background:#232a46;color:white;border-radius:14px;padding:16px;box-shadow:0 4px 24px #0005';
+      notice.className = 'update-notice';
       document.body.appendChild(notice);
     }
-    notice.innerHTML = '<strong>发现新版本 ' + escapeHtml(String(rem.version || '')) + ' · b' + rem.code + '</strong>'
-      + '<p>更新需要你确认安装。</p><button id="updateNow">立即更新</button> <button id="updateLater">稍后提醒</button>';
+    notice.innerHTML = '<div class="update-notice-copy"><span class="update-notice-label">发现更新</span><strong>'
+      + escapeHtml(String(rem.version || '')) + ' · b' + rem.code + '</strong><p>准备好后再确认安装</p></div>'
+      + '<div class="update-notice-actions"><button class="btn primary" id="updateNow">更新</button>'
+      + '<button class="btn ghost" id="updateLater">稍后</button></div>';
     $('updateNow').onclick = () => { notice.remove(); b.click(); };
     $('updateLater').onclick = () => {
       localStorage.setItem('ddlr_updateDismiss', JSON.stringify({code: rem.code, until: Date.now() + 86400000}));
@@ -2033,19 +2276,38 @@ function bindSettings() {
     $('bgDimRange').value = 35; $('bgDimVal').textContent = '35%';
   });
 
-  $('exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `ddlradar-backup-${ymdOf(Date.now())}.json`;
-    a.click(); URL.revokeObjectURL(a.href);
+  $('profileName').addEventListener('change', () => {
+    const name = $('profileName').value.trim().slice(0, 24) || '本机用户';
+    $('profileName').value = name;
+    S.profile.name = name;
+    save();
   });
+  $('saveRecoveryBtn').addEventListener('click', () => $('exportBtn').click());
+  $('loadRecoveryBtn').addEventListener('click', () => $('importBtn').click());
+  $('feedbackIssueBtn').addEventListener('click', openFeedbackIssue);
+  $('feedbackCopyBtn').addEventListener('click', copyFeedback);
+  $('adminFeedbackBtn').addEventListener('click', () => openExternal('https://github.com/lhw366/ddl-radar-app/issues'));
+  $('adminModeBtn').addEventListener('click', () => setAdminRole(false));
+  let roleTapAt = 0, roleTapCount = 0;
+  $('profileRole').addEventListener('click', () => {
+    const now = Date.now();
+    if (now - roleTapAt > 1800) roleTapCount = 0;
+    roleTapAt = now;
+    roleTapCount++;
+    if (roleTapCount >= 5 && !isAdmin()) setAdminRole(true);
+  });
+  try {
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  } catch (error) { /* Storage persistence is best-effort. */ }
+
+  $('exportBtn').addEventListener('click', exportBackup);
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('wipeBtn').addEventListener('click', () => {
     if (confirm('确定清空所有事项和数据吗？此操作不可恢复。')) {
       S = defaultState(); S.onboarded = true; window.S = S;
       localStorage.removeItem('ddlr_testAt');
       invalidateFiredCache(); save(); applyTheme(); bindSettingsValues(); renderAll();
+      renderProfile();
       if (window.Timetable && Timetable.render) Timetable.render();
       toast('🧹 已清空', '事项、课表和设置已清空');
     }
@@ -2071,6 +2333,48 @@ function handleBgFile(f) {
   };
   img.src = URL.createObjectURL(f);
 }
+let backupExportBusy = false;
+async function exportBackup() {
+  if (backupExportBusy) return false;
+  backupExportBusy = true;
+  $('exportBtn').disabled = $('saveRecoveryBtn').disabled = true;
+  try {
+    // Export the live state rather than the compact localStorage copy: the
+    // selected wallpaper is included with tasks, timetable and the profile.
+    const json = JSON.stringify(S, null, 2);
+    const filename = `ddlradar-backup-${ymdOf(Date.now())}.json`;
+    const backup = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.DdlBackup;
+    if (backup && typeof backup.exportJson === 'function') {
+      const result = await backup.exportJson({ json, filename });
+      if (result && result.saved === true) {
+        toast('💾 恢复包已保存', result.filename || filename);
+        return true;
+      }
+      if (result && result.cancelled === true) {
+        toast('已取消保存', '本机数据没有变化');
+        return false;
+      }
+      throw new Error('Export was not confirmed');
+    }
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('已发起恢复包下载', filename);
+    return true;
+  } catch (error) {
+    toast('⚠️ 恢复包未保存', '请确认有足够空间，并重新选择一个可写入的位置');
+    return false;
+  } finally {
+    backupExportBusy = false;
+    $('exportBtn').disabled = $('saveRecoveryBtn').disabled = false;
+  }
+}
 function handleImport(f) {
   if (!f) return;
   const rd = new FileReader();
@@ -2080,6 +2384,7 @@ function handleImport(f) {
       const imported = normalizeState(data);
       S = imported; window.S = S; invalidateFiredCache();
       save(); applyTheme(); bindSettingsValues(); renderAll();
+      renderProfile();
       if (window.Timetable && Timetable.render) Timetable.render();
       toast('📥 导入成功', `共 ${S.tasks.length} 条事项`);
     } catch (e) { toast('⚠️ 导入失败', '文件格式不对，需要本应用导出的 JSON'); }
@@ -2112,6 +2417,7 @@ function resyncReminderSettings() {
 
 function bindSettingsValues() {
   syncRemindModeUI();
+  renderProfile();
   $('setDailyTime').value = S.settings.dailyTime;
   $('setTiered').checked = S.settings.tiered;
   $('setCompact').checked = S.settings.toastCompact !== false;
@@ -2143,10 +2449,66 @@ function renderAll() {
   if (curView === 'calendar' && window.Cal) Cal.render();
 }
 
+function isAdmin() {
+  return !!(S.profile && S.profile.role === 'admin');
+}
+function syncRoleUI() {
+  const admin = isAdmin();
+  document.querySelectorAll('.admin-only').forEach((el) => { el.hidden = !admin; });
+  document.body.classList.toggle('is-admin', admin);
+  if ($('profileRole')) $('profileRole').textContent = admin ? '管理员' : '普通用户';
+  if ($('adminModeBtn')) {
+    $('adminModeBtn').classList.toggle('hidden', !admin);
+    $('adminModeBtn').textContent = '关闭管理员测试工具';
+  }
+}
+function renderProfile() {
+  if (!S.profile) return;
+  $('profileName').value = S.profile.name;
+  $('profileId').textContent = 'ID ' + String(S.profile.id).slice(-8);
+  syncRoleUI();
+}
+function setAdminRole(admin) {
+  S.profile.role = admin ? 'admin' : 'user';
+  save();
+  renderProfile();
+  if (window.Timetable && Timetable.render) Timetable.render();
+  toast(admin ? '🧪 管理员工具已开启' : '普通模式已恢复',
+    admin ? '测试提醒、诊断和管理员课表只在本机显示。' : '测试与诊断入口已隐藏，事项和课表不受影响。');
+}
+function feedbackPayload() {
+  const text = $('feedbackText').value.trim();
+  if (!text) return '';
+  const device = (navigator.userAgent || '').match(/Android[^;)]*/i);
+  return text + '\n\n---\n版本：' + APP_VERSION + '\n设备：' + (device ? device[0] : navigator.platform || '未知')
+    + '\n未附带事项、课表或本机账号 ID。';
+}
+function openFeedbackIssue() {
+  const body = feedbackPayload();
+  if (!body) { toast('⚠️ 还没写反馈', '请描述遇到的问题，再提交'); return; }
+  S.feedbackDrafts.push({ text: $('feedbackText').value.trim(), at: Date.now() });
+  S.feedbackDrafts = S.feedbackDrafts.slice(-20);
+  save();
+  openExternal('https://github.com/lhw366/ddl-radar-app/issues/new?title=' + encodeURIComponent('用户反馈') +
+    '&body=' + encodeURIComponent(body));
+}
+async function copyFeedback() {
+  const body = feedbackPayload();
+  if (!body) { toast('⚠️ 还没写反馈', '请先填写反馈内容'); return; }
+  try {
+    await navigator.clipboard.writeText(body);
+    toast('📋 反馈已复制', '只复制了你填写的文字、版本与设备型号');
+  } catch (error) {
+    toast('复制失败', '可长按文本框手动复制');
+  }
+}
+
 /* ---------------- 初始化 ---------------- */
 function init() {
   applyTheme();
   bindSettings();
+  renderProfile();
+  syncDateTimeTriggers();
   refreshNotifyBtn();
   if (window.NativeNotify && NativeNotify.available()) {
     NativeNotify.init(S).then(() => { if (curView === 'settings') renderDiag(); maybeAskOverlay(); }).catch(function (e) { console.warn('NativeNotify.init 失败', e); });
@@ -2168,8 +2530,7 @@ function init() {
   // Esc 关闭弹层（桌面端顺手）
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      $('editorWrap').classList.add('hidden');
-      $('dayWrap').classList.add('hidden');
+      closeTopSheet();
     }
   });
 
@@ -2181,9 +2542,8 @@ function init() {
   // 编辑器
   $('fSave').addEventListener('click', saveEditor);
   document.querySelectorAll('[data-close]').forEach((el) =>
-    el.addEventListener('click', () => {
-      $(el.dataset.close === 'editor' ? 'editorWrap' : 'dayWrap').classList.add('hidden');
-    }));
+    el.addEventListener('click', () => closeSheet(el.dataset.close)));
+  bindDateTimePicker();
   $('fDelete').addEventListener('click', () => {
     if (!editingId) return;
     if (confirm('删除这条事项？')) {
@@ -2226,12 +2586,13 @@ function init() {
     $('onbGo').addEventListener('click', () => {
       S.onboarded = true; save();
       $('onboard').classList.add('hidden');
-      toast('📡 雷达已开机', '点右下角 + 新建你的第一条 DDL；想先看看效果，去「我的」里点「填入示例数据」');
+      toast('📡 雷达已开机', '点右下角 + 新建你的第一条 DDL，也可以在「课表」导入自己的课程。');
       askNotify();
     });
   }
 
   renderAll();
+  bindNativeReminderNavigation();
   // ⚠️ 这三处必须各自 try/catch：
   // 早前是裸调用，tickReminders() 内部一旦抛异常（历史上曾因 planReminders
   // 引用未定义的 ymd() 而必抛），异常会直接打断 init()，导致下面五个

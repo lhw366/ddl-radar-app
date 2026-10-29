@@ -131,9 +131,21 @@
       <div class="card pad">
         <div class="row-btns">
           <button id="ttImportBtn" class="btn primary">📷 照片导入</button>
-          <button id="ttReferenceBtn" class="btn">📚 一键导入参考课表</button>
+          <span id="ttAdminTools" class="admin-only" hidden>
+            <button id="ttReferenceBtn" class="btn">🧪 管理员参考课表</button>
+          </span>
           <button id="ttAddBtn" class="btn">✏️ 手动添加</button>
           <button id="ttClearBtn" class="btn ghost">清空</button>
+        </div>
+        <div class="tt-termrow tt-schoolrow">
+          <label for="ttSchoolPreset">学校作息</label>
+          <select id="ttSchoolPreset">
+            <option value="generic">通用 12 节</option>
+            <option value="pku">北京大学</option>
+            <option value="custom">自定义</option>
+          </select>
+          <button id="ttApplyPreset" class="btn-ghost-sm" type="button">应用作息</button>
+          <button id="ttEditSlotsBtn" class="btn-ghost-sm" type="button">编辑时间</button>
         </div>
         <!-- 开学日期：单双周判定的基准。不设也能用（按 ISO 周序），但可能与学校口径差一周 -->
         <div class="tt-termrow">
@@ -158,6 +170,10 @@
       <div id="ttReview" class="hidden">
         <h3 class="sec-title">🔍 识别结果（可直接改）</h3>
         <div class="card pad">
+          <div class="tt-import-mode" id="ttImportMode">
+            <label><input type="radio" name="ttImportMode" value="merge" checked> 只补空缺（推荐）</label>
+            <label><input type="radio" name="ttImportMode" value="replace"> 替换当前课表</label>
+          </div>
           <div id="ttReviewList"></div>
           <div class="row-btns" style="margin-top:10px">
             <button id="ttConfirmBtn" class="btn primary full">✅ 确认导入</button>
@@ -191,8 +207,8 @@
             </label>
           </div>
           <div class="row-2">
-            <label class="field"><span>起始节</span><input id="ttEdStart" type="number" min="1" max="12" value="1" /></label>
-            <label class="field"><span>结束节</span><input id="ttEdEnd" type="number" min="1" max="12" value="2" /></label>
+            <label class="field"><span>起始节</span><input id="ttEdStart" type="number" min="1" max="20" value="1" /></label>
+            <label class="field"><span>结束节</span><input id="ttEdEnd" type="number" min="1" max="20" value="2" /></label>
           </div>
           <label class="field"><span>备注</span><input id="ttEdNote" type="text" placeholder="可选" /></label>
           <div class="row-btns" style="margin-top:12px">
@@ -201,10 +217,40 @@
           </div>
         </div>
       </div>
+      <div id="ttSlotsEditor" class="sheet-wrap hidden">
+        <div class="mask" data-close="ttslots"></div>
+        <div class="sheet">
+          <div class="sheet-handle"></div>
+          <div class="sheet-head"><b>编辑上课时间</b><button class="sheet-close" id="ttSlotsClose" type="button">✕</button></div>
+          <div class="tip">每行一节，格式为 08:00-08:45。可保留 4 到 20 节，保存后只更新上课时刻，不会改动已有课程。</div>
+          <textarea id="ttSlotsText" class="f-input" rows="12" spellcheck="false" placeholder="08:00-08:45&#10;08:55-09:40"></textarea>
+          <div class="sheet-btns">
+            <button id="ttSlotsSave" class="btn primary" type="button">保存作息</button>
+            <button id="ttSlotsCancel" class="btn ghost" type="button">取消</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ============ 视图4: 我的/设置 ============ -->
     <section class="view hidden" id="view-settings">
+      <h3 class="sec-title">👤 本机账号</h3>
+      <div class="card pad account-card">
+        <div class="account-head">
+          <div class="account-avatar">📡</div>
+          <div>
+            <input id="profileName" class="profile-name" maxlength="24" aria-label="账号昵称">
+            <div class="account-meta"><span id="profileRole">普通用户</span><span id="profileId">—</span></div>
+          </div>
+        </div>
+        <div class="tip">事项和反馈草稿只保存在本机。建议定期保存账号恢复包；重装后可导入恢复。不会自动读取或上传你的事项内容。</div>
+        <div class="row-btns">
+          <button id="saveRecoveryBtn" class="btn primary">💾 保存恢复包</button>
+          <button id="loadRecoveryBtn" class="btn ghost">📥 恢复账号</button>
+        </div>
+        <button id="adminModeBtn" class="btn full hidden">🧪 开启管理员测试工具</button>
+      </div>
+
       <h3 class="sec-title">🎨 皮肤</h3>
       <div id="themeGrid" class="theme-grid"></div>
 
@@ -224,7 +270,7 @@
 
       <h3 class="sec-title">🔔 提醒偏好</h3>
       <div class="card pad">
-        <label class="f-label" style="margin-top:0">提醒方式（全局，APK 系统提醒同样生效）</label>
+        <label class="f-label" style="margin-top:0">提醒方式</label>
         <div class="quad-chips" id="setRemindMode" style="grid-template-columns:1fr">
           <div class="set-line" style="margin:0;padding:7px 0">
             <div>🔔 响铃</div>
@@ -243,17 +289,11 @@
             <label class="switch"><input type="checkbox" id="setSilent"><i></i></label>
           </div>
         </div>
-        <div class="set-line"><label for="setVibrationMode">APK 震动来源</label>
-          <select id="setVibrationMode"><option value="notification">跟随系统通知</option><option value="native">原生震动（兼容模式）</option></select>
-        </div>
         <div class="set-line">
           <div>手机静音时震动</div>
           <label class="switch"><input type="checkbox" id="setVibrateInSilent" checked><i></i></label>
         </div>
         <div class="tip">默认只震动不响铃；关闭后手机静音时不震动。应用的“静默”会关闭全部提醒。勿扰设置仍生效。</div>
-        <button id="enableNativeVibrationBtn" class="btn full">📳 启用原生兼容震动并自检</button>
-        <button id="vibrationNowBtn" class="btn full">📳 立即自检原生震动</button>
-        <div class="tip">系统通知震动无效时，可主动选择兼容模式。手机静音时绝不响铃，是否震动由上方开关决定，两种震动来源均生效。原生震动只在到点时使用短时服务，不更改电池优化设置，仍遵循系统勿扰与震动设置。自检提示仅表示请求结果，请以手机实际触感为准。</div>
         <div class="set-line" style="margin-top:10px">
           <div>远期 DDL 每日提醒时间</div>
           <input type="time" id="setDailyTime" value="12:00">
@@ -261,28 +301,48 @@
         <div class="set-line"><div>当天分段提醒（2h / 1h / 30min / 5min）</div>
           <label class="switch"><input type="checkbox" id="setTiered" checked><i></i></label>
         </div>
-        <div class="set-line"><div>提醒横幅 · 屏幕最上方一行</div>
-          <label class="switch"><input type="checkbox" id="setCompact" checked><i></i></label>
-        </div>
         <div class="set-line"><label for="setBannerDuration">提醒横幅关闭方式</label>
           <select id="setBannerDuration"><option value="manual">手动点关闭</option><option value="5s">5 秒后自动消失</option></select>
         </div>
         <button id="bannerPermissionBtn" class="btn full">💬 允许顶部悬浮横幅（跨应用）</button>
         <button id="notificationSettingsBtn" class="btn full">🔔 打开系统通知与横幅设置</button>
+        <details class="settings-more">
+          <summary>更多提醒设置</summary>
+        <div class="set-line"><label for="setVibrationMode">APK 震动来源</label>
+          <select id="setVibrationMode"><option value="notification">跟随系统通知</option><option value="native">原生震动（兼容模式）</option></select>
+        </div>
+        <div class="set-line"><div>提醒横幅 · 屏幕最上方一行</div>
+          <label class="switch"><input type="checkbox" id="setCompact" checked><i></i></label>
+        </div>
         <button id="restrictedSettingsBtn" class="btn full">🔐 未知来源权限受限？打开应用信息</button>
         <div class="tip">若系统提示“限制未知来源应用获取部分权限”，请在应用信息页查看右上角菜单中的“允许受限设置”（以手机实际提供的选项为准），再回到悬浮窗授权。签名不能自动解除安装来源限制。无法授权悬浮窗时仍会请求系统通知；是否弹出由系统通知、横幅和勿扰设置决定。</div>
         <div class="tip">应用内的下载、保存等提示消息只显示在当前页面，不能证明跨应用横幅正常。开启「显示在其他应用上层 / 悬浮窗」后，提醒可请求在其他 App 上方显示并按所选方式关闭。系统通知横幅需单独开启，停留时间由手机控制。</div>
-        <button id="testRemBtn" class="btn full">🧪 测试提醒（5 秒后触发，验证链路）</button>
-        <button id="backgroundTestBtn" class="btn full">⏱️ 后台验证（60 秒后，请退到桌面）</button>
+        </details>
+        <button id="enableNativeVibrationBtn" class="btn full admin-only" hidden>📳 启用原生兼容震动并自检</button>
+        <button id="vibrationNowBtn" class="btn full admin-only" hidden>📳 立即自检原生震动</button>
+        <div class="tip admin-only" hidden>系统通知震动无效时，可主动选择兼容模式。手机静音时绝不响铃，是否震动由上方开关决定，两种震动来源均生效。原生震动只在到点时使用短时服务，不更改电池优化设置，仍遵循系统勿扰与震动设置。自检提示仅表示请求结果，请以手机实际触感为准。</div>
+        <button id="testRemBtn" class="btn full admin-only" hidden>🧪 测试提醒（5 秒后触发，验证链路）</button>
+        <button id="backgroundTestBtn" class="btn full admin-only" hidden>⏱️ 后台验证（60 秒后，请退到桌面）</button>
         <button id="notifyBtn" class="btn full">🔔 申请系统通知权限（状态：未知）</button>
-        <div class="tip">响铃、震动、横幅可自由组合；全关或开启「静默」后不再提醒。退 App 后的提醒由系统级闹钟触发，请允许系统通知，跨应用横幅另需悬浮窗授权；重启手机或覆盖安装后会自动恢复。点「测试提醒」后立即退 App，5 秒后验证。</div>
+        <div class="tip">响铃、震动和横幅可自由组合；开启「静默」后不再提醒。后台提醒需要通知权限，跨应用横幅另需悬浮窗权限。</div>
       </div>
 
-      <h3 class="sec-title">🩺 提醒诊断</h3>
-      <div class="card pad">
+      <h3 class="sec-title admin-only" hidden>🩺 提醒诊断</h3>
+      <div class="card pad admin-only" hidden>
         <div id="diagList" style="font-size:12.5px;line-height:1.9"></div>
         <button id="diagBtn" class="btn full">🔍 运行诊断</button>
         <button id="copyDiagBtn" class="btn full">📋 复制提醒诊断</button>
+      </div>
+
+      <h3 class="sec-title">💬 用户反馈</h3>
+      <div class="card pad">
+        <textarea id="feedbackText" class="f-input" maxlength="1200" rows="3" placeholder="只填写你愿意公开反馈的问题，不会附带事项或课表内容"></textarea>
+        <div class="row-btns">
+          <button id="feedbackIssueBtn" class="btn primary">在 GitHub 提交</button>
+          <button id="feedbackCopyBtn" class="btn ghost">复制反馈</button>
+        </div>
+        <div class="tip">点击提交后只把你填写的文字、版本号和设备型号带到 GitHub Issue；不会自动发送本机数据。</div>
+        <button id="adminFeedbackBtn" class="btn full admin-only" hidden>🛠️ 查看管理员反馈列表</button>
       </div>
 
       <h3 class="sec-title">💾 数据</h3>
@@ -292,14 +352,14 @@
           <button id="importBtn" class="btn ghost">导入备份</button>
         </div>
         <div class="row-btns">
-          <button id="demoBtn" class="btn ghost">填入示例数据</button>
+          <button id="demoBtn" class="btn ghost admin-only" hidden>填入管理员示例数据</button>
           <button id="wipeBtn" class="btn danger">清空所有数据</button>
         </div>
       </div>
 
       <h3 class="sec-title">ℹ️ 关于</h3>
       <div class="card pad about">
-        <b>DDL雷达</b> <span id="verText">v2.3.2</span><br>
+        <b>DDL雷达</b> <span id="verText">v2.3.9-rc.1</span><br>
         Android 本地事项与课表提醒应用 · 也可在现代浏览器中使用<br>
         事项与课表保存在本机，支持导出备份；后台系统提醒需要安装 APK。<br>
         <small>素材与数据致谢：microsoft/fluentui-emoji (MIT) · lunar-javascript · holiday-cn · ZCOOL KuaiLe 字体</small>
@@ -351,10 +411,12 @@
 
     <div id="fStartRow" class="hidden">
       <label class="f-label">开始时间</label>
-      <input id="fStart" type="datetime-local" class="f-input">
+      <input id="fStart" type="hidden">
+      <button id="fStartPicker" type="button" class="date-time-trigger">选择开始时间</button>
     </div>
     <label class="f-label" id="fDueLabel">截止时间</label>
-    <input id="fDue" type="datetime-local" class="f-input">
+    <input id="fDue" type="hidden">
+    <button id="fDuePicker" type="button" class="date-time-trigger">选择截止时间</button>
 
     <label class="f-label">🔁 重复（长期规划：背单词、健身、周报打卡）</label>
     <div class="seg" id="fRepeat">
@@ -386,6 +448,46 @@
       <button id="fSave" class="btn primary">保存</button>
       <button class="btn ghost" data-close="editor">取消</button>
       <button id="fDelete" class="btn danger hidden">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 应用内日期时间选择器 ============ -->
+<div id="dateTimeWrap" class="sheet-wrap hidden">
+  <div class="mask" data-close="datetime"></div>
+  <div class="sheet" id="dateTimeSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <h2 id="dateTimeTitle">选择日期和时间</h2>
+      <button class="sheet-close" data-close="datetime" type="button">✕</button>
+    </div>
+    <div class="dt-summary" id="dtSummary">—</div>
+    <div class="dt-monthbar">
+      <button type="button" id="dtPrevMonth" aria-label="上个月">‹</button>
+      <b id="dtMonthTitle">—</b>
+      <button type="button" id="dtNextMonth" aria-label="下个月">›</button>
+    </div>
+    <div class="dt-week"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+    <div class="dt-days" id="dtDays"></div>
+    <div class="dt-time">
+      <div class="dt-clock-part">
+        <label for="dtHour">小时</label>
+        <div><button type="button" data-dt-time="-60" aria-label="减一小时">−</button><input id="dtHour" type="number" inputmode="numeric" min="0" max="23" step="1" value="00" aria-label="小时"><button type="button" data-dt-time="60" aria-label="加一小时">＋</button></div>
+      </div>
+      <div class="dt-clock-part">
+        <label for="dtMinute">分钟</label>
+        <div><button type="button" data-dt-time="-1" aria-label="减一分钟">−</button><input id="dtMinute" type="number" inputmode="numeric" min="0" max="59" step="1" value="00" aria-label="分钟"><button type="button" data-dt-time="1" aria-label="加一分钟">＋</button></div>
+      </div>
+    </div>
+    <div class="dt-quick">
+      <button type="button" data-dt-quick="now">现在</button>
+      <button type="button" data-dt-quick="today18">今天 18:00</button>
+      <button type="button" data-dt-quick="tomorrow9">明天 09:00</button>
+      <button type="button" data-dt-quick="week">一周后</button>
+    </div>
+    <div class="sheet-btns">
+      <button id="dtConfirm" class="btn primary" type="button">确定</button>
+      <button class="btn ghost" data-close="datetime" type="button">取消</button>
     </div>
   </div>
 </div>

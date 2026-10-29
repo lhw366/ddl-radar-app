@@ -11,12 +11,19 @@
 (function () {
   'use strict';
 
-  // 默认节次时刻（北大标准，可由识别到的「课程时间」覆盖）
-  var DEFAULT_SLOTS = [
+  // 全新用户先使用通用作息；北大作息是可选模板，不会自动导入课程。
+  var GENERIC_SLOTS = [
+    '08:00-08:45', '08:55-09:40', '10:00-10:45', '10:55-11:40',
+    '14:00-14:45', '14:55-15:40', '16:00-16:45', '16:55-17:40',
+    '19:00-19:45', '19:55-20:40', '20:50-21:35', '21:40-22:25'
+  ];
+  var PKU_SLOTS = [
     '08:00-08:50', '09:00-09:50', '10:10-11:00', '11:10-12:00',
     '13:00-13:50', '14:00-14:50', '15:10-16:00', '16:10-17:00',
     '17:10-18:00', '18:40-19:30', '19:40-20:30', '20:40-21:30'
   ];
+  var DEFAULT_SLOTS = GENERIC_SLOTS;
+  var SCHOOL_PRESETS = { generic: GENERIC_SLOTS, pku: PKU_SLOTS };
   var DAY_CN = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
   function T() { return (window.S && window.S.timetable) || null; }
@@ -24,12 +31,30 @@
   function ensureState() {
     if (!window.S) return null;
     if (!window.S.timetable) {
-      window.S.timetable = { courses: [], slots: DEFAULT_SLOTS.slice(), termStart: null };
+      window.S.timetable = { courses: [], slots: DEFAULT_SLOTS.slice(), termStart: null, schoolPreset: 'generic' };
     }
     var tt = window.S.timetable;
     if (!Array.isArray(tt.courses)) tt.courses = [];
-    if (!Array.isArray(tt.slots) || tt.slots.length !== 12) tt.slots = DEFAULT_SLOTS.slice();
+    if (!Array.isArray(tt.slots) || tt.slots.length < 1) tt.slots = DEFAULT_SLOTS.slice();
+    tt.slots = tt.slots.slice(0, 20).map(function (slot, index) {
+      if (slot == null) return null; // Unknown screenshot times must never become a template time.
+      var clean = String(slot || '').trim();
+      return /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(clean)
+        ? clean : (DEFAULT_SLOTS[index] || '');
+    });
+    if (!tt.schoolPreset) tt.schoolPreset = sameSlots(tt.slots, PKU_SLOTS) ? 'pku' :
+      sameSlots(tt.slots, GENERIC_SLOTS) ? 'generic' : 'custom';
     return tt;
+  }
+  function sameSlots(a, b) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every(function (slot, i) { return slot === b[i]; });
+  }
+  function coursesOverlap(a, b) {
+    if (!a || !b || +a.day !== +b.day) return false;
+    var wa = a.week || 'all', wb = b.week || 'all';
+    var sharesWeek = wa === 'all' || wb === 'all' || wa === wb;
+    return sharesWeek && Math.max(a.start, b.start) <= Math.min(a.end, b.end);
   }
 
   /* ---------------- 网格还原 ---------------- */
@@ -47,7 +72,7 @@
 
     // ── 1) 找星期表头 ──
     var dayHeads = [];
-    var dayRe = /^(星期|周)([一二三四五六日天])$/;
+    var dayRe = /^(星期|周|呈期)([一二三四五六日天-])$/;
     var cnNum = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
     var allLines = [];
     blocks.forEach(function (b) {
@@ -56,16 +81,43 @@
     allLines.forEach(function (b) {
       var t = norm(b.text);
       var m = t.match(dayRe);
-      if (m) dayHeads.push({ day: cnNum[m[2]], cx: cxOf(b), top: b.top, bottom: b.bottom });
+      if (m) dayHeads.push({ day: m[2] === '-' ? 1 : cnNum[m[2]], cx: cxOf(b), top: b.top, bottom: b.bottom });
     });
+    // Mobile timetables use a bare 一 / 二 / … / 日 header. Only accept an
+    // aligned weekday sequence, so a lone Chinese numeral in a title is not a column.
+    var compactLayout = false;
+    if (dayHeads.length < 2) {
+      var shortHeads = allLines.filter(function (line) { return /^[一二三四五六日天]$/.test(norm(line.text)); });
+      var sequences = shortHeads.map(function (anchor) {
+        return shortHeads.filter(function (line) {
+          return Math.abs(cyOf(line) - cyOf(anchor)) <= Math.max(18, (anchor.bottom - anchor.top) || 0);
+        }).sort(function (a, b) { return cxOf(a) - cxOf(b); });
+      }).filter(function (sequence) {
+        return sequence.length >= 5 && sequence.every(function (line, index) {
+          return !index || cnNum[norm(line.text)] > cnNum[norm(sequence[index - 1].text)];
+        });
+      }).sort(function (a, b) { return cyOf(a[0]) - cyOf(b[0]); });
+      if (sequences.length) {
+        compactLayout = true;
+        dayHeads = sequences[0].map(function (line) {
+          return { day: cnNum[norm(line.text)], cx: cxOf(line), top: line.top, bottom: line.bottom };
+        });
+      }
+    }
     // 去重（同一列可能有「星期一」和别的块）
     var dayMap = {};
     dayHeads.forEach(function (h) { if (!dayMap[h.day] || h.cx < dayMap[h.day]) dayMap[h.day] = h.cx; });
     var cols = Object.keys(dayMap).map(function (d) { return { day: +d, x: dayMap[d] }; })
       .sort(function (a, b) { return a.x - b.x; });
+    if (compactLayout && cols.length >= 5) {
+      var slope = (cols[cols.length - 1].x - cols[0].x) / (cols[cols.length - 1].day - cols[0].day);
+      var origin = cols[0].x - cols[0].day * slope;
+      cols = Array.from({ length: 7 }, function (_, i) { return { day: i + 1, x: origin + (i + 1) * slope }; });
+    }
 
     // ── 2) 找节次行标签 ──
-    var rowHeads = [];
+    var numericRows = numericRowHeads(allLines, cols, dayHeads);
+    var rowHeads = numericRows.slice();
     // Chinese period labels are often split into separate blocks: "第一" / "节".
     // Read their geometry in the label gutter before falling back to text matching.
     if (cols.length >= 2) {
@@ -73,7 +125,7 @@
       var pieces = allLines.filter(function (l) { return cxOf(l) < gutterRight; })
         .sort(function (a,b) { return cyOf(a)-cyOf(b); });
       var labels = pieces.filter(function (l) { return /^第[一二三四五六七八九十]/.test(norm(l.text).replace(/^[|丨]+/,'')); });
-      if (labels.length >= 8 && labels.length <= 12) {
+      if (labels.length >= 4 && labels.length <= 20) {
         labels.forEach(function (label,index) {
           var below = pieces.find(function (p) {
             var delta = cyOf(p)-cyOf(label);
@@ -85,7 +137,7 @@
           var n = match ? cnToNum(match[1]) : index+1;
           // With all twelve ordered labels present, a missed 一/二 in the
           // final wrapped labels must not collapse lessons 11/12 into 10.
-          if (labels.length === 12) n = index+1;
+          if (labels.length >= 4) n = index+1;
           rowHeads.push({n:n,y:below ? (label.top+below.bottom)/2 : cyOf(label)});
         });
       }
@@ -103,14 +155,14 @@
         // 单独一个「四」不能算行标签；必须带「第」前缀或「节」后缀。
         if (!/^第/.test(t) && !/节$/.test(t)) return;
         var n = cnToNum(m[1]);
-        if (n >= 1 && n <= 12) rowHeads.push({ n: n, y: cyOf(b) });
+        if (n >= 1 && n <= 20) rowHeads.push({ n: n, y: cyOf(b) });
       });
     });
     var rowMap = {};
     rowHeads.forEach(function (r) { if (rowMap[r.n] === undefined) rowMap[r.n] = r.y; });
     var rows = Object.keys(rowMap).map(function (n) { return { n: +n, y: rowMap[n] }; })
       .sort(function (a, b) { return a.y - b.y; });
-    if (rows.length >= 8) {
+    if (rows.length >= 4) {
       var complete = [];
       for (var number=rows[0].n;number<=rows[rows.length-1].n;number++) {
         if (rowMap[number] !== undefined) complete.push({n:number,y:rowMap[number]});
@@ -123,7 +175,7 @@
       rows=complete;
     }
     var rowsInferred = false;
-    if (rows.length < 8 && cols.length >= 2) {
+    if (rows.length < 8 && numericRows.length < 4 && cols.length >= 2) {
       var inferred = inferRows(blocks, dayHeads, imageMeta);
       if (inferred.length >= 2) {
         rows = inferred;
@@ -132,7 +184,12 @@
     }
 
     // ── 3) 解析「课程时间」表（若有），用于覆盖默认节次时刻 ──
-    var slots = parseSlotTimes(blocks);
+    var slots = parseSlotTimes(blocks, numericRows);
+
+    var raster = parseRasterCards(blocks, cols, rows, compactLayout);
+    if (raster.length && numericRows.length >= 4) return { courses: raster, slots: slots, degraded: false, rowsInferred: rowsInferred, rasterBounds: true };
+
+    if (compactLayout) blocks = compactCourseBlocks(blocks, cols, rows);
 
     // ── 4) 落格 ──
     // 若找不到表头/行标签，退化为「纯文本顺序解析」：只抽课程名+教室，
@@ -316,7 +373,7 @@
       });
       // 先记下「下一门课从第几节开始」，用于约束包围盒延伸不越界
       for (var mi = 0; mi < merged.length; mi++) {
-        merged[mi].nextStart = (mi + 1 < merged.length) ? merged[mi + 1].start : 13;
+        merged[mi].nextStart = (mi + 1 < merged.length) ? merged[mi + 1].start : rows[rows.length - 1].n + 1;
       }
       merged.forEach(function (m) {
         // 按 block 包围盒的底边延伸结束节次：
@@ -326,7 +383,7 @@
         if (m.spanBottom > 0) {
           var spanIndex = pickRow(rows, m.spanBottom);
           // 约束：不能越过下一门课的起始节
-          var cap = (m.nextStart || 13) - 1;
+          var cap = (m.nextStart || rows[rows.length - 1].n + 1) - 1;
           var target = Math.min(rows[spanIndex].n, cap);
           if (target > m.end) m.end = target;
         }
@@ -353,7 +410,7 @@
     var seen = {};
     courses = courses.filter(function (c) {
       if (!isMeaningfulCourseName(c.name)) return false;
-      var k = c.day + '|' + c.start + '|' + c.end + '|' + c.name;
+      var k = c.day + '|' + c.start + '|' + c.end + '|' + c.name + '|' + c.room + '|' + c.week;
       if (seen[k]) return false;
       seen[k] = 1;
       return true;
@@ -362,9 +419,181 @@
     return { courses: courses, slots: slots, degraded: false, rowsInferred: rowsInferred };
   }
 
+  function numericRowHeads(lines, cols, dayHeads) {
+    if (cols.length < 2) return [];
+    var gutterRight = cols[0].x - (cols[1].x - cols[0].x) * 0.42;
+    var headerBottom = Math.max.apply(null, dayHeads.map(function (head) { return head.bottom || 0; }));
+    var gutter = lines.map(function (line) {
+      var prefix = String(line.text).match(/^(\d{1,2}[:：]\d{2})\s+.+/);
+      return prefix && line.left < gutterRight ? Object.assign({}, line, { text: prefix[1], cx: line.left + 24 }) : line;
+    }).filter(function (line) { return cxOf(line) < gutterRight && cyOf(line) > headerBottom; })
+      .sort(function (a, b) { return cyOf(a) - cyOf(b); });
+    var allTimes = gutter.filter(function (line) { return /^(?:[01]?\d|2[0-3])[:：][0-5]\d$/.test(norm(line.text)); });
+    var labels = gutter.filter(function (line) {
+      return /^(?:第)?(?:[1-9]|1\d|20)(?:节)?$/.test(norm(line.text))
+        && (!allTimes.length || cyOf(line) > cyOf(allTimes[0]) - 100);
+    });
+    var result = labels.map(function (label, index) {
+      var following = gutter.filter(function (line) {
+        return cyOf(line) > cyOf(label) && (!labels[index + 1] || cyOf(line) < cyOf(labels[index + 1]));
+      });
+      var times = following.filter(function (line) { return /^(?:[01]?\d|2[0-3])[:：][0-5]\d$/.test(norm(line.text)); });
+      var slot = times.length === 2 ? times.map(function (line) {
+        var parts = norm(line.text).replace('：', ':').split(':');
+        return pad2(parts[0]) + ':' + parts[1];
+      }).join('-') : null;
+      return {
+        n: +norm(label.text).replace(/第|节/g, ''),
+        y: slot ? ((label.top == null ? cyOf(label) : label.top) + times[1].bottom) / 2 : cyOf(label),
+        slot: slot
+      };
+    });
+    var fits = [];
+    result.forEach(function (a, i) { result.slice(i + 1).forEach(function (b) {
+      var step = (b.y - a.y) / (b.n - a.n);
+      if (b.n <= a.n || step < 15) return;
+      var origin = a.y - step * a.n;
+      var votes = result.filter(function (r) { return Math.abs(r.y - origin - step * r.n) < step * .22; }).length;
+      fits.push({ origin: origin, step: step, votes: votes });
+    }); });
+    fits.sort(function (a, b) { return b.votes - a.votes; });
+    if (fits.length && fits[0].votes >= 3) {
+      var fit = fits[0];
+      result.forEach(function (r) {
+        var inferred = Math.round((r.y - fit.origin) / fit.step);
+        if (inferred >= 1 && inferred <= 20 && Math.abs(r.y - fit.origin - inferred * fit.step) < fit.step * .22) r.n = inferred;
+      });
+      var last = Math.max.apply(null, result.map(function (r) { return r.n; }));
+      for (var n = 1; n <= last; n++) {
+        var row = result.find(function (r) { return r.n === n; });
+        if (!row) { row = { n: n, y: fit.origin + fit.step * n }; result.push(row); }
+        var near = allTimes.filter(function (line) { return cyOf(line) > row.y - fit.step * .15 && cyOf(line) < row.y + fit.step * .4; });
+        if (near.length === 2) row.slot = near.map(function (line) {
+          var parts = norm(line.text).replace('：', ':').split(':'); return pad2(parts[0]) + ':' + parts[1];
+        }).join('-');
+      }
+    }
+    return result;
+  }
+
+  // On narrow mobile cards, a course title is wrapped into several short
+  // lines, and @ marks the start of the separately wrapped classroom field.
+  function compactCourseBlocks(blocks, cols, rows) {
+    return blocks.map(function (block) {
+      var lines = (block.lines && block.lines.length ? block.lines : [block]).slice()
+        .sort(function (a, b) { return cyOf(a) - cyOf(b); });
+      if (!lines.length || !rows.length || !pickCol(cols, cxOf(block), rows)
+          || cyOf(lines[0]) < rows[0].y - (rows[1].y - rows[0].y) / 2) return block;
+      var roomIndex = lines.findIndex(function (line) { return /^[@＠]/.test(norm(line.text)); });
+      var titleLines = (roomIndex < 0 ? lines : lines.slice(0, roomIndex)).filter(function (line) {
+        return !/^(?:非本周|单周|双周|每周)$/.test(norm(line.text));
+      });
+      if (!titleLines.length) return block;
+      var name = titleLines.map(function (line) { return norm(line.text); }).join('');
+      if (!isMeaningfulCourseName(name)) return block;
+      var title = Object.assign({}, titleLines[0], { text: name });
+      var normalized = [title];
+      if (roomIndex >= 0) {
+        var roomLines = lines.slice(roomIndex);
+        normalized.push(Object.assign({}, roomLines[0], {
+          text: '（' + roomLines.map(function (line) { return norm(line.text); }).join('').replace(/^[@＠]/, '') + '）'
+        }));
+      }
+      return Object.assign({}, block, { lines: normalized });
+    });
+  }
+
+  function parseRasterCards(blocks, cols, rows, compact) {
+    if (cols.length < 2 || rows.length < 2) return [];
+    var cards = [], unplaced = [], gap = Math.abs(cols[1].x - cols[0].x), rowGap = Math.abs(rows[1].y - rows[0].y);
+    blocks.forEach(function (block) {
+      (block.lines && block.lines.length ? block.lines : [block]).forEach(function (line) {
+        (line.elements && line.elements.length ? line.elements : [line]).forEach(function (piece) {
+          var inherited = line.cell || block.cell;
+          var bounds = piece.cell || (inherited && cxOf(piece) >= inherited.left && cxOf(piece) <= inherited.right
+            && cyOf(piece) >= inherited.top && cyOf(piece) <= inherited.bottom ? inherited : null);
+          if (!bounds || bounds.right - bounds.left < gap * .55 || bounds.right - bounds.left > gap * 1.4
+              || bounds.top < rows[0].y - rowGap * .8 || bounds.bottom > rows[rows.length - 1].y + rowGap * .8) {
+            unplaced.push(piece); return;
+          }
+          var day = pickCol(cols, (bounds.left + bounds.right) / 2, rows);
+          if (!day) return;
+          var card = cards.find(function (c) {
+            return c.day === day && Math.abs(c.bounds.top - bounds.top) < rowGap * .12
+              && Math.abs(c.bounds.bottom - bounds.bottom) < rowGap * .12;
+          });
+          if (!card) { card = { day: day, bounds: bounds, pieces: [] }; cards.push(card); }
+          card.pieces.push(piece);
+        });
+      });
+    });
+    // ML Kit can still fuse several Chinese words into one element across a
+    // gutter. Split the observed glyphs geometrically into existing cards;
+    // uncertain narrow-screen titles remain explicitly marked for review.
+    if (compact) unplaced.forEach(function (piece) {
+      var chars = Array.from(norm(piece.text));
+      if (!chars.length || piece.right - piece.left < gap * .9) return;
+      var fragments = {};
+      chars.forEach(function (ch, index) {
+        var x = piece.left + (piece.right - piece.left) * (index + .5) / chars.length;
+        var day = pickCol(cols, x, rows);
+        var card = cards.find(function (c) { return c.day === day && cyOf(piece) >= c.bounds.top && cyOf(piece) <= c.bounds.bottom; });
+        if (!card) return;
+        var key = cards.indexOf(card);
+        fragments[key] = (fragments[key] || '') + ch;
+      });
+      Object.keys(fragments).forEach(function (key) {
+        var card = cards[+key];
+        card.pieces.push(Object.assign({}, piece, { text: fragments[key], left: card.bounds.left, right: card.bounds.right }));
+      });
+    });
+    var courses = [];
+    cards.forEach(function (card) {
+      var lines = [];
+      card.pieces.sort(function (a, b) { return a.top - b.top || a.left - b.left; }).forEach(function (piece) {
+        var text = norm(piece.text);
+        if (!text) return;
+        var line = lines.find(function (l) { return Math.abs(l.y - cyOf(piece)) < Math.max(7, (piece.bottom - piece.top) * .5); });
+        if (!line) { line = { y: cyOf(piece), pieces: [] }; lines.push(line); }
+        line.pieces.push(piece);
+      });
+      var texts = lines.sort(function (a, b) { return a.y - b.y; }).map(function (line) {
+        return line.pieces.sort(function (a, b) { return a.left - b.left; }).map(function (piece) { return norm(piece.text); }).join('');
+      });
+      var nonCurrent = texts.some(function (text) { return /非本周/.test(text); });
+      if (!nonCurrent) nonCurrent = cards.some(function (other) {
+        return other.day === card.day && Math.abs(other.bounds.bottom - card.bounds.top) < rowGap * .1
+          && other.pieces.some(function (piece) { return /非本周/.test(piece.text); });
+      });
+      var roomAt = texts.findIndex(function (text) { return /^[@＠]/.test(text); });
+      var name, info;
+      if (compact) {
+        var title = (roomAt < 0 ? texts : texts.slice(0, roomAt)).filter(function (text) {
+          return !/^(?:非本周|单周|双周|每周)$/.test(text);
+        });
+        name = title.join('').replace(/數/g, '数').replace(/學/g, '学');
+        var room = roomAt < 0 ? '' : texts.slice(roomAt).join('').replace(/^[@＠]/, '');
+        info = { name: name, room: room, week: extractWeek(texts, texts.join(' ')), note: nonCurrent ? '截图标为非本周，请核对单双周' : '' };
+      } else {
+        name = pickCourseName(texts);
+        info = parseCourseInfo(texts.join(' '), name, texts);
+      }
+      if (!isMeaningfulCourseName(info.name)) return;
+      courses.push({
+        id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        day: card.day, start: rows[pickRow(rows, card.bounds.top + rowGap * .15)].n,
+        end: rows[pickRow(rows, card.bounds.bottom - rowGap * .15)].n,
+        name: info.name, room: info.room, week: info.week, note: info.note, remindMin: 15,
+        needsReview: compact || /[つ敖梭]|[(（][^()（）]*$/.test(info.name),
+        reviewReason: nonCurrent ? '截图只标注非本周，无法推断单双周；请手动选择' : compact ? '窄屏截图文字有截断，请对照原图核对' : ''
+      });
+    });
+    return courses.sort(function (a, b) { return a.day - b.day || a.start - b.start; });
+  }
+
   function cxOf(b) { return b.cx != null ? b.cx : ((b.left || 0) + (b.right || 0)) / 2; }
   function cyOf(b) { return b.cy != null ? b.cy : ((b.top || 0) + (b.bottom || 0)) / 2; }
-  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, '').trim(); }
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, '').replace(/^[|丨]+/, '').trim(); }
 
   function similarCourseName(a,b) {
     a=norm(a).replace(/[|丨()（）ⅠI一\-]/g,'');
@@ -450,6 +679,13 @@
     });
     var top = headerBottom > 0 ? headerBottom : height * 0.02;
     var bottom = height * 0.97;
+    blocks.forEach(function (block) {
+      (block.lines && block.lines.length ? block.lines : [block]).forEach(function (line) {
+        if (/^(?:课程时间|注意事项)[:：]?$/.test(norm(line.text)) && line.top > top + 120) {
+          bottom = Math.min(bottom, line.top);
+        }
+      });
+    });
     if (bottom <= top + 120) return [];
     var rowHeight = (bottom - top) / 12;
     var out = [];
@@ -554,7 +790,7 @@
       var t = norm(value);
       if (!t) return;
       if (/^(备注|考试|上课时间)/.test(t) || /暂无上课教室/.test(t)) return;
-      var exact = t.match(/^[（(]([^（()）]{1,32})[）)]$/);
+      var exact = t.match(/^[（(]([^（()）]{1,32})[）)](?:[（(](?:单周|双周)[）)])?$/);
       var roomText = exact ? exact[1] : (/^(?:上课)?教室[:：]/.test(t) ? t.split(/[:：]/, 2)[1] : t);
       if (!looksLikeRoom(roomText)) return;
       candidates.push({ text: normalizeRoom(roomText), exact: !!exact, index: index });
@@ -652,9 +888,12 @@
    * 完全匹配不上真实数据 —— 导致课程时间表永远解析失败、退回默认时刻，
    * 对非北大作息（比如 8:00 变 8:30 开学）的学校就会整体错位。
    */
-  function parseSlotTimes(blocks) {
+  function parseSlotTimes(blocks, rowHeads) {
     var slots = [];
     var found = 0;
+    (rowHeads || []).forEach(function (row) {
+      if (row.slot) { slots[row.n - 1] = row.slot; found++; }
+    });
     blocks.forEach(function (b) {
       var lines = b.lines && b.lines.length ? b.lines : [{ text: b.text }];
       lines.forEach(function (l) {
@@ -663,10 +902,10 @@
         // 用原文 + 保留分隔符的正则。
         var raw = String(l.text == null ? '' : l.text).trim();
         if (!raw) return;
-        var m = raw.match(/^(?:第)?(\d{1,2})(?:节)?[\s：:]+(\d{1,2})[:：](\d{2})\s*[~～\-—至]\s*(\d{1,2})[:：](\d{2})/);
+        var m = raw.match(/^(?:第)?(\d{1,2})(?:节)?[\s：:]*(\d{1,2})[:：](\d{2})[\s~～\-—至°^`]*(\d{1,2})[:：](\d{2})$/);
         if (!m) return;
         var idx = parseInt(m[1], 10) - 1;
-        if (idx < 0 || idx > 11) return;
+        if (idx < 0 || idx > 19) return;
         var from = +m[2] * 60 + +m[3], to = +m[4] * 60 + +m[5];
         if (+m[2] > 23 || +m[4] > 23 || +m[3] > 59 || +m[5] > 59 || to <= from) return;
         if (!slots[idx]) found++;
@@ -674,9 +913,11 @@
       });
     });
     // 至少要认出 8 节才算有效（避免误把别的数字当节次）
-    if (found < 8) return null;
+    if (found < 4) return null;
     var out = [];
-    for (var i = 0; i < 12; i++) out.push(slots[i] || DEFAULT_SLOTS[i]);
+    var count = Math.min(20, Math.max(4, slots.length,
+      (rowHeads || []).reduce(function (last, row) { return Math.max(last, row.n); }, 0)));
+    for (var i = 0; i < count; i++) out.push(slots[i] || null);
     return out;
   }
   function pad2(s) { s = String(s); return s.length < 2 ? '0' + s : s; }
@@ -723,6 +964,8 @@
     var tt = ensureState();
     var termInput = document.getElementById('ttTermStart');
     if (termInput) termInput.value = tt && tt.termStart ? String(tt.termStart).slice(0, 10) : '';
+    var presetSelect = document.getElementById('ttSchoolPreset');
+    if (presetSelect && tt) presetSelect.value = tt.schoolPreset || 'custom';
     updateTermHint();
     var grid = document.getElementById('ttGrid');
     var empty = document.getElementById('ttEmpty');
@@ -736,33 +979,55 @@
 
     var html = '<div class="tt-corner" style="grid-row:1;grid-column:1"></div>';
     for (var d = 1; d <= 7; d++) html += '<div class="tt-dayhead" style="grid-row:1;grid-column:' + (d + 1) + '">' + DAY_CN[d] + '</div>';
-    for (var r = 1; r <= 12; r++) {
+    var periodCount = Math.max(tt.slots.length, tt.courses.reduce(function (max, c) {
+      return Math.max(max, Number(c.end) || 0);
+    }, 0));
+    periodCount = Math.max(4, Math.min(20, periodCount || DEFAULT_SLOTS.length));
+    for (var r = 1; r <= periodCount; r++) {
       html += '<div class="tt-rowhead" style="grid-row:' + (r + 1) + ';grid-column:1">' + r + '</div>';
       for (var dd = 1; dd <= 7; dd++) {
-        // 同一格可能有多门课（典型：单周课 + 双周课共用同一时段）。
-        // 早前只取 cs[0] 渲染，第二门课完全不可见 —— 用户会以为课丢了。
-        // 现在把该格所有课程都画出来，各自可点。
-        var cs = tt.courses.filter(function (c) { return c.day === dd && r >= c.start && r <= c.end; });
+        var cs = tt.courses.filter(function (c) { return c && c.day === dd && r >= c.start && r <= c.end; });
         if (!cs.length) { html += '<div class="tt-cell" style="grid-row:' + (r + 1) + ';grid-column:' + (dd + 1) + '"></div>'; continue; }
-        // 找出「从本节开始」的课；若本格只是某门课的延续（没有新课开始），
-        // 让位给起始那一行渲染（避免重复占格）。
-        var starts = cs.filter(function (c) { return c.start === r; });
-        if (!starts.length) continue;
-        // 用其中跨度最大的那门决定 grid-row span
-        var maxEnd = Math.max.apply(null, starts.map(function (c) { return c.end; }));
-        var span = Math.max(1, maxEnd - r + 1);
+      }
+    }
+    for (var day = 1; day <= 7; day++) {
+      var groups = [];
+      tt.courses.filter(function (c) { return c && c.day === day && c.start >= 1 && c.end >= c.start; })
+        .sort(function (a, b) { return a.start - b.start || a.end - b.end; })
+        .forEach(function (c) {
+          var group = groups[groups.length - 1];
+          if (!group || c.start > group.end) {
+            group = { start: c.start, end: c.end, courses: [], laneEnds: [] };
+            groups.push(group);
+          }
+          var lane = group.laneEnds.findIndex(function (end) { return end < c.start; });
+          if (lane < 0) lane = group.laneEnds.length;
+          group.laneEnds[lane] = c.end;
+          group.end = Math.max(group.end, c.end);
+          group.courses.push({ course: c, lane: lane });
+        });
+      groups.forEach(function (group) {
+        var span = group.end - group.start + 1;
+        var lanes = group.laneEnds.length;
         var inner = '';
-        starts.forEach(function (c) {
+        group.courses.forEach(function (entry) {
+          var c = entry.course;
           var wk = c.week === 'odd' ? '单周' : c.week === 'even' ? '双周' : '';
-          inner += '<div class="tt-course-item" data-cid="' + esc(c.id) + '">'
+          var placement = lanes > 1 ? ' style="min-width:0;grid-column:' + (entry.lane + 1)
+            + ';grid-row:' + (c.start - group.start + 1) + ' / span ' + (c.end - c.start + 1) + '"' : '';
+          inner += '<div class="tt-course-item" data-cid="' + esc(c.id) + '"' + placement + '>'
             + '<div class="tt-cname">' + esc(c.name) + '</div>'
             + (c.room ? '<div class="tt-croom">' + esc(c.room) + '</div>' : '')
             + (wk ? '<div class="tt-cweek">' + wk + '</div>' : '')
             + '</div>';
         });
-        // 明确行列坐标；跨节单元格会占位，自动排布会把后面的星期和节次挤错。
-        html += '<div class="tt-cell has-course" style="grid-row:' + (r + 1) + ' / span ' + span + ';grid-column:' + (dd + 1) + '">' + inner + '</div>';
-      }
+        var layout = lanes > 1 ? ';display:grid;gap:2px;grid-template-columns:repeat(' + lanes
+          + ',minmax(0,1fr));grid-template-rows:repeat(' + span + ',minmax(0,1fr))' : '';
+        // Alternating-week courses can share periods, including different
+        // start rows. Put them in distinct lanes rather than overlapping grid cells.
+        html += '<div class="tt-cell has-course" style="grid-row:' + (group.start + 1) + ' / span ' + span
+          + ';grid-column:' + (day + 1) + layout + '">' + inner + '</div>';
+      });
     }
     grid.innerHTML = html;
     grid.querySelectorAll('.tt-course-item').forEach(function (el) {
@@ -816,6 +1081,10 @@
       note: document.getElementById('ttEdNote').value.trim(),
       remindMin: 15
     };
+    if (tt.courses.some(function (existing) { return existing.id !== editingId && coursesOverlap(existing, data); })) {
+      if (window.toast) toast('课程时间冲突', '该时段已有课程，请调整星期、节次或单双周');
+      return;
+    }
     if (editingId) {
       var c = tt.courses.find(function (x) { return x.id === editingId; });
       if (!c) { closeEditor(); return; }
@@ -849,8 +1118,10 @@
   var pendingSlots = null;
   var importRequest = 0;
 
-  function lessonNumber(value, fallback) {
-    return Math.max(1, Math.min(12, Math.floor(+value || fallback)));
+  function lessonNumber(value, fallback, limit) {
+    var tt = ensureState();
+    var maximum = Math.max(4, Math.min(20, limit || (tt && tt.slots ? tt.slots.length : 12)));
+    return Math.max(1, Math.min(maximum, Math.floor(+value || fallback)));
   }
 
   function cancelImport() {
@@ -891,6 +1162,9 @@
       // 预览不修改现有作息；和课程一起确认后再保存，取消必须保持原状态。
       pendingSlots = parsed.slots;
       pendingCourses = parsed.courses;
+      document.getElementById('ttImportMode').querySelectorAll('input').forEach(function (input) {
+        input.checked = input.value === 'merge';
+      });
       renderReview(parsed.courses, parsed.degraded, parsed.rowsInferred);
       say('✅ 识别到 ' + parsed.courses.length + ' 门课，请核对后确认导入');
     } catch (e) {
@@ -903,7 +1177,13 @@
     var box = document.getElementById('ttReview');
     var list = document.getElementById('ttReviewList');
     if (!box || !list) return;
+    var maximum = Math.max(4, Math.min(20, pendingSlots ? pendingSlots.length : ensureState().slots.length));
     var html = '';
+    if (pendingSlots && pendingSlots.some(function (slot) { return !slot; })) {
+      html += '<div class="tt-warn">⚠️ 图片未提供第 '
+        + pendingSlots.map(function (slot, i) { return slot ? '' : i + 1; }).filter(Boolean).join('、')
+        + ' 节的上课时间；这些节次暂不安排提醒，请在「编辑时间」中补全。</div>';
+    }
     if (degraded) {
       html += '<div class="tt-warn">⚠️ 没能定位到课表的行列结构，已按文字顺序提取课程名。'
         + '下面的「星期/节次」需要你手动修正。</div>';
@@ -913,16 +1193,17 @@
     }
     courses.forEach(function (c, i) {
       html += '<div class="tt-rv-row" data-i="' + i + '">'
-        + (c.needsReview ? '<small style="grid-column:1/-1;color:#b45a17">⚠️ 文字存在差异或教室不完整，请对照原图核对</small>' : '')
+        + (c.needsReview ? '<small style="grid-column:1/-1;color:#b45a17">⚠️ '
+          + esc(c.reviewReason || '文字存在差异或教室不完整，请对照原图核对') + '</small>' : '')
         + '<input class="tt-rv-name" value="' + esc(c.name) + '" placeholder="课程名" />'
         + '<input class="tt-rv-room" value="' + esc(c.room || '') + '" placeholder="教室" />'
         + '<div class="tt-rv-line">'
         + '<select class="tt-rv-day">' + [1,2,3,4,5,6,7].map(function (d) {
             return '<option value="' + d + '"' + (c.day === d ? ' selected' : '') + '>' + DAY_CN[d] + '</option>';
           }).join('') + '</select>'
-        + '<input class="tt-rv-start" type="number" min="1" max="12" value="' + c.start + '" />'
+        + '<input class="tt-rv-start" type="number" min="1" max="' + maximum + '" value="' + c.start + '" />'
         + '<span>-</span>'
-        + '<input class="tt-rv-end" type="number" min="1" max="12" value="' + c.end + '" />'
+        + '<input class="tt-rv-end" type="number" min="1" max="' + maximum + '" value="' + c.end + '" />'
         + '<select class="tt-rv-week">'
         + '<option value="all"' + (c.week === 'all' ? ' selected' : '') + '>每周</option>'
         + '<option value="odd"' + (c.week === 'odd' ? ' selected' : '') + '>单周</option>'
@@ -951,8 +1232,9 @@
       c.name = row.querySelector('.tt-rv-name').value.trim();
       c.room = row.querySelector('.tt-rv-room').value.trim();
       c.day = Math.max(1, Math.min(7, Math.floor(+row.querySelector('.tt-rv-day').value || 1)));
-      c.start = lessonNumber(row.querySelector('.tt-rv-start').value, 1);
-      c.end = Math.max(c.start, lessonNumber(row.querySelector('.tt-rv-end').value, c.start));
+      var maximum = pendingSlots ? pendingSlots.length : ensureState().slots.length;
+      c.start = lessonNumber(row.querySelector('.tt-rv-start').value, 1, maximum);
+      c.end = Math.max(c.start, lessonNumber(row.querySelector('.tt-rv-end').value, c.start, maximum));
       c.week = row.querySelector('.tt-rv-week').value;
     });
   }
@@ -965,7 +1247,15 @@
       return;
     }
     var tt = ensureState();
+    var mode = Array.from(document.getElementById('ttImportMode').querySelectorAll('input')).find(function (input) {
+      return input.checked;
+    });
+    var replacing = skipReview !== true && mode && mode.value === 'replace';
+    var hadCourses = tt.courses.length > 0;
+    if (replacing) tt.courses = [];
     var added = 0;
+    var duplicates = 0;
+    var conflicts = 0;
     pendingCourses.forEach(function (c) {
       var name = c.name;
       if (!name) return;
@@ -973,7 +1263,9 @@
         return existing.name === name && existing.room === c.room && existing.day === c.day
           && existing.start === c.start && existing.end === c.end && existing.week === c.week;
       });
-      if (duplicate) return;
+      if (duplicate) { duplicates++; return; }
+      var conflict = tt.courses.some(function (existing) { return coursesOverlap(existing, c); });
+      if (conflict) { conflicts++; return; }
       tt.courses.push({
         id: 'tt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: name,
@@ -986,14 +1278,23 @@
       });
       added++;
     });
-    if (pendingSlots) tt.slots = pendingSlots;
+    if (pendingSlots && (!hadCourses || replacing)) {
+      tt.slots = pendingSlots.slice(0, 20);
+      tt.schoolPreset = 'custom';
+    }
     var scheduled = window.save ? await save() : true;
     cancelImport();
     document.getElementById('ttImportHint').classList.add('hidden');
     document.getElementById('ttOcrStatus').textContent = '';
     render();
-    if (window.toast) toast('📚 课表已导入', '新增 ' + added + ' 个上课时段。'
-      + (scheduled === false ? '后台提醒未排定，请打开运行诊断重试。' : '请核对开学日期与每节课时刻。'));
+    if (window.toast) {
+      var skipped = [];
+      if (duplicates) skipped.push('重复 ' + duplicates + ' 条');
+      if (conflicts) skipped.push('冲突 ' + conflicts + ' 条已跳过');
+      toast('📚 课表导入完成', '新增 ' + added + ' 个时段'
+        + (skipped.length ? '；' + skipped.join('，') : '')
+        + (scheduled === false ? '；后台提醒未排定，请运行诊断重试' : replacing ? '；已替换当前课表' : '；已有课程与作息已保留'));
+    }
   }
 
   /* ---------------- 绑定 ---------------- */
@@ -1009,6 +1310,55 @@
     }
     var wn = weekNumber(tt, new Date());
     el.textContent = wn > 0 ? ('本周第 ' + wn + ' 周 · ' + (wn % 2 ? '单周' : '双周')) : '';
+  }
+
+  function openSlotEditor() {
+    var tt = ensureState();
+    var text = document.getElementById('ttSlotsText');
+    if (!text) return;
+    text.value = tt.slots.map(function (slot) { return slot || '待设置'; }).join('\n');
+    document.getElementById('ttSlotsEditor').classList.remove('hidden');
+  }
+  function closeSlotEditor() {
+    var sheet = document.getElementById('ttSlotsEditor');
+    if (sheet) sheet.classList.add('hidden');
+  }
+  function saveSlotEditor() {
+    var raw = document.getElementById('ttSlotsText').value.split(/\r?\n/).map(function (line) {
+      return line.trim().replace(/[~～至]/g, '-').replace(/\s+/g, '');
+    }).filter(Boolean);
+    if (raw.length < 4 || raw.length > 20 ||
+        raw.some(function (line) { return line !== '待设置' && (!/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(line)
+          || line.slice(0, 5) >= line.slice(6)); })) {
+      if (window.toast) toast('⚠️ 作息格式不正确', '每行写成 08:00-08:45，共 4 到 20 节');
+      return;
+    }
+    var tt = ensureState();
+    tt.slots = raw.map(function (slot) { return slot === '待设置' ? null : slot; });
+    tt.schoolPreset = 'custom';
+    if (window.save) save();
+    closeSlotEditor();
+    render();
+    if (window.NativeNotify && window.NativeNotify.syncTimetable) {
+      try { window.NativeNotify.syncTimetable(window.S); } catch (e) {}
+    }
+    if (window.toast) toast('🕘 作息已更新', '只调整每节课时间，未改动已有课程');
+  }
+  function applySchoolPreset() {
+    var select = document.getElementById('ttSchoolPreset');
+    var key = select ? select.value : 'generic';
+    if (key === 'custom') { openSlotEditor(); return; }
+    var slots = SCHOOL_PRESETS[key];
+    if (!slots) return;
+    var tt = ensureState();
+    tt.slots = slots.slice();
+    tt.schoolPreset = key;
+    if (window.save) save();
+    render();
+    if (window.NativeNotify && window.NativeNotify.syncTimetable) {
+      try { window.NativeNotify.syncTimetable(window.S); } catch (e) {}
+    }
+    if (window.toast) toast('🏫 作息模板已应用', key === 'pku' ? '已使用北京大学 12 节作息；课程不会自动导入' : '已使用通用 12 节作息；课程不会自动导入');
   }
 
   function bind() {
@@ -1035,9 +1385,29 @@
     }
     updateTermHint();
 
+    var applyPreset = document.getElementById('ttApplyPreset');
+    if (applyPreset) applyPreset.addEventListener('click', applySchoolPreset);
+    var editSlots = document.getElementById('ttEditSlotsBtn');
+    if (editSlots) editSlots.addEventListener('click', openSlotEditor);
+    var slotsSave = document.getElementById('ttSlotsSave');
+    if (slotsSave) slotsSave.addEventListener('click', saveSlotEditor);
+    var slotsClose = document.getElementById('ttSlotsClose');
+    if (slotsClose) slotsClose.addEventListener('click', closeSlotEditor);
+    var slotsCancel = document.getElementById('ttSlotsCancel');
+    if (slotsCancel) slotsCancel.addEventListener('click', closeSlotEditor);
+
     var reference = document.getElementById('ttReferenceBtn');
     if (reference) reference.addEventListener('click', async function () {
       if (reference.disabled) return;
+      if (!(window.S && window.S.profile && window.S.profile.role === 'admin')) {
+        if (window.toast) toast('普通用户不显示参考课表', '参考课表仅用于管理员测试');
+        return;
+      }
+      var current = ensureState();
+      if (current.courses.length) {
+        if (window.toast) toast('参考课表未导入', '当前课表已有课程。管理员测试前请先清空，避免覆盖或重叠');
+        return;
+      }
       reference.disabled = true;
       try {
         var response = await fetch('data/timetable-reference.json');
@@ -1138,6 +1508,7 @@
     render: render,
     ensureState: ensureState,
     _parseBlocks: parseBlocks,
+    _coursesOverlap: coursesOverlap,
     /** 生成某天的课程提醒点：[{key, at, title, body}] */
     planFor: function (dayTs) {
       var tt = ensureState();
@@ -1151,13 +1522,14 @@
       var weekNo = weekNumber(tt, d);  // 第几周（用于单双周判定）
       var out = [];
       tt.courses.forEach(function (c) {
-        if (!c || c.day !== myDay || !Number.isInteger(c.start) || c.start < 1 || c.start > 12) return;
+        if (!c || c.day !== myDay || !Number.isInteger(c.start) || c.start < 1
+            || c.start > Math.min(20, tt.slots.length)) return;
         // 单双周过滤：早前只在界面上显示「单周/双周」标签，
         // 生成提醒时完全没判断 —— 结果单周课在双周也会提醒、反之亦然。
         // 这是「提醒有时准有时不准」的一个真实成因（周期性课表尤其明显）。
         if (c.week === 'odd' && weekNo % 2 === 0) return;
         if (c.week === 'even' && weekNo % 2 === 1) return;
-        var slot = tt.slots[c.start - 1] || DEFAULT_SLOTS[c.start - 1];
+        var slot = tt.slots[c.start - 1];
         var m = String(slot).match(/(\d{1,2}):(\d{2})/);
         if (!m || +m[1] > 23 || +m[2] > 59) return;
         var at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), +m[1], +m[2], 0).getTime();
