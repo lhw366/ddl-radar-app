@@ -126,7 +126,7 @@ public class ReminderBannerInteractionTest {
                 + " && document.getElementById('editor').dataset.gestureBound==='1')", "true");
         js("S.onboarded=true;document.getElementById('onboard').classList.add('hidden');"
                 + "S.tasks=[{id:'banner-real-task',name:'横幅对应事项',quadrant:'q1',dueAt:Date.now()+3600000,"
-                + "custom:[],tiers:{},daily:false}];window.__taskBefore=JSON.stringify(S.tasks)");
+                + "custom:[],tiers:{120:false,60:false,30:false,5:false},daily:false}];window.__taskBefore=JSON.stringify(S.tasks)");
         int taskId = Integer.parseInt(js("NativeNotify.idOf('banner-real-task|due')"));
         shell("input keyevent KEYCODE_HOME");
         Thread.sleep(250);
@@ -157,8 +157,23 @@ public class ReminderBannerInteractionTest {
     }
 
     private void tapContent(int id) throws Exception {
-        Rect card = bounds(id);
-        shell("input tap " + card.centerX() + " " + (card.bottom - dp(18)));
+        // A measured View may exist before its window is drawn/input-ready.
+        // Wait for the actual draw trace and stable screen bounds before input.
+        long end = System.currentTimeMillis() + 5000;
+        Rect previous = null;
+        int stable = 0;
+        while (System.currentTimeMillis() < end) {
+            Rect card = bounds(id);
+            if (!card.isEmpty() && detail(id, "overlay_visible").contains("shown=true") && card.equals(previous)) stable++;
+            else stable = 0;
+            if (stable >= 2) {
+                shell("input tap " + card.centerX() + " " + (card.bottom - dp(18)));
+                return;
+            }
+            previous = card;
+            Thread.sleep(40);
+        }
+        fail("Card must finish drawing before a real content tap: " + ReminderTrace.read(ctx));
     }
 
     private View findCard(int id) {
