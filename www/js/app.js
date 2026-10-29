@@ -54,6 +54,8 @@ let dtEditTarget = null;
 let dtDraft = null;
 let dtViewYear = 0, dtViewMonth = 0;
 function openDateTimePicker(targetId) {
+  const focused = document.activeElement;
+  if (focused && typeof focused.blur === 'function') focused.blur();
   dtEditTarget = targetId;
   const input = $(targetId);
   const parsed = input && input.value ? new Date(input.value) : new Date(Date.now() + 2 * 3600000);
@@ -64,6 +66,7 @@ function openDateTimePicker(targetId) {
   $('dateTimeTitle').textContent = targetId === 'fStart' ? '选择开始时间' : '选择截止时间';
   renderDateTimePicker();
   $('dateTimeWrap').classList.remove('hidden');
+  $('dateTimeSheet').scrollTop = 0;
 }
 function moveDateTimeMonth(delta) {
   const d = new Date(dtViewYear, dtViewMonth + delta, 1);

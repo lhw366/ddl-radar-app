@@ -94,10 +94,19 @@ public class FormUxRuntimeTest {
         assertEquals("true", js("document.getElementById('editor').scrollHeight>document.getElementById('editor').clientHeight"));
         screenshot("ux-task-editor.png");
         js("document.getElementById('fDuePicker').click();document.querySelector('[data-dt-quick=tomorrow9]').click()" );
+        assertEquals("The text keyboard must not retain focus behind the picker", "true", js(
+                "document.activeElement!==document.getElementById('fName')"));
         assertEquals("true", js("!document.getElementById('dateTimeWrap').classList.contains('hidden')"
                 + " && document.querySelectorAll('#dtDays button').length===42"));
         assertEquals("true", js("document.getElementById('dateTimeSheet').scrollWidth<=innerWidth+1"));
         screenshot("ux-themed-picker.png");
+        if ("true".equals(js("document.getElementById('dateTimeSheet').scrollHeight>document.getElementById('dateTimeSheet').clientHeight+1"))) {
+            float pickerHeight = Float.parseFloat(js("innerHeight"));
+            swipe(160, pickerHeight - 120, 160, pickerHeight * .45f);
+        }
+        assertEquals("The picker confirmation must be reachable on a small screen", "true", js(
+                "(()=>{let r=document.getElementById('dtConfirm').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1})()"));
+        screenshot("ux-picker-confirm.png");
         js("document.getElementById('dtHour').value='14';document.getElementById('dtMinute').value='17';"
                 + "document.getElementById('dtConfirm').click()");
         assertEquals("true", js("/T14:17$/.test(document.getElementById('fDue').value)"

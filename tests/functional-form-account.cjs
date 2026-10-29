@@ -18,8 +18,11 @@ test('APK feedback uses external HTTPS navigation without the unsupported App.op
 
 test('the task sheet uses an in-app date and time picker instead of the native white dialog', () => {
   const h = harness(['nativenotify.js', 'app.js']);
+  let blurred = 0;
+  h.document.activeElement = { blur: () => blurred++ };
   h.run('openEditor(null)');
   h.run('openDateTimePicker("fDue")');
+  assert.equal(blurred, 1, 'Opening the picker releases the text keyboard focus');
   assert.equal(h.el('dateTimeWrap').classList.contains('hidden'), false);
   assert.equal(h.el('dtDays').children.length, 42);
   assert.match(h.el('dtSummary').textContent, /年.*月.*日/);
