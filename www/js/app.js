@@ -169,6 +169,7 @@ const LS_BG = 'ddlr_bg_v1';
 let _lastBgWritten;
 function defaultState() { return {
   onboarded: false,
+  cloudWorkspace: 'guest',
   tasks: [],
   fired: [],
   profile: { id: 'usr' + uid(), name: '本机用户', role: 'user', createdAt: Date.now() },
@@ -189,6 +190,8 @@ function defaultState() { return {
 function normalizeState(data) {
   if (!data || typeof data !== 'object' || !Array.isArray(data.tasks)) throw new Error('无效事项列表');
   const next = Object.assign(defaultState(), data);
+  next.cloudWorkspace = typeof data.cloudWorkspace === 'string' && /^(guest|[a-zA-Z0-9-]{1,80})$/.test(data.cloudWorkspace)
+    ? data.cloudWorkspace : 'guest';
   const rawSettings = data.settings || {};
   next.settings = Object.assign(defaultState().settings, rawSettings);
   // Migrate the old four fixed presets once. New settings store each output
@@ -295,6 +298,8 @@ function save() {
   } catch (e) { console.warn('存储失败', e); }
   // 保持 window.S 与内部 S 指向同一对象（防止某处整体替换了 S 的引用）
   window.S = S;
+  // Cloud failures must never delay or reject a local save or native alarm sync.
+  if (window.CloudAccount) { try { CloudAccount.onLocalSave(); } catch (_) {} }
   // APK 内同步重排系统级精确提醒
   if (window.NativeNotify && NativeNotify.available()) return NativeNotify.sync(S);
   return Promise.resolve(true);
@@ -1092,6 +1097,17 @@ async function bindNativeReminderNavigation() {
 }
 window.AppBridge = { openDay, closeSheet, openReminderUrl };
 
+// Cloud data uses the same validation and native scheduling path as local edits.
+// Settings, fired markers, wallpaper and administrator test tools stay local.
+async function applyCloudState(next) {
+  S = normalizeState(next); window.S = S; invalidateFiredCache();
+  let accepted = false;
+  try { accepted = await save(); } catch (_) { /* Local state is persisted; native sync can retry. */ }
+  applyTheme(); bindSettingsValues(); renderAll(); renderProfile();
+  if (window.Timetable && Timetable.render) Timetable.render();
+  if (accepted === false) toast('⚠️ 数据已保存在本机', '系统提醒尚未确认，请查看提醒诊断');
+}
+
 /* ---------------- 提醒引擎 ---------------- */
 const TIER_MIN = [120, 60, 30, 5];
 
@@ -1398,7 +1414,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.3.9-rc.1';
+const APP_VERSION = '2.4.0-rc.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -2307,7 +2323,9 @@ function bindSettings() {
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('wipeBtn').addEventListener('click', () => {
     if (confirm('确定清空所有事项和数据吗？此操作不可恢复。')) {
+      const currentWorkspace = S.cloudWorkspace;
       S = defaultState(); S.onboarded = true; window.S = S;
+      S.cloudWorkspace = currentWorkspace;
       localStorage.removeItem('ddlr_testAt');
       invalidateFiredCache(); save(); applyTheme(); bindSettingsValues(); renderAll();
       renderProfile();
@@ -2385,6 +2403,7 @@ function handleImport(f) {
     try {
       const data = JSON.parse(rd.result);
       const imported = normalizeState(data);
+      imported.cloudWorkspace = S.cloudWorkspace;
       S = imported; window.S = S; invalidateFiredCache();
       save(); applyTheme(); bindSettingsValues(); renderAll();
       renderProfile();
@@ -2596,6 +2615,7 @@ function init() {
 
   renderAll();
   bindNativeReminderNavigation();
+  if (window.CloudAccount) CloudAccount.init().catch(() => {});
   // ⚠️ 这三处必须各自 try/catch：
   // 早前是裸调用，tickReminders() 内部一旦抛异常（历史上曾因 planReminders
   // 引用未定义的 ymd() 而必抛），异常会直接打断 init()，导致下面五个

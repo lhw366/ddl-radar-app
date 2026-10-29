@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DdlAlarmPlugin.class);
         registerPlugin(DdlOcrPlugin.class);
         registerPlugin(DdlBackupPlugin.class);
+        registerPlugin(DdlSecureStorePlugin.class);
         super.onCreate(savedInstanceState);
         // Future reminders are owned by AlarmManager; no idle foreground service.
     }

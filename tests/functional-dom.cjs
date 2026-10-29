@@ -66,6 +66,8 @@ class Element {
   }
   get innerHTML() { return this._html || ''; }
   matches(selector) {
+    const compound = selector.match(/^([\w-]+)(\[.*\])$/);
+    if (compound) return this.matches(compound[1]) && this.matches(compound[2]);
     if (selector.startsWith('#')) return this.id === selector.slice(1);
     if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
     if (selector.startsWith('[')) {
