@@ -57,7 +57,8 @@ def capture(prefix):
                  'runtime-auto-system-notification.png', 'runtime-tier-system-notification.png',
                  'alarm-page-compact.png', 'alarm-page-auto.png', 'alarm-page-missing.png',
                  'seasonal-banner.png', 'ux-normal-settings.png', 'ux-task-editor.png',
-                 'ux-themed-picker.png', 'ux-picker-confirm.png', 'ux-task-scrolled.png']:
+                 'ux-themed-picker.png', 'ux-picker-confirm.png', 'ux-task-scrolled.png',
+                 'cloud-account-cat.png', 'cloud-account-tech.png', 'cloud-account-cloud.png', 'cloud-account-soda.png']:
         image = adb('exec-out', 'run-as', PKG, 'cat', 'files/' + name, binary=True, check=False)
         if image.startswith(b'\x89PNG'):
             (OUT / f'{prefix}-{name}').write_bytes(image)
@@ -244,6 +245,9 @@ original_zen = adb('shell', 'settings', 'get', 'global', 'zen_mode')
 original_volume = re.search(r'volume is\s+(\d+)',
                            adb('shell', 'media', 'volume', '--stream', '5', '--get', check=False), re.I)
 try:
+    prepare()
+    instrument('CloudAccountRuntimeTest', 3)
+    capture('cloud-account')
     prepare()
     instrument('FormUxRuntimeTest', 1)
     capture('form-ux')

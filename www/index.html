@@ -234,7 +234,54 @@
 
     <!-- ============ 视图4: 我的/设置 ============ -->
     <section class="view hidden" id="view-settings">
-      <h3 class="sec-title">👤 本机账号</h3>
+      <h3 class="sec-title">👤 账户与同步</h3>
+      <div class="card pad cloud-card">
+        <div class="cloud-eyebrow">DDL RADAR · CLOUD</div>
+        <h4 id="cloudIdentity">登录后，在不同设备继续安排</h4>
+        <p id="cloudStatus" class="tip" role="status" aria-live="polite">游客模式 · 数据保存在本机</p>
+        <form id="cloudAuthForm">
+          <div class="cloud-tabs" role="group" aria-label="账户操作">
+            <button type="button" data-cloud-mode="login" class="active">登录</button>
+            <button type="button" data-cloud-mode="signup">注册</button>
+            <button type="button" data-cloud-mode="reset">找回密码</button>
+          </div>
+          <label class="cloud-field">邮箱<input id="cloudEmail" class="f-input" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required></label>
+          <label id="cloudPasswordRow" class="cloud-field">密码<input id="cloudPassword" class="f-input" type="password" autocomplete="current-password" maxlength="128" placeholder="输入密码"></label>
+          <button id="cloudSubmit" class="btn primary full" data-cloud-action type="submit">登录</button>
+          <button id="cloudResend" class="btn ghost full" data-cloud-action type="button">重新发送验证邮件</button>
+        </form>
+        <div id="cloudRecovery" hidden>
+          <label class="cloud-field">设置新密码<input id="cloudNewPassword" class="f-input" type="password" autocomplete="new-password" minlength="10" maxlength="128" placeholder="至少 10 位"></label>
+          <button id="cloudUpdatePassword" class="btn primary full" data-cloud-action>保存新密码</button>
+        </div>
+        <div id="cloudAccountActions" hidden>
+          <div id="cloudChoice" hidden>
+            <p class="tip">开启后上传并同步事项、课表和昵称。壁纸照片、诊断、反馈草稿和手机提醒偏好保留在本机。</p>
+            <div class="row-btns">
+              <button id="cloudUseLocal" class="btn primary" data-cloud-action>用本机数据开启同步</button>
+              <button id="cloudUseRemote" class="btn ghost" data-cloud-action>使用云端数据</button>
+            </div>
+            <button id="cloudResume" class="btn ghost full" data-cloud-action hidden>恢复此账户的本机工作区</button>
+          </div>
+          <div id="cloudConflict" class="cloud-conflict" hidden>
+            <strong>两边都有修改</strong><p id="cloudConflictSummary" class="tip"></p>
+            <div class="row-btns">
+              <button id="cloudKeepLocal" class="btn primary" data-cloud-action>保留本机版本</button>
+              <button id="cloudKeepRemote" class="btn ghost" data-cloud-action>使用云端版本</button>
+            </div>
+          </div>
+          <div class="row-btns">
+            <button id="cloudSyncBtn" class="btn primary" data-cloud-action hidden>立即同步</button>
+            <button id="cloudPauseBtn" class="btn ghost" data-cloud-action hidden>暂停同步</button>
+          </div>
+          <div class="row-btns">
+            <button id="cloudRestoreLocal" class="btn ghost" data-cloud-action>恢复替换前副本</button>
+            <button id="cloudSignOut" class="btn ghost" data-cloud-action>退出登录</button>
+          </div>
+        </div>
+        <p class="tip cloud-privacy">可一直使用游客模式。云端暂时不可用时，事项编辑和本机提醒继续工作。</p>
+      </div>
+      <h3 class="sec-title">本机资料与备份</h3>
       <div class="card pad account-card">
         <div class="account-head">
           <div class="account-avatar">📡</div>
@@ -243,7 +290,7 @@
             <div class="account-meta"><span id="profileRole">普通用户</span><span id="profileId">—</span></div>
           </div>
         </div>
-        <div class="tip">事项和反馈草稿只保存在本机。建议定期保存账号恢复包；重装后可导入恢复。不会自动读取或上传你的事项内容。</div>
+        <div class="tip">恢复包包含本机事项、课表及壁纸，不包含登录密码或凭据。云端同步需在上方登录并主动开启；反馈草稿始终保留在本机。</div>
         <div class="row-btns">
           <button id="saveRecoveryBtn" class="btn primary">💾 保存恢复包</button>
           <button id="loadRecoveryBtn" class="btn ghost">📥 恢复账号</button>
@@ -524,6 +571,10 @@
 <script src="js/calendar.js"></script>
 <script src="js/nativenotify.js"></script>
 <script src="js/timetable.js"></script>
+<script src="assets/supabase.js"></script>
+<script src="js/cloud-config.js"></script>
+<script src="js/cloud-model.js"></script>
+<script src="js/cloud.js"></script>
 <script src="js/app.js"></script>
 <script src="js/gestures.js"></script>
 <script src="js/readability.js"></script>

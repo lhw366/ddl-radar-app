@@ -31,9 +31,16 @@ jobs:
           java-version: '17'
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Bundle cloud accounts with public project configuration
+        env:
+          DDL_SUPABASE_URL: ${{ vars.DDL_SUPABASE_URL }}
+          DDL_SUPABASE_PUBLISHABLE_KEY: ${{ vars.DDL_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run cloud:build
+      - name: Verify cloud isolation and concurrent update rules in PostgreSQL
+        run: npm run test:cloud-db
       - run: npx cap sync android
       - name: Check normal gradients, saves, update prompts and timetable forms
         run: node --test tests/functional-*.cjs
