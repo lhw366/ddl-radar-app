@@ -41,6 +41,14 @@ public class CloudAccountRuntimeTest {
         }
         return result;
     }
+    private void awaitVisual() throws Exception {
+        CountDownLatch drawn = new CountDownLatch(1);
+        instrumentation.runOnMainSync(() -> activity.getBridge().getWebView().postVisualStateCallback(
+                System.nanoTime(), new android.webkit.WebView.VisualStateCallback() {
+                    @Override public void onComplete(long requestId) { drawn.countDown(); }
+                }));
+        assertTrue("Account page visual state did not commit", drawn.await(15, TimeUnit.SECONDS));
+    }
     @Before public void start() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
         context = instrumentation.getTargetContext();
@@ -82,13 +90,15 @@ public class CloudAccountRuntimeTest {
         String originalTheme = js("S.settings.theme");
         for (String theme : new String[]{"cat", "tech", "cloud", "soda"}) {
             js("S.settings.theme='" + theme + "';applyTheme();window.scrollTo(0,0)");
+            assertEquals("true", js("document.body.classList.contains('theme-" + theme + "')"));
             assertEquals("true", js("document.documentElement.scrollWidth<=innerWidth+1"));
             js("document.querySelector('[data-cloud-mode=signup]').click()");
             assertEquals("\"new-password\"", js("document.getElementById('cloudPassword').autocomplete"));
             js("document.querySelector('[data-cloud-mode=reset]').click()");
             assertEquals("true", js("document.getElementById('cloudPasswordRow').hidden"));
             js("document.querySelector('[data-cloud-mode=login]').click()");
-            instrumentation.waitForIdleSync(); Thread.sleep(400);
+            assertEquals("false", js("document.getElementById('cloudPasswordRow').hidden"));
+            instrumentation.waitForIdleSync(); awaitVisual(); Thread.sleep(400);
             Bitmap bitmap = instrumentation.getUiAutomation().takeScreenshot();
             assertNotNull(bitmap);
             try (FileOutputStream out = new FileOutputStream(new File(context.getFilesDir(), "cloud-account-" + theme + ".png"))) {
