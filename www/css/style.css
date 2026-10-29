@@ -515,10 +515,10 @@ body.theme-cat .cal-cell.rest .d-num{ color:#e05a6d; }
 .account-card{padding:14px}
 .cloud-card{position:relative;overflow:hidden;border:1px solid var(--card-border);margin-bottom:18px}
 .cloud-card h4{margin:8px 0;font-size:16px;overflow-wrap:anywhere}
-.cloud-eyebrow{font-size:10px;letter-spacing:2px;color:var(--accent);font-weight:700}
+.cloud-eyebrow{font-size:10px;letter-spacing:2px;color:var(--readable-accent,var(--accent));font-weight:700}
 .cloud-tabs{display:flex;gap:6px;padding:4px;border-radius:14px;background:rgba(128,128,128,.08);margin:14px 0}
 .cloud-tabs button{flex:1;border:0;border-radius:10px;background:transparent;color:inherit;padding:10px 4px;font:inherit;font-size:12px}
-.cloud-tabs button.active{background:var(--accent);color:var(--accent-text,#fff)}
+.cloud-tabs button.active{background:var(--action-bg,var(--accent));color:var(--on-accent,#152020)}
 .cloud-field{display:block;font-size:12px;margin:12px 0;color:inherit}
 .cloud-field input{display:block;margin-top:6px;box-sizing:border-box;width:100%;min-width:0}
 .cloud-conflict{padding:12px;border-radius:14px;border:1px solid var(--accent);margin:12px 0;background:rgba(128,128,128,.06)}
