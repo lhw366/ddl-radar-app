@@ -14,7 +14,7 @@ GitHub Actions 生成；运行结果与发布链接在本轮检查完成后补�
 | 原生恢复包保存 | Android 36 Release 的 `BackupRuntimeTest` 4/4 通过，含完整 UTF-8 JSON 与大壁纸读回、取消、写入失败及本地文件意图。 |
 | 原生离线 OCR | `TimetableOcrTest` 3/3 通过；实际 ML Kit 输出还原原参考图 13 个、DOCX 手机图 12 个、底部表格图 14 个课程位置，无教室伪课程。 |
 | Release 与测试 APK | 本地 Release、测试 APK 与 JVM 单元测试编译通过；正式签名及不可调试校验由发布 workflow 执行。 |
-| Android 36 提醒回归 | 沿用 `tests/android_runtime.py`；本轮执行结果待补。 |
+| Android 36 提醒回归 | PR workflow 113 全部通过，含真实五分钟梯度与截止、静音/勿扰、冷进程及冻结进程；日期焦点视觉补丁的最终发布结果待补。 |
 | OPPO 实机 | 未执行本轮实机验收，不能由模拟器结果推定到点时效。 |
 | 发布与更新入口 | 待检查全部通过并发布后，核对公开元数据、APK 和应用检查更新。 |
 
