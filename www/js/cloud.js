@@ -222,7 +222,8 @@
         !confirm(`云端已有 ${row.payload.tasks.length} 条事项。用本机数据替换它们？云端会保留最近 5 次历史，本机原内容也会备份。`)) return;
     archive(meta.active, window.S);
     if (meta.active === 'guest') archive('guest', window.S);
-    archive('before-cloud-' + owner, cached || window.S);
+    const ownBackup = meta.active === 'guest' || ownsWorkspace() ? window.S : local || window.defaultState();
+    archive('before-cloud-' + owner, cached || ownBackup);
     // Restore a paused account's own unsynced workspace, never somebody else's.
     let chosen = source === 'cloud' ? row.payload : CloudModel.snapshot(local);
     if (!chosen) chosen = CloudModel.snapshot({ ...window.S, tasks: [], timetable: null,

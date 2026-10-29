@@ -21,7 +21,7 @@ async function setup(options = {}) {
     resend: async value => { calls.push(['resend', value]); return {}; },
     signOut: async () => { calls.push('signout'); return {}; },
     updateUser: async value => { calls.push(['password', value]); return {}; },
-    exchangeCodeForSession: async code => { calls.push(['exchange', code]); return { data: { session: { user }, redirectType: options.recovery ? 'recovery' : null } }; }
+    exchangeCodeForSession: async (code, opts) => { calls.push(['exchange', code, opts]); return { data: { session: { user }, redirectType: options.recovery ? 'recovery' : null } }; }
   };
   const client = {
     auth,
@@ -225,6 +225,7 @@ test('duplicate callback delivery exchanges a PKCE code once and preserves its f
   await h.run(`CloudAccount.handleUrl(${JSON.stringify(value)})`);
   await h.run(`CloudAccount.handleUrl(${JSON.stringify(value)})`);
   assert.equal(h.calls.filter(c => Array.isArray(c) && c[0] === 'exchange').length, 1);
+  assert.equal(h.calls.find(c => Array.isArray(c) && c[0] === 'exchange')[2].flowId, '0123456789abcdef');
 });
 test('Android appState background event prevents sync even before document.hidden changes', async () => {
   const listeners = {};
@@ -237,4 +238,21 @@ test('Android appState background event prevents sync even before document.hidde
   h.run(`S.tasks.push(${JSON.stringify(task('native-background'))}); save()`);
   await h.run('CloudAccount.sync()');
   assert.equal(h.calls.length, before);
+});
+
+test('an expired-session account switch cannot expose the old account in the new account recovery copy', async () => {
+  const aliceState = { onboarded: true, tasks: [task('alice-private')], cloudWorkspace: 'alice',
+    profile: { id: 'local', name: 'Alice', role: 'user' }, settings: {} };
+  const guestState = { ...aliceState, cloudWorkspace: 'guest', tasks: [task('guest-public')], profile: { ...aliceState.profile, name: 'Guest' } };
+  const h = await setup({ user: { id: 'bob', email: 'bob@example.com' }, storage: {
+    ddlr_v1: JSON.stringify(aliceState),
+    ddlr_cloud_v1: JSON.stringify({ active: 'alice', accounts: { alice: { enabled: false, revision: 0, base: '' } } }),
+    'ddlr_workspace_v1:guest': JSON.stringify(guestState)
+  } });
+  await h.el('cloudUseLocal').click();
+  assert.equal(h.context.S.tasks[0].id, 'guest-public');
+  assert.doesNotMatch(h.storage.get('ddlr_workspace_v1:before-cloud-bob'), /alice-private/);
+  assert.match(h.storage.get('ddlr_workspace_v1:alice'), /alice-private/);
+  await h.el('cloudRestoreLocal').click();
+  assert.equal(h.context.S.tasks[0].id, 'guest-public');
 });

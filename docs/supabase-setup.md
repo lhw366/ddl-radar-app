@@ -40,6 +40,12 @@ Node 使用 22 或更新版本。官方客户端随 APK 打包，启动不依赖
 
 数据库新增变更放进新的 `supabase/migrations/时间戳_名称.sql`，先运行权限回归后部署；不要修改已部署迁移，避免重跑破坏现有数据。当前协议 schema=1，版本不兼容时 App 拒绝覆盖本机数据。
 
+本次迁移由你在 SQL Editor 手工执行，尚未登记为 CLI migration history。
+将来首次启用 GitHub 自动数据库部署前，需要使用已授权并链接此项目的 Supabase CLI 执行
+`supabase migration repair 202610290001 --status applied --linked`，然后用 `supabase migration list --linked` 核对。
+此步骤只登记已经执行的迁移，不能在尚未建好表时使用，也不要再次直接创建已有表。
+App 的公开 key 不能执行迁移或修改 Auth 后台配置；当前没有获得这类管理授权。
+
 ## 数据库权限
 
 `ddlr_cloud_state` 每个 Auth 用户一行，`ddlr_cloud_history` 保存该用户历史。
