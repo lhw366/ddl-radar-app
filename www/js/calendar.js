@@ -132,14 +132,6 @@
       const todayStr = ymd(new Date());
       const selStr = Cal._sel || null;
 
-      const tasks = (window.S && window.S.tasks) || [];
-      const taskDays = {};
-      for (const t of tasks) {
-        if (!t || t.done || !t.dueAt || !Number.isFinite(new Date(t.dueAt).getTime())) continue;
-        const k = ymd(new Date(t.dueAt));
-        (taskDays[k] = taskDays[k] || []).push(t);
-      }
-
       for (let i = 0; i < 42; i++) {
         const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
         const k = ymd(d);
@@ -154,7 +146,7 @@
         if (legal && !legal.off) cell.classList.add('work');
 
         const sub = cellSub(d, legal);
-        const dots = (taskDays[k] || []).length;
+        const dots = window.AppBridge?.tasksForDay?.(k).length || 0;
 
         const subText = String(sub.text || '').replace(/[&<>"']/g, (ch) =>
           ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));

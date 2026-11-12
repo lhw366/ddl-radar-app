@@ -425,14 +425,16 @@
               var r = list[j];
               // The web catch-up window must not schedule already-past tiers
               // as a burst of native alarms when a task is first saved.
-              if (r.at < now - 2000) continue;
+              // The native scheduler decides whether a due recurring alarm was
+              // delivered. A foreground resync must not replace one still pending.
+              if (r.at < now - 2000 && !r.scheduledRepeat) continue;
               var id = hashId(r.nativeKey || r.key);
               if (scheduledIds.has(id)) continue;
               scheduledIds.add(id);
               alarms.push({
                 id: id,
                 at: r.at,
-                title: r.repeatDays === 1 ? '📅 每日提醒' : r.title.replace(/<[^>]+>/g, ''),
+                title: r.nativeKey === S.tasks[i].id + '|daily' ? '📅 每日提醒' : r.title.replace(/<[^>]+>/g, ''),
                 body: r.body.replace(/<[^>]+>/g, ''),
                 repeatDays: r.repeatDays || 0,
                 repeatUntil: r.repeatUntil || 0,

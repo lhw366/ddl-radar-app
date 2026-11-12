@@ -73,9 +73,16 @@
         <h3 class="sec-title"><img class="sec-ico" src="assets/emoji3d/sparkles.png" alt="">更远的以后</h3>
         <div id="laterList" class="task-list"></div>
       </div>
+      <div id="repeatSection" class="list-sec hidden">
+        <h3 class="sec-title">重复事项</h3>
+        <div id="repeatList" class="task-list"></div>
+      </div>
       <div id="doneSection" class="list-sec">
         <h3 class="sec-title"><img class="sec-ico" src="assets/emoji3d/check.png" alt="">已完成</h3>
         <div id="doneList" class="task-list"></div>
+        <button id="doneHistoryBtn" class="btn-ghost-sm hidden" type="button"
+                aria-expanded="false" aria-controls="doneHistoryList">查看完成历史</button>
+        <div id="doneHistoryList" class="task-list hidden"></div>
       </div>
       <div id="emptyHome" class="empty-tip hidden">这里空空如也，先去躺一会儿也行 🛋️</div>
     </section>
@@ -450,6 +457,35 @@
       <button data-q="q4">⚪ 不重要不紧急</button>
     </div>
 
+    <label class="f-label">重复提醒</label>
+    <div class="seg" id="fRepeat">
+      <button type="button" data-r="none" class="on">不重复</button>
+      <button type="button" data-r="daily">每天</button>
+      <button type="button" data-r="weekly">每周</button>
+      <button type="button" data-r="legacy" id="fRepeatLegacy" class="hidden">旧版打卡</button>
+    </div>
+    <div id="fRepeatSchedule" class="hidden">
+      <div id="fRepeatWeekRow" class="hidden">
+        <label class="f-label" id="fRepeatWeekLabel">提醒日 <small>可多选</small></label>
+        <div class="repeat-weekdays" id="fRepeatWeek" role="group" aria-labelledby="fRepeatWeekLabel">
+          <button type="button" data-weekday="1" aria-label="星期一" aria-pressed="false">一</button>
+          <button type="button" data-weekday="2" aria-label="星期二" aria-pressed="false">二</button>
+          <button type="button" data-weekday="3" aria-label="星期三" aria-pressed="false">三</button>
+          <button type="button" data-weekday="4" aria-label="星期四" aria-pressed="false">四</button>
+          <button type="button" data-weekday="5" aria-label="星期五" aria-pressed="false">五</button>
+          <button type="button" data-weekday="6" aria-label="星期六" aria-pressed="false">六</button>
+          <button type="button" data-weekday="0" aria-label="星期日" aria-pressed="false">日</button>
+        </div>
+      </div>
+      <label for="fRepeatTime" class="f-label">提醒时间</label>
+      <input id="fRepeatTime" class="f-input" type="time">
+      <label for="fRepeatStart" class="f-label">开始日期</label>
+      <input id="fRepeatStart" class="f-input" type="date">
+      <label for="fRepeatEnd" class="f-label">提醒截止日期 <small>可留空，所选日期当天仍提醒</small></label>
+      <input id="fRepeatEnd" class="f-input" type="date">
+    </div>
+
+    <div id="fSingleSchedule">
     <label class="f-label">时间类型</label>
     <div class="seg" id="fTimeType">
       <button data-t="point" class="on">⏱️ 时间点</button>
@@ -465,16 +501,7 @@
     <input id="fDue" type="hidden">
     <button id="fDuePicker" type="button" class="date-time-trigger">选择截止时间</button>
 
-    <label class="f-label">🔁 重复（长期规划：背单词、健身、周报打卡）</label>
-    <div class="seg" id="fRepeat">
-      <button data-r="none" class="on">不重复</button>
-      <button data-r="daily">每天</button>
-      <button data-r="weekly">每周</button>
-      <button data-r="ndays">每隔N天</button>
-    </div>
-    <div id="fRepNRow" class="hidden" style="display:flex;gap:8px;align-items:center;margin-top:7px;font-size:12.5px;color:var(--text-dim)">
-      每隔 <input id="fRepN" type="number" min="2" max="365" value="3" class="f-input" style="width:76px;text-align:center;padding:6px"> 天自动重生
-    </div>
+    <p id="fRepeatLegacyNote" class="f-label hidden"></p>
 
     <label class="f-label">⏰ 提醒策略 <small>(截止当天到点前分段提示)</small></label>
     <div class="tier-chips" id="fTier">
@@ -489,6 +516,7 @@
     <div class="set-line" style="margin-top:12px">
       <div>🗓️ 远期每日提醒 <small>(默认 <b id="fDailyDef">12:00</b>)</small></div>
       <label class="switch"><input type="checkbox" id="fDaily" checked><i></i></label>
+    </div>
     </div>
 
     <div class="sheet-btns">

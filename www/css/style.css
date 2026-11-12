@@ -259,9 +259,10 @@ body.tech-deco #bgLayer::after{ /* 科技主题网格纹理 */
 .task .t-check{
   width:22px; height:22px; border-radius:8px; border:2px solid var(--readable-dim,var(--text-dim));
   flex-shrink:0; display:flex; align-items:center; justify-content:center;
-  font-size:13px; color:transparent; transition:.2s; cursor:pointer;
+  padding:0; background:transparent; font-size:13px; color:transparent; transition:.2s; cursor:pointer;
 }
 .task .t-check.on{ background:var(--ok); border-color:var(--ok); color:#fff; }
+.task .t-check:disabled{ opacity:.55; cursor:default; }
 .task .t-name{ font-size:14.5px; font-weight:700; flex:1; line-height:1.4;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .task.done .t-name{ text-decoration:line-through; opacity:.45; }
@@ -572,17 +573,21 @@ body[data-wallpaper=true] .profile-name{color:var(--photo-ink,var(--readable-tex
 textarea.f-input{ resize:none; line-height:1.6; }
 
 .quad-chips{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.quad-chips button, .seg button, .tier-chips button{
+.quad-chips button, .seg button, .tier-chips button, .repeat-weekdays button{
   border:1.5px solid var(--card-border); background:var(--surface-card,var(--card)); color:var(--readable-dim,var(--text-dim));
   border-radius:11px; padding:9px 6px; font-size:12px; font-weight:700; cursor:pointer; font-family:var(--font);
   transition:all .18s;
 }
-.quad-chips button.on, .seg button.on, .tier-chips button.on{
+.quad-chips button.on, .seg button.on, .tier-chips button.on, .repeat-weekdays button[aria-pressed=true]{
   background:var(--action-bg,var(--chip-on)); color:var(--on-accent,#152020); border-color:transparent;
   box-shadow:0 4px 12px var(--accent-soft);
 }
 .seg{ display:flex; gap:8px; }
 .seg button{ flex:1; }
+.repeat-weekdays{ display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; }
+.repeat-weekdays button{ min-width:0; min-height:38px; padding-inline:0; }
+#fRepeatSchedule .f-input{ min-width:0; max-width:100%; }
+#doneHistoryBtn{ margin:8px 0; }
 .tier-chips{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:7px; }
 
 .custom-rem{ display:flex; flex-direction:column; gap:7px; margin-top:9px; }
