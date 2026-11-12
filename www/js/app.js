@@ -9,6 +9,24 @@ const $ = (id) => document.getElementById(id);
 const pad = (n) => String(n).padStart(2, '0');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
+const CLOCK_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function isLocalDay(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  return ymdOf(new Date(value + 'T12:00').getTime()) === value;
+}
+
+function isScheduledRepeat(task) {
+  return typeof task.repeat?.time === 'string';
+}
+
+function validRepeatSchedule(rule) {
+  return ['daily', 'weekly'].includes(rule.type) && typeof rule.time === 'string' && CLOCK_PATTERN.test(rule.time) &&
+    isLocalDay(rule.startOn) && (rule.endOn === '' || (isLocalDay(rule.endOn) && rule.endOn >= rule.startOn)) &&
+    (rule.type === 'daily' || (Array.isArray(rule.weekdays) && rule.weekdays.length > 0 &&
+      new Set(rule.weekdays).size === rule.weekdays.length &&
+      rule.weekdays.every(day => Number.isInteger(day) && day >= 0 && day <= 6)));
+}
 
 function fmtDT(ts) {
   if (!ts) return '';
@@ -220,8 +238,12 @@ function normalizeState(data) {
     if (!['q1', 'q2', 'q3', 'q4'].includes(task.quadrant) ||
         !Array.isArray(task.custom) || task.custom.some(r => !r || !Number.isFinite(r.v) || r.v < 0 || !['m', 'h', 'd'].includes(r.u)) ||
         (task.isRange && (!Number.isFinite(task.startAt) || task.startAt > task.dueAt))) throw new Error('无效提醒设置');
-    if (task.repeat && (!['daily', 'weekly', 'ndays'].includes(task.repeat.type) ||
-        (task.repeat.type === 'ndays' && (!Number.isInteger(task.repeat.n) || task.repeat.n < 2)))) throw new Error('无效重复规则');
+    if (task.repeat) {
+      const rule = task.repeat;
+      const valid = 'time' in Object(rule) ? validRepeatSchedule(rule) : ['daily', 'weekly', 'ndays'].includes(rule.type) &&
+        (rule.type !== 'ndays' || (Number.isInteger(rule.n) && rule.n >= 2));
+      if (!valid) throw new Error('无效重复规则');
+    }
     return task;
   });
   next.fired = Array.isArray(data.fired) ? data.fired.filter(k => typeof k === 'string') : [];
@@ -240,7 +262,7 @@ function normalizeState(data) {
     ? data.feedbackDrafts.filter(item => item && typeof item.text === 'string' && item.text.trim())
       .slice(-20).map(item => ({ text: item.text.trim().slice(0, 1200), at: Number(item.at) || Date.now() }))
     : [];
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(next.settings.dailyTime)) next.settings.dailyTime = '12:00';
+  if (!CLOCK_PATTERN.test(next.settings.dailyTime)) next.settings.dailyTime = '12:00';
   if (data.timetable != null) {
     const tt = data.timetable;
     if (!Array.isArray(tt.courses) || tt.courses.some(c => !c || typeof c.id !== 'string' ||
@@ -439,6 +461,7 @@ function stripTags(s) {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   document.title = 'DDL雷达 · 不再错过任何死线';
+  if (curView === 'home') renderHome();
   // 切回前台立刻补查提醒（后台标签页的定时器会被浏览器节流）。
   // 顺序必须是「先拉原生已投递日志，再补弹」：反了会把刚响过的提醒再弹一遍。
   if (window.NativeNotify && NativeNotify.available()) {
@@ -688,7 +711,36 @@ function switchView(v) {
 /* ---------------- 任务渲染 ---------------- */
 const QUAD_NAME = { q1: '重要且紧急', q2: '重要不紧急', q3: '紧急不重要', q4: '不重要不紧急' };
 
-/* 打卡类任务完成后，按重复规则自动生成下一次 */
+function repeatAtOnDay(rule, day, weekday) {
+  if (day < rule.startOn || (rule.endOn && day > rule.endOn)) return null;
+  const at = new Date(day + 'T' + rule.time);
+  if (weekday != null && at.getDay() !== weekday) return null;
+  if (rule.type === 'weekly' && !rule.weekdays.includes(at.getDay())) return null;
+  return at.getTime();
+}
+
+function nextRepeatAt(rule, from, skipDay, weekday) {
+  const first = ymdOf(from);
+  const day = new Date((first < rule.startOn ? rule.startOn : first) + 'T12:00');
+  for (let offset = 0; offset <= 7; offset++, day.setDate(day.getDate() + 1)) {
+    const date = ymdOf(day.getTime());
+    if (date === skipDay) continue;
+    const at = repeatAtOnDay(rule, date, weekday);
+    if (at !== null && at >= from) return at;
+  }
+  return null;
+}
+
+function displayRepeatAt(task, now) {
+  const today = ymdOf(now);
+  if (task.repeatDoneOn !== today) {
+    const at = repeatAtOnDay(task.repeat, today);
+    if (at !== null) return at;
+  }
+  return nextRepeatAt(task.repeat, now, task.repeatDoneOn);
+}
+
+/* 兼容旧版：打卡完成时才生成下一条。 */
 function spawnNext(t) {
   if (!t.repeat || !t.dueAt) return null;
   if (t.nextRepeatId) return S.tasks.find(x => x.id === t.nextRepeatId) || null;
@@ -709,27 +761,65 @@ function spawnNext(t) {
 }
 const REPEAT_TXT = { daily: '每天', weekly: '每周', ndays: '' };
 
-function taskCard(t) {
+function repeatLabel(rule) {
+  if (rule.type === 'ndays') return '每隔' + rule.n + '天';
+  if (rule.type === 'weekly' && rule.time) {
+    return [1, 2, 3, 4, 5, 6, 0].filter(day => rule.weekdays.includes(day)).map(day => '周' + WD[day]).join('、');
+  }
+  return REPEAT_TXT[rule.type];
+}
+
+function completeOccurrence(task, at, now) {
+  const day = ymdOf(at);
+  if (ymdOf(now) !== day || task.repeatDoneOn === day || repeatAtOnDay(task.repeat, day) !== at) return false;
+  task.repeatDoneOn = day;
+  task.updatedAt = now;
+  S.tasks.push({
+    ...task, id: uid(), dueAt: at, repeat: null, repeatDoneOn: null, repeatSourceId: task.id,
+    done: true, doneAt: now
+  });
+  return true;
+}
+
+function undoOccurrence(record, now) {
+  const day = ymdOf(record.doneAt);
+  const source = S.tasks.find(task => task.id === record.repeatSourceId);
+  if (!source || !isScheduledRepeat(source) || day !== ymdOf(now) || source.repeatDoneOn !== day) return false;
+  source.repeatDoneOn = null;
+  source.updatedAt = now;
+  S.tasks = S.tasks.filter(task => task !== record);
+  return true;
+}
+
+function taskCard(t, occurrenceAt = t.dueAt) {
   const el = document.createElement('div');
   el.className = 'card task' + (t.done ? ' done' : '');
-  const left = t.dueAt - Date.now();
-  if (!t.done && left < 0) el.classList.add('overdue');
-
-  const leftTxt = t.done ? '' :
+  const now = Date.now();
+  const today = ymdOf(now);
+  const scheduled = isScheduledRepeat(t);
+  const left = occurrenceAt - now;
+  if (!t.done && !scheduled && left < 0) el.classList.add('overdue');
+  const leftTxt = t.done || scheduled ? '' :
     (left < 0 ? '已过期' :
       (left < 86400000 ? `⏳ ${fmtLeft(left)}后截止` : `⏳ 还剩 ${Math.ceil(left / 86400000)} 天`));
-  const timeTxt = t.isRange && t.startAt ? `${fmtDT(t.startAt)} → ${fmtDT(t.dueAt)}` : fmtDT(t.dueAt);
+  const timeTxt = scheduled
+    ? (occurrenceAt === null ? '重复提醒已结束' : `${left < 0 ? '本次' : '提醒'} ${fmtDT(occurrenceAt)}`)
+    : (t.isRange && t.startAt ? `${fmtDT(t.startAt)} → ${fmtDT(t.dueAt)}` : fmtDT(t.dueAt));
   const hasDetail = !!(t.detail && t.detail.trim());
+  const canCheck = scheduled ? occurrenceAt !== null && ymdOf(occurrenceAt) === today
+    : !t.repeatSourceId || (ymdOf(t.doneAt) === today &&
+      S.tasks.some(source => source.id === t.repeatSourceId && isScheduledRepeat(source) && source.repeatDoneOn === today));
 
   el.innerHTML = `
     <div class="t-top">
-      <span class="t-check ${t.done ? 'on' : ''}">✓</span>
+      <button type="button" class="t-check ${t.done ? 'on' : ''}" aria-label="${t.done ? '撤销完成' : '完成本次'}" ${canCheck ? '' : 'disabled'}>✓</button>
       <span class="t-name">${escapeHtml(t.name)}</span>
       <span class="t-badge b-${t.quadrant}">${QUAD_NAME[t.quadrant]}</span>
-      ${t.repeat ? `<span class="t-badge b-rep">🔁 ${t.repeat.type === 'ndays' ? '每隔' + t.repeat.n + '天' : REPEAT_TXT[t.repeat.type]}</span>` : ''}
+      ${t.repeat && !scheduled ? `<span class="t-badge b-rep">🔁 ${repeatLabel(t.repeat)}</span>` : ''}
     </div>
     <div class="t-meta">
       <span>🕐 ${timeTxt}</span>
+      ${scheduled ? `<span>🔁 ${repeatLabel(t.repeat)} ${t.repeat.time}</span>` : ''}
       ${leftTxt ? `<span data-due="${t.dueAt}">${leftTxt}</span>` : ''}
       ${hasDetail ? `<span class="t-toggle">细节 <span class="t-arrow">▶</span></span>` : ''}
     </div>
@@ -737,15 +827,30 @@ function taskCard(t) {
 
   el.querySelector('.t-check').addEventListener('click', (e) => {
     e.stopPropagation();
-    t.done = !t.done; t.doneAt = t.done ? Date.now() : null;
-    t.updatedAt = Date.now();
-    if (t.done) {
-      const nt = spawnNext(t);
-      toast('🎉 干得漂亮！', nt ? `🔁 下一次已自动排到 ${fmtDT(nt.dueAt)}` : `『${escapeHtml(t.name)}』完成`);
+    if (!canCheck) return;
+    const checkedAt = Date.now();
+    let completed = false;
+    let nextAt = null;
+    if (scheduled) {
+      if (!completeOccurrence(t, occurrenceAt, checkedAt)) return;
+      completed = true;
+      nextAt = displayRepeatAt(t, checkedAt);
+    } else if (t.repeatSourceId) {
+      if (!undoOccurrence(t, checkedAt)) return;
+    } else {
+      t.done = !t.done; t.doneAt = t.done ? checkedAt : null;
+      t.updatedAt = checkedAt;
+      completed = t.done;
+      if (completed) nextAt = spawnNext(t)?.dueAt;
+    }
+    if (completed) {
+      toast('🎉 已完成', nextAt ? `下次提醒 ${fmtDT(nextAt)}` : `『${escapeHtml(t.name)}』完成`);
       beep();
     }
     save();
     renderAll();
+    const dayWrap = $('dayWrap');
+    if (!dayWrap.classList.contains('hidden') && dayWrap.dataset.day) openDay(dayWrap.dataset.day);
   });
   const toggle = el.querySelector('.t-toggle');
   if (toggle) toggle.addEventListener('click', (e) => {
@@ -753,7 +858,10 @@ function taskCard(t) {
     el.querySelector('.t-detail').classList.toggle('open');
     el.querySelector('.t-arrow').classList.toggle('open');
   });
-  el.addEventListener('click', () => openEditor(t.id));
+  el.addEventListener('click', () => {
+    if (!t.repeatSourceId) openEditor(t.id);
+    else if (toggle) toggle.click();
+  });
   return el;
 }
 function escapeHtml(s) {
@@ -761,13 +869,21 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+const COMPLETED_VISIBLE_MS = 3 * 86400000;
+let showDoneHistory = false;
+
 function renderHome() {
   const now = Date.now();
   const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
   const week = now + 7 * 86400000;
 
-  const open = S.tasks.filter((t) => !t.done && t.dueAt);
+  const open = S.tasks.filter((t) => !t.done && t.dueAt && !isScheduledRepeat(t));
+  const repeats = S.tasks.filter((t) => !t.done && isScheduledRepeat(t))
+    .map(t => ({ task: t, at: displayRepeatAt(t, now) }))
+    .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
   const done = S.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+  const recentDone = done.filter(t => t.doneAt > now - COMPLETED_VISIBLE_MS);
+  const history = done.slice(recentDone.length);
 
   // 英雄卡：优先显示最近的「未来」DDL；全部过期时才显示最近的过期项
   const future = open.filter((t) => t.dueAt > now).sort((a, b) => a.dueAt - b.dueAt);
@@ -784,7 +900,7 @@ function renderHome() {
     const span = Math.max(next.dueAt - (next.createdAt || next.dueAt - 86400000), 1);
     $('heroBar').firstElementChild.style.width = Math.min(Math.max((1 - left / span) * 100, 2), 100) + '%';
   } else {
-    $('heroCard').classList.add('hidden'); $('heroEmpty').classList.remove('hidden');
+    $('heroCard').classList.add('hidden'); $('heroEmpty').classList.toggle('hidden', S.tasks.length > 0);
   }
 
   // 分组列表
@@ -801,7 +917,17 @@ function renderHome() {
   fillList('todayList', today, '今天没有到期的事，心安 😌');
   fillList('soonList', soon, '未来一周没有安排');
   fillList('laterList', later, '更远处一片祥和');
-  fillList('doneList', done.slice(0, 8), '');
+  const repeatList = $('repeatList');
+  repeatList.innerHTML = '';
+  repeats.forEach(({ task, at }) => repeatList.appendChild(taskCard(task, at)));
+  $('repeatSection').classList.toggle('hidden', repeats.length === 0);
+  fillList('doneList', recentDone, '');
+  fillList('doneHistoryList', showDoneHistory ? history : [], '');
+  $('doneHistoryList').classList.toggle('hidden', !showDoneHistory || !history.length);
+  const historyButton = $('doneHistoryBtn');
+  historyButton.classList.toggle('hidden', !history.length);
+  historyButton.setAttribute('aria-expanded', String(showDoneHistory && history.length > 0));
+  historyButton.textContent = showDoneHistory ? '收起完成历史' : `查看完成历史（${history.length}）`;
   $('todaySection').classList.toggle('hidden', today.length === 0);
   $('soonSection').classList.toggle('hidden', soon.length === 0);
   $('laterSection').classList.toggle('hidden', later.length === 0);
@@ -853,20 +979,22 @@ function boredPick() {
 
 /* ---------------- 四象限 ---------------- */
 function renderMatrix() {
+  const now = Date.now();
   for (const q of ['q1', 'q2', 'q3', 'q4']) {
     const box = $('qlist-' + q);
     box.innerHTML = '';
     const arr = S.tasks.filter((t) => t.quadrant === q && !t.done)
-      .sort((a, b) => (a.dueAt || 9e15) - (b.dueAt || 9e15));
+      .map(task => ({ task, at: isScheduledRepeat(task) ? displayRepeatAt(task, now) : task.dueAt }))
+      .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
     if (!arr.length) {
       box.innerHTML = `<div class="mx-empty">空空如也<br>Nothing here ✨</div>`;
       continue;
     }
-    arr.forEach((t) => {
+    arr.forEach(({ task: t, at }) => {
       const d = document.createElement('div');
       d.className = 'mx-item' + (t.done ? ' done' : '');
       d.innerHTML = `${escapeHtml(t.name)}
-        <small>${t.dueAt ? fmtDT(t.dueAt).replace(/\(\S+?\)/, '') : '无截止时间'}</small>`;
+        <small>${at ? fmtDT(at).replace(/\(\S+?\)/, '') : '重复提醒已结束'}</small>`;
       d.addEventListener('click', () => openEditor(t.id));
       box.appendChild(d);
     });
@@ -878,22 +1006,31 @@ let editingId = null;
 let curQuad = 'q1', curType = 'point', curTiers = { 120: true, 60: true, 30: true, 5: true };
 let curCustom = [];
 let curRepeat = 'none';
+let curRepeatDays = new Set();
+let legacyRepeat = null;
 
-function openEditor(id) {
+function openEditor(id, day) {
   editingId = id || null;
   const t = id ? S.tasks.find((x) => x.id === id) : null;
   $('editorTitle').textContent = t ? '✏️ 编辑事项' : '✨ 新建事项';
   $('fName').value = t ? t.name : '';
   $('fDetail').value = t ? (t.detail || '') : '';
   const defaultDue = new Date(Date.now() + 2 * 3600000);
-  $('fDue').value = t && t.dueAt ? dtLocalValue(t.dueAt) : dtLocalValue(defaultDue);
+  $('fDue').value = t && t.dueAt ? dtLocalValue(t.dueAt) : day ? day + 'T12:00' : dtLocalValue(defaultDue);
   $('fStart').value = t && t.startAt ? dtLocalValue(t.startAt) : dtLocalValue(Date.now());
   curQuad = t ? t.quadrant : 'q1';
   curType = t && t.isRange ? 'range' : 'point';
   curTiers = t && t.tiers ? Object.assign({ 120: true, 60: true, 30: true, 5: true }, t.tiers) : { 120: true, 60: true, 30: true, 5: true };
   curCustom = t && t.custom ? JSON.parse(JSON.stringify(t.custom)) : [];
-  curRepeat = t && t.repeat ? t.repeat.type : 'none';
-  $('fRepN').value = t && t.repeat && t.repeat.type === 'ndays' && t.repeat.n ? t.repeat.n : 3;
+  const rule = t && isScheduledRepeat(t) ? t.repeat : null;
+  legacyRepeat = rule ? null : t?.repeat || null;
+  curRepeat = rule ? rule.type : legacyRepeat ? 'legacy' : 'none';
+  const repeatStart = rule?.startOn || day || ymdOf(t?.dueAt || Date.now());
+  $('fRepeatStart').value = repeatStart;
+  $('fRepeatTime').value = rule?.time || $('fDue').value.slice(11) || '09:00';
+  $('fRepeatEnd').value = rule?.endOn || '';
+  curRepeatDays = new Set(rule?.weekdays?.length ? rule.weekdays : [new Date(repeatStart + 'T12:00').getDay()]);
+  $('fRepeatLegacyNote').textContent = legacyRepeat ? `旧版打卡 · ${repeatLabel(legacyRepeat)}，勾选后生成下一条` : '';
   $('fDaily').checked = t ? t.daily !== false : true;
   $('fDailyDef').textContent = S.settings.dailyTime;
   $('fDelete').classList.toggle('hidden', !t);
@@ -910,8 +1047,19 @@ function syncEditorUI() {
   document.querySelectorAll('#fTimeType button').forEach((b) => b.classList.toggle('on', b.dataset.t === curType));
   $('fStartRow').classList.toggle('hidden', curType !== 'range');
   $('fDueLabel').innerHTML = curType === 'range' ? '结束时间 <small>(提醒按此时间倒推)</small>' : '截止时间';
-  document.querySelectorAll('#fRepeat button').forEach((b) => b.classList.toggle('on', b.dataset.r === curRepeat));
-  $('fRepNRow').classList.toggle('hidden', curRepeat !== 'ndays');
+  const scheduled = curRepeat === 'daily' || curRepeat === 'weekly';
+  document.querySelectorAll('#fRepeat button').forEach((b) => {
+    const selected = b.dataset.r === curRepeat;
+    b.classList.toggle('on', selected);
+    b.setAttribute('aria-pressed', String(selected));
+  });
+  $('fRepeatLegacy').classList.toggle('hidden', !legacyRepeat);
+  $('fRepeatLegacyNote').classList.toggle('hidden', curRepeat !== 'legacy');
+  $('fRepeatSchedule').classList.toggle('hidden', !scheduled);
+  $('fRepeatWeekRow').classList.toggle('hidden', curRepeat !== 'weekly');
+  $('fSingleSchedule').classList.toggle('hidden', scheduled);
+  document.querySelectorAll('#fRepeatWeek button').forEach(b =>
+    b.setAttribute('aria-pressed', String(curRepeatDays.has(Number(b.dataset.weekday)))));
   document.querySelectorAll('#fTier button').forEach((b) => b.classList.toggle('on', !!curTiers[b.dataset.min]));
   const rows = curCustom.map((r, i) => `
     <div class="crem-row">
@@ -938,38 +1086,60 @@ function syncEditorUI() {
 async function saveEditor() {
   if ($('fSave').disabled) return;
   const name = $('fName').value.trim();
-  const dueV = $('fDue').value;
   if (!name) { toast('⚠️ 还没写名字', '给这件事起个名字吧'); $('fName').focus(); return; }
-  if (!dueV) { toast('⚠️ 还没定截止时间', '什么时候是死线？'); return; }
-  const dueAt = new Date(dueV).getTime();
-  const isRange = curType === 'range';
-  const startAt = isRange ? new Date($('fStart').value || dueV).getTime() : null;
-  if (!Number.isFinite(dueAt) || (isRange && (!Number.isFinite(startAt) || startAt > dueAt))) {
-    toast('⚠️ 时间无效', '请检查日期，并确保开始时间不晚于截止时间'); return;
+  const target = editingId ? S.tasks.find(x => x.id === editingId) : null;
+  if (editingId && !target) { toast('⚠️ 事项已不存在', '请关闭编辑器后重新选择'); return; }
+  const scheduled = curRepeat === 'daily' || curRepeat === 'weekly';
+  const now = Date.now();
+  let repeat = curRepeat === 'legacy' ? legacyRepeat : null;
+  let dueAt, startAt = null, isRange = false;
+  if (scheduled) {
+    repeat = {
+      type: curRepeat, time: $('fRepeatTime').value, startOn: $('fRepeatStart').value,
+      endOn: $('fRepeatEnd').value, weekdays: curRepeat === 'weekly' ? [...curRepeatDays].sort((a, b) => a - b) : []
+    };
+    if (!validRepeatSchedule(repeat)) {
+      toast('⚠️ 请检查重复设置', '请选好提醒时间和开始日期。每周提醒至少选一天，截止日期应在开始日或之后。');
+      return;
+    }
+    const old = target?.repeat;
+    const sameRule = old && old.type === repeat.type && old.time === repeat.time && old.startOn === repeat.startOn &&
+      old.endOn === repeat.endOn && (old.weekdays || []).slice().sort().join(',') === repeat.weekdays.join(',');
+    dueAt = sameRule ? target.dueAt : nextRepeatAt(repeat, now);
+    if (dueAt === null) {
+      toast('⚠️ 日期范围内没有提醒', '请调整开始日期、提醒日、时间或截止日期。');
+      return;
+    }
+  } else {
+    const dueV = $('fDue').value;
+    dueAt = new Date(dueV).getTime();
+    isRange = curType === 'range';
+    startAt = isRange ? new Date($('fStart').value || dueV).getTime() : null;
+    if (!Number.isFinite(dueAt) || (isRange && (!Number.isFinite(startAt) || startAt > dueAt))) {
+      toast('⚠️ 时间无效', '请检查日期，并确保开始时间不晚于截止时间'); return;
+    }
   }
 
   const data = {
     name, detail: $('fDetail').value.trim(), quadrant: curQuad,
-    isRange, startAt, dueAt,
-    repeat: curRepeat === 'none' ? null : { type: curRepeat, n: curRepeat === 'ndays' ? Math.max(2, +$('fRepN').value || 3) : 0 },
-    tiers: curTiers, custom: curCustom, daily: $('fDaily').checked,
-    updatedAt: Date.now()
+    isRange, startAt, dueAt, repeat,
+    repeatDoneOn: scheduled ? target?.repeatDoneOn || null : null,
+    tiers: curTiers, custom: curCustom, daily: !scheduled && $('fDaily').checked,
+    updatedAt: now
   };
-  if (editingId) {
-    const target = S.tasks.find((x) => x.id === editingId);
-    if (!target) { toast('⚠️ 事项已不存在', '请关闭编辑器后重新选择'); return; }
+  if (target) {
     // 只有「截止时间真的变了」才清掉该任务的 fired 记录（提醒需要重排）。
     // 早前是无条件 filter：只改标题/细节也会清空，于是 15 分钟补弹窗口内
     // 已经弹过的提醒会被再弹一遍 —— 用户感知就是「重复提醒 / 乱弹」。
-    const dueChanged = !target || target.dueAt !== dueAt;
+    const dueChanged = target.dueAt !== dueAt;
     Object.assign(target, data);
     if (dueChanged) {
       S.fired = S.fired.filter((k) => !k.startsWith(editingId + '|'));
       invalidateFiredCache(); // 过滤后长度可能不变，必须显式失效 Set 缓存
     }
   } else {
-    S.tasks.push(Object.assign({ id: uid(), done: false, createdAt: Date.now() }, data));
-    askNotify();
+    S.tasks.push(Object.assign({ id: uid(), done: false, createdAt: now }, data));
+    if (!scheduled) askNotify();
   }
   $('fSave').disabled = true;
   let synced;
@@ -982,6 +1152,21 @@ async function saveEditor() {
 }
 
 /* ---------------- 日历某日 ---------------- */
+function tasksForDay(day) {
+  const today = ymdOf(Date.now());
+  const items = [];
+  for (const task of S.tasks) {
+    if (task.done || !task.dueAt) continue;
+    if (!isScheduledRepeat(task)) {
+      if (ymdOf(task.dueAt) === day) items.push({ task, at: task.dueAt });
+    } else if (day >= today && day !== task.repeatDoneOn) {
+      const at = repeatAtOnDay(task.repeat, day);
+      if (at !== null) items.push({ task, at });
+    }
+  }
+  return items;
+}
+
 function openDay(ymdStr) {
   const [y, m, d] = ymdStr.split('-').map(Number);
   const date = new Date(y, m - 1, d);
@@ -1004,17 +1189,16 @@ function openDay(ymdStr) {
 
   const list = $('dayTaskList');
   list.innerHTML = '';
-  const arr = S.tasks.filter((t) => t.dueAt && !t.done &&
-    new Date(t.dueAt).toDateString() === date.toDateString());
+  const arr = tasksForDay(ymdStr)
+    .sort((a, b) => a.at - b.at || (a.task.createdAt || 0) - (b.task.createdAt || 0) || a.task.id.localeCompare(b.task.id));
   if (!arr.length) list.innerHTML = '<div class="empty-tip">这天没有安排 DDL</div>';
-  else arr.forEach((t) => list.appendChild(taskCard(t)));
+  else arr.forEach(({ task, at }) => list.appendChild(taskCard(task, at)));
 
   $('dayAddBtn').onclick = () => {
     $('dayWrap').classList.add('hidden');
-    openEditor(null);
-    $('fDue').value = `${ymdStr}T12:00`;
-    syncDateTimeTriggers();
+    openEditor(null, ymdStr);
   };
+  $('dayWrap').dataset.day = ymdStr;
   $('dayWrap').classList.remove('hidden');
 }
 function closeSheet(name) {
@@ -1042,7 +1226,7 @@ function openReminderUrl(url) {
   if (notify && typeof notify.idOf === 'function') {
     for (const task of S.tasks) {
       if (!task || typeof task.id !== 'string') continue;
-      const keys = ['due', 'daily', 't120', 't60', 't30', 't5'];
+      const keys = ['due', 'daily', 't120', 't60', 't30', 't5', 'repeatDaily', ...WD.map((_, day) => 'repeat' + day)];
       for (const custom of task.custom || []) keys.push('c' + custom.v + custom.u);
       if (keys.some(key => notify.idOf(task.id + '|' + key) === id)) {
         matches.set('task:' + task.id, { type: 'task', id: task.id });
@@ -1095,7 +1279,7 @@ async function bindNativeReminderNavigation() {
     }
   } catch (error) { /* An unavailable bridge leaves normal tab navigation intact. */ }
 }
-window.AppBridge = { openDay, closeSheet, openReminderUrl };
+window.AppBridge = { openDay, closeSheet, openReminderUrl, tasksForDay };
 
 // Cloud data uses the same validation and native scheduling path as local edits.
 // Settings, fired markers, wallpaper and administrator test tools stay local.
@@ -1115,8 +1299,23 @@ const TIER_MIN = [120, 60, 30, 5];
 function planReminders(t, settings = S.settings) {
   const out = [];
   if (!t || t.done || !Number.isFinite(t.dueAt)) return out;
-  const due = t.dueAt;
   const cutoff = Date.now() - 15 * 60000;
+  if (isScheduledRepeat(t)) {
+    const rule = t.repeat;
+    const weekly = rule.type === 'weekly';
+    const repeatUntil = rule.endOn ? new Date(rule.endOn + 'T23:59:59.999').getTime() : 0;
+    for (const weekday of weekly ? rule.weekdays : [null]) {
+      const at = nextRepeatAt(rule, Math.max(cutoff, t.dueAt), t.repeatDoneOn, weekday);
+      if (at === null) continue;
+      const nativeKey = `${t.id}|repeat${weekly ? weekday : 'Daily'}`;
+      out.push({
+        key: `${nativeKey}|${at}`, nativeKey, at, repeatDays: weekly ? 7 : 1, repeatUntil,
+        title: '⏰ 重复提醒', body: `『${escapeHtml(t.name)}』 · ${rule.time}`, kind: 'daily', scheduledRepeat: true
+      });
+    }
+    return out;
+  }
+  const due = t.dueAt;
 
   // 当天分段提醒：设置页总开关 × 单事项细分开关
   if (t.tiers && settings.tiered) {
@@ -1414,7 +1613,7 @@ async function maybeAskOverlay() {
 
 /* ---------------- 设置页 ---------------- */
 /* ---------------- 版本更新 ---------------- */
-const APP_VERSION = '2.4.0-rc.1';
+const APP_VERSION = '2.4.1-rc.1';
 const REPO = 'lhw366/ddl-radar-app';
 let pendingUpdateMirrors = []; // 下载线路：jsdelivr 各边缘 + 国内反代 + 代理，github 直连兜底
 function fetchTimeout(ms) {
@@ -2580,6 +2779,12 @@ function init() {
     b.addEventListener('click', () => { curType = b.dataset.t; syncEditorUI(); }));
   document.querySelectorAll('#fRepeat button').forEach((b) =>
     b.addEventListener('click', () => { curRepeat = b.dataset.r; syncEditorUI(); }));
+  document.querySelectorAll('#fRepeatWeek button').forEach(b => b.addEventListener('click', () => {
+    const day = Number(b.dataset.weekday);
+    if (curRepeatDays.has(day)) curRepeatDays.delete(day);
+    else curRepeatDays.add(day);
+    b.setAttribute('aria-pressed', String(curRepeatDays.has(day)));
+  }));
   document.querySelectorAll('#fTier button').forEach((b) =>
     b.addEventListener('click', () => {
       const m = b.dataset.min; curTiers[m] = !curTiers[m]; syncEditorUI();
@@ -2590,6 +2795,10 @@ function init() {
 
   // 闲得发慌
   $('boredBtn').addEventListener('click', boredPick);
+  $('doneHistoryBtn').addEventListener('click', () => {
+    showDoneHistory = !showDoneHistory;
+    renderHome();
+  });
 
   // 日历导航
   $('calPrev').addEventListener('click', () => {
